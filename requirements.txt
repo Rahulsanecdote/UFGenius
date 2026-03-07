@@ -14,3 +14,4 @@ fredapi>=0.5.1
 beautifulsoup4>=4.12.0
 robin_stocks>=2.0.0
 lxml>=4.9.0
+flask>=3.0.0
