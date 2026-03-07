@@ -141,7 +141,9 @@ def score_momentum(indicators: dict) -> dict:
             score += 5
             reasons.append(f"CCI {cci:.1f} — Overbought Territory")
 
-    div = last("RSI_DIVERGENCE")
+    # RSI_DIVERGENCE is a string Series — read directly, don't convert to float
+    div_series = indicators.get("RSI_DIVERGENCE")
+    div = str(div_series.iloc[-1]) if div_series is not None and len(div_series) > 0 else "NONE"
     if div == "BULLISH_DIVERGENCE":
         score += 15
         reasons.append("RSI Bullish Divergence Detected ✅")
