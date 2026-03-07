@@ -1,0 +1,46 @@
+account_size: 10000
+risk_per_trade: 0.01
+max_position_pct: 0.10
+scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM
+
+safety_rules:
+  max_positions: 5
+  max_portfolio_risk_pct: 5.0
+  max_daily_loss_pct: 2.0
+  max_weekly_loss_pct: 5.0
+  cash_reserve_pct: 20.0
+  min_market_cap: 300000000
+  min_daily_volume: 200000
+  max_single_position_pct: 10.0
+  max_trades_per_day: 3
+  stop_loss_required: true
+  trade_in_bear_market: false
+  trade_earnings_week: false
+  cooldown_after_loss_hours: 24
+  paper_trade_days_required: 30
+
+schedule:
+  pre_market: "06:00"
+  market_open: "09:25"
+  intraday_1: "11:00"
+  intraday_2: "14:00"
+  post_market: "16:30"
+  overnight: "21:00"
+
+alerts:
+  telegram_enabled: false
+  email_enabled: false
+  triggers:
+    - STRONG_BUY
+    - STRONG_SELL
+
+signal_weights:
+  technical: 0.35
+  volume: 0.20
+  sentiment: 0.20
+  fundamental: 0.15
+  macro: 0.10
+
+atr_stop_multiplier: 2.0
+target_rr_ratios: [1.5, 2.5, 4.0]
+target_exit_pcts: [30, 40, 30]
