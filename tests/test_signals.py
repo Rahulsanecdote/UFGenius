@@ -19,7 +19,7 @@ def sample_df():
     for _ in range(n):
         price *= 1 + np.random.normal(0.0005, 0.012)
         closes.append(price)
-    closes = pd.Series(closes)
+    closes = np.array(closes)
     return pd.DataFrame({
         "Open":   closes * 0.998,
         "High":   closes * 1.01,
@@ -35,7 +35,7 @@ def penny_df():
     np.random.seed(1)
     n = 60
     dates = pd.date_range("2023-01-01", periods=n, freq="B")
-    closes = pd.Series([0.50] * n)
+    closes = np.full(n, 0.50)
     return pd.DataFrame({
         "Open": closes, "High": closes * 1.01,
         "Low": closes * 0.99, "Close": closes,
@@ -49,7 +49,7 @@ def illiquid_df():
     np.random.seed(2)
     n = 60
     dates = pd.date_range("2023-01-01", periods=n, freq="B")
-    closes = pd.Series([50.0] * n)
+    closes = np.full(n, 50.0)
     return pd.DataFrame({
         "Open": closes, "High": closes * 1.01,
         "Low": closes * 0.99, "Close": closes,
