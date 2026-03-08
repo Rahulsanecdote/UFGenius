@@ -78,9 +78,14 @@ def calculate_trend_indicators(df: pd.DataFrame) -> dict:
         indicators[f"SMA_{period}"] = df["Close"].rolling(period).mean()
         indicators[f"EMA_{period}"] = df["Close"].ewm(span=period, adjust=False).mean()
 
-    # VWAP (cumulative — resets are handled by the caller per trading day)
+    # VWAP — rolling 20-day (daily bars: one bar = one session, so we use a
+    # 20-session rolling window instead of a stale cumulative-from-data-start).
+    _vwap_window = 20
     tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    indicators["VWAP"] = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
+    indicators["VWAP"] = (
+        (tp * df["Volume"]).rolling(_vwap_window).sum()
+        / df["Volume"].rolling(_vwap_window).sum()
+    )
 
     # Ichimoku Cloud
     high_9  = df["High"].rolling(9).max()
