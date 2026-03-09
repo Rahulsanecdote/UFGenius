@@ -23,6 +23,13 @@ src/
 └── utils/                 ← Config, logging, HTTP retry/session
 ```
 
+## Roadmap
+
+The phased implementation plan for evolving this into a universal multi-asset
+analysis engine is documented here:
+
+- `docs/universal_engine_roadmap.md`
+
 ## Reproducible Setup
 
 ### Option A: exact lock install (recommended)
