@@ -1,0 +1,29 @@
+# Fully pinned direct dependency lock for deterministic local/CI installs.
+# Usage:
+#   python -m venv .venv
+#   source .venv/bin/activate
+#   python -m pip install --upgrade pip
+#   python -m pip install -r requirements.lock
+
+alpaca-py==0.43.1
+beautifulsoup4==4.12.3
+bottleneck==1.4.2
+flask==3.0.3
+fredapi==0.5.2
+lxml==5.3.0
+matplotlib==3.9.2
+newsapi-python==0.2.7
+numexpr==2.10.2
+numpy==1.26.4
+pandas==2.2.3
+praw==7.8.1
+pyarrow==17.0.0
+pytest==8.3.4
+python-dotenv==1.0.1
+PyYAML==6.0.2
+requests==2.32.3
+schedule==1.2.2
+scikit-learn==1.5.2
+scipy==1.13.1
+vaderSentiment==3.3.2
+yfinance==0.2.54

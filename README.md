@@ -1,190 +1,117 @@
-# UFGenius — Robinhood Signal Bot
+# UFGenius — Alpaca Signal Bot
 
-> ⚠️ **DISCLAIMER**: This project is for **educational and informational purposes only**.
-> It does NOT constitute financial advice. All trading involves substantial risk of loss.
-> Never invest more than you can afford to lose. Always paper trade before using real money.
-> Consult a licensed financial advisor.
+> ⚠️ **DISCLAIMER**: Educational and informational use only. Not financial advice.
 
----
-
-An autonomous stock signal bot that scans the US equity market daily and generates
-**BUY / SELL / HOLD** signals with confidence scores, actionable trade plans, and
-built-in risk management across four analysis dimensions:
-
-| Dimension | Weight | What it covers |
-|-----------|--------|----------------|
-| Technical | 35% | Trend, momentum, volatility, volume, S/R levels |
-| Volume | 20% | OBV, CMF, Relative Volume, accumulation/distribution |
-| Sentiment | 20% | News (VADER), Reddit (WSB), SEC insider filings |
-| Fundamental | 15% | Piotroski F-Score, Altman Z-Score, valuation, growth |
-| Macro | 10% | Market regime (VIX, SPY vs 200 SMA, breadth) |
-
----
+Autonomous stock scanner that generates BUY/SELL/HOLD signals, risk-aware trade plans, and portfolio-level backtesting.
 
 ## Architecture
 
 ```
-bot.py                     ← Main CLI entry point
-├── src/data/              ← Market data fetching + caching
-├── src/technical/         ← 20+ technical indicators
-├── src/fundamental/       ← Financial health scoring
-├── src/sentiment/         ← News, social, insider analysis
-├── src/macro/             ← Market regime detection
-├── src/signals/           ← Master signal generator + trade plan
-├── src/scanner/           ← Daily market scanner
-├── src/alerts/            ← Telegram + email notifications
-├── src/backtest/          ← Historical simulation
-└── src/robinhood/         ← Read-only portfolio view
+bot.py                     ← CLI entry point
+ dashboard.py              ← Local web dashboard + API
+src/
+├── data/                  ← Market/universe fetch with retry/cache
+├── technical/             ← Trend/momentum/volatility/volume indicators
+├── fundamental/           ← Fundamental fetch + scoring
+├── sentiment/             ← News/social/insider sentiment
+├── macro/                 ← Market regime detection
+├── signals/               ← Signal context, filters, scoring, trade plans
+├── scanner/               ← Universe scan orchestration
+├── alerts/                ← Telegram/email notifications
+├── backtest/              ← Portfolio backtesting engine (daily MTM)
+├── alpaca/                ← Read-only Alpaca portfolio integration
+└── utils/                 ← Config, logging, HTTP retry/session
 ```
 
----
+## Reproducible Setup
 
-## Quick Start
-
-### 1. Install dependencies
+### Option A: exact lock install (recommended)
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock
 ```
 
-### 2. Configure API keys
+### Option B: constrained development install
+
+```bash
+python -m pip install -r requirements.txt -c constraints.txt
+```
+
+## Configuration
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in your API keys
-# Only yfinance is strictly required (free, no key needed)
 ```
 
-### 3. Configure settings (optional)
+Set API keys as needed. Core environment controls include:
 
-Edit `config.yaml` to set your account size, risk parameters, and scan universe.
+- `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER`
+- `REQUEST_*` and `YFINANCE_TIMEOUT_SEC` for retry/timeout behavior
+- `DASHBOARD_*` for binding/auth/rate limiting
 
-### 4. Run a single ticker scan
+## CLI Usage
 
 ```bash
 python bot.py --mode scan --ticker AAPL
-python bot.py --mode scan --ticker AAPL --account-size 25000
-```
-
-### 5. Run a full market scan
-
-```bash
-python bot.py --mode scan
-python bot.py --mode scan --universe RUSSELL1000
-```
-
-### 6. Paper trade mode (runs on schedule, no live alerts)
-
-```bash
+python bot.py --mode scan --universe SP500
 python bot.py --mode paper
-```
-
-### 7. Backtest
-
-```bash
+python bot.py --mode live
 python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
-python bot.py --mode backtest --ticker AAPL --start 2020-01-01 --end 2024-12-31
-```
-
-### 8. View Robinhood portfolio (read-only)
-
-```bash
 python bot.py --mode portfolio
 ```
 
----
+## Dashboard Usage
 
-## API Keys
-
-| Service | Purpose | Free Tier | Required? |
-|---------|---------|-----------|-----------|
-| yfinance | Price data, financials | Yes (unlimited) | **Yes** |
-| NewsAPI | News sentiment | 100 req/day | Optional |
-| Reddit PRAW | Social sentiment | Free | Optional |
-| SEC EDGAR | Insider activity | Free (public) | Optional |
-| FRED API | 10-yr treasury yield | Free | Optional |
-| Telegram Bot | Push notifications | Free | Optional |
-| Alpha Vantage | Backup price data | 500 req/day free | Optional |
-| Financial Modeling Prep | Fundamentals backup | 250 req/day free | Optional |
-
-The bot works with **zero API keys** using yfinance alone.
-Each optional service adds more signal quality.
-
----
-
-## Signal Output
-
-```json
-{
-  "ticker": "AAPL",
-  "signal": "BUY",
-  "confidence": "HIGH",
-  "composite_score": 74.2,
-  "entry": { "type": "LIMIT", "price": 189.50 },
-  "stop_loss": { "price": 184.20, "pct_below_entry": 2.8 },
-  "targets": {
-    "T1": { "price": 197.45, "exit_pct": 30, "rr": "1.5:1" },
-    "T2": { "price": 202.75, "exit_pct": 40, "rr": "2.5:1" },
-    "T3": { "price": 210.70, "exit_pct": 30, "rr": "4.0:1" }
-  },
-  "position": {
-    "shares": 18, "position_value": 3411,
-    "risk_dollars": 95, "risk_percent": 0.95
-  }
-}
+```bash
+python dashboard.py
 ```
 
----
+Default bind is `127.0.0.1:5001`.
 
-## Risk Management Rules
+Remote exposure is disabled by default. To enable remote mode safely:
 
-- **1% risk per trade** — max loss per trade = 1% of account
-- **10% max position** — never more than 10% of account in one stock
-- **5 max positions** — never hold more than 5 stocks simultaneously
-- **ATR-based stops** — stop = entry − (2× ATR₁₄)
-- **Bear market protection** — bot goes to cash in BEAR_RISK_OFF regime
-- **Hard disqualification filters**:
-  - Price < $1.00 (penny stock)
-  - Avg volume < 100K shares (illiquid)
-  - Altman Z-Score < 1.0 (bankruptcy risk)
-  - Already up >50% in 5 days (chaser trap)
+- set `DASHBOARD_ALLOW_REMOTE=true`
+- set `DASHBOARD_API_KEY` or `DASHBOARD_API_KEYS` (comma-separated)
+- send either:
+- `Authorization: Bearer <key>`
+- `X-API-Key: <key>`
+- keep `DASHBOARD_RATE_LIMIT_BACKEND=sqlite` for multi-process shared-store throttling
+- configure `DASHBOARD_RATE_LIMIT_DB_PATH` on persistent storage
 
----
+Built-in API protections:
+
+- strict ticker/account-size validation
+- sanitized 4xx/5xx errors (no internal exception leakage)
+- per-IP rate limiting (SQLite shared store by default)
+
+## Backtest Model
+
+Backtest now uses portfolio-level accounting with:
+
+- true entry and exit timestamps
+- daily marked-to-market equity curve
+- forced end-date closure for open positions
+- max concurrent position enforcement
+- reconciled cash + unrealized PnL + realized PnL
 
 ## Testing
 
 ```bash
-# Unit tests only (no API calls)
-python -m pytest tests/test_technical.py tests/test_fundamental.py tests/test_signals.py -v
-
-# All tests excluding slow integration tests
-python -m pytest tests/ -v -m "not integration"
+python -m pytest tests/test_technical.py tests/test_signals.py tests/test_fundamental.py tests/test_backtest.py tests/test_scanner.py tests/test_dashboard_api.py tests/test_data_fetcher.py tests/test_security.py tests/test_provider_consistency.py -v
+python -m pytest tests -m integration -v
 ```
 
----
+## Risk Controls
 
-## Minimum Acceptance Criteria
+- 1% risk-per-trade sizing
+- max position cap
+- hard disqualifiers (penny stock, illiquidity, bankruptcy risk, micro-cap, chaser trap)
+- regime-aware sizing multipliers
 
-Before using with real money, backtest results MUST pass:
+## Notes
 
-| Metric | Minimum |
-|--------|---------|
-| Sharpe Ratio | > 1.0 |
-| Win Rate | > 38% |
-| Profit Factor | > 1.3 |
-| Max Drawdown | < 25% |
-
-**Paper trade for ≥30 days** and verify the above in live market conditions.
-
----
-
-## Workflow
-
-```
-BUILD → BACKTEST → PAPER TRADE (30+ days) → REVIEW → ONLY THEN: LIVE
-```
-
----
-
-⚠️ **The market can stay irrational longer than you can stay solvent.**
-**When in doubt, stay in cash.**
+- External sentiment/data APIs degrade gracefully when credentials are missing.
+- Market data and ticker metadata fetching use retries and process-local caches.

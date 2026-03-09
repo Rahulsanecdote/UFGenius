@@ -84,26 +84,34 @@ def mock_signal(sample_df):
 class TestDisqualificationFilters:
     def test_healthy_ticker_no_disqualifiers(self, sample_df):
         fundamental = {"altman_z_score": 3.5}
-        result = run_disqualification_filters("TEST", sample_df, fundamental)
+        result = run_disqualification_filters(
+            "TEST", sample_df, fundamental, {"market_cap": 5_000_000_000}
+        )
         assert result == [], f"Expected no disqualifiers, got: {result}"
 
     def test_penny_stock_flagged(self, penny_df):
         fundamental = {"altman_z_score": 2.0}
-        result = run_disqualification_filters("PENNY", penny_df, fundamental)
+        result = run_disqualification_filters(
+            "PENNY", penny_df, fundamental, {"market_cap": 5_000_000_000}
+        )
         assert any("PENNY_STOCK" in r for r in result)
 
     def test_illiquid_flagged(self, illiquid_df):
         fundamental = {"altman_z_score": 2.5}
-        result = run_disqualification_filters("ILLIQ", illiquid_df, fundamental)
+        result = run_disqualification_filters(
+            "ILLIQ", illiquid_df, fundamental, {"market_cap": 5_000_000_000}
+        )
         assert any("ILLIQUID" in r for r in result)
 
     def test_bankruptcy_risk_flagged(self, sample_df):
         fundamental = {"altman_z_score": 0.5}
-        result = run_disqualification_filters("BANKRUPT", sample_df, fundamental)
+        result = run_disqualification_filters(
+            "BANKRUPT", sample_df, fundamental, {"market_cap": 5_000_000_000}
+        )
         assert any("BANKRUPTCY" in r for r in result)
 
     def test_empty_df_flagged(self):
-        result = run_disqualification_filters("NODATA", pd.DataFrame(), {})
+        result = run_disqualification_filters("NODATA", pd.DataFrame(), {}, {"market_cap": 5_000_000_000})
         assert len(result) > 0
 
     def test_chaser_trap_detected(self, sample_df):
@@ -111,8 +119,19 @@ class TestDisqualificationFilters:
         df = sample_df.copy()
         original_last = float(df["Close"].iloc[-1])
         df.iloc[-6, df.columns.get_loc("Close")] = original_last / 1.65  # 65% below current
-        result = run_disqualification_filters("SURGE", df, {"altman_z_score": 3.0})
+        result = run_disqualification_filters(
+            "SURGE", df, {"altman_z_score": 3.0}, {"market_cap": 5_000_000_000}
+        )
         assert any("CHASER_TRAP" in r for r in result)
+
+    def test_micro_cap_flagged_with_raw_market_cap(self, sample_df):
+        result = run_disqualification_filters(
+            "SMALL",
+            sample_df,
+            {"altman_z_score": 3.0},
+            {"market_cap": 50_000_000},
+        )
+        assert any("MICRO_CAP" in r for r in result)
 
 
 class TestTradePlan:

@@ -1,12 +1,11 @@
 """
-Robinhood Signal Bot — Web Dashboard
+Alpaca Signal Bot — Web Dashboard
 Run: python dashboard.py
-Then open: http://localhost:5000
+Then open: http://localhost:5001
 """
 
 import json
-import threading
-from datetime import datetime
+import re
 
 from flask import Flask, jsonify, render_template_string, request
 
@@ -14,13 +13,18 @@ from src.macro.regime import detect_market_regime
 from src.scanner.daily_scan import run_daily_scan, scan_single_ticker
 from src.utils import config
 from src.utils.logger import get_logger
+from src.utils.security import (
+    build_rate_limiter,
+    has_auth_config,
+    is_authorized_request,
+    resolve_client_ip,
+)
 
 log = get_logger("dashboard")
 app = Flask(__name__)
 
-# In-memory cache for last scan result
-_last_scan: dict = {}
-_scan_lock = threading.Lock()
+TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
+_rate_limiter = build_rate_limiter()
 
 # ── HTML template ────────────────────────────────────────────────────────────
 
@@ -183,7 +187,7 @@ HTML = """
 </main>
 
 <footer>
-  UFGenius Robinhood Signal Bot — for educational purposes only.<br>
+  UFGenius Alpaca Signal Bot — for educational purposes only.<br>
   All trading involves risk of loss. Never invest money you cannot afford to lose.
   Paper trade for ≥ 30 days before using real money.
 </footer>
@@ -369,6 +373,53 @@ $('tickerInput').addEventListener('keydown', e => {
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
+def _error_response(message: str, status: int):
+    return jsonify({"error": message}), status
+
+
+def _parse_account_size(raw_value: str | None) -> tuple[float | None, str | None]:
+    if raw_value is None or raw_value == "":
+        return config.ACCOUNT_SIZE, None
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return None, "account_size must be numeric"
+    if value <= 0:
+        return None, "account_size must be positive"
+    if value < config.DASHBOARD_MIN_ACCOUNT_SIZE:
+        return None, f"account_size must be >= {config.DASHBOARD_MIN_ACCOUNT_SIZE:.0f}"
+    if value > config.DASHBOARD_MAX_ACCOUNT_SIZE:
+        return None, f"account_size must be <= {config.DASHBOARD_MAX_ACCOUNT_SIZE:.0f}"
+    return value, None
+
+
+def _parse_ticker(raw_value: str | None) -> tuple[str | None, str | None]:
+    ticker = (raw_value or "").upper().strip()
+    if not ticker:
+        return None, "ticker parameter is required"
+    if not TICKER_RE.fullmatch(ticker):
+        return None, "ticker format is invalid"
+    return ticker, None
+
+
+@app.before_request
+def _api_security_guards():
+    if not request.path.startswith("/api/"):
+        return None
+
+    client_key = resolve_client_ip(request)
+    if not _rate_limiter.allow(client_key):
+        return _error_response("Too many requests", 429)
+
+    if config.DASHBOARD_ALLOW_REMOTE:
+        if not has_auth_config():
+            log.error("Remote dashboard enabled without configured dashboard API keys")
+            return _error_response("Remote mode misconfigured", 503)
+        if not is_authorized_request(request):
+            return _error_response("Unauthorized", 401)
+    return None
+
 @app.route("/")
 def index():
     return render_template_string(HTML)
@@ -381,36 +432,40 @@ def api_regime():
         # Remove non-serialisable objects
         regime.pop("_df", None)
         return jsonify(regime)
-    except Exception as e:
-        return jsonify({"error": str(e), "regime": "NEUTRAL_CHOPPY", "strategy": {"bias": "NEUTRAL"}})
+    except Exception:
+        log.exception("Regime endpoint error")
+        return jsonify({"error": "Internal server error", "regime": "NEUTRAL_CHOPPY", "strategy": {"bias": "NEUTRAL"}}), 500
 
 
 @app.route("/api/scan-ticker")
 def api_scan_ticker():
-    ticker = request.args.get("ticker", "").upper().strip()
-    account_size = float(request.args.get("account_size", config.ACCOUNT_SIZE))
-
-    if not ticker:
-        return jsonify({"error": "ticker parameter is required"}), 400
+    ticker, ticker_err = _parse_ticker(request.args.get("ticker"))
+    if ticker_err:
+        return _error_response(ticker_err, 400)
+    account_size, account_err = _parse_account_size(request.args.get("account_size"))
+    if account_err:
+        return _error_response(account_err, 400)
 
     try:
-        plan = scan_single_ticker(ticker, account_size=account_size)
+        plan = scan_single_ticker(ticker, account_size=float(account_size))
         return jsonify(_clean(plan))
-    except Exception as e:
-        log.error(f"Scan ticker error: {e}")
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        log.exception("Scan ticker endpoint error")
+        return _error_response("Internal server error", 500)
 
 
 @app.route("/api/scan")
 def api_scan():
-    account_size = float(request.args.get("account_size", config.ACCOUNT_SIZE))
+    account_size, account_err = _parse_account_size(request.args.get("account_size"))
+    if account_err:
+        return _error_response(account_err, 400)
 
     try:
-        result = run_daily_scan(account_size=account_size)
+        result = run_daily_scan(account_size=float(account_size))
         return jsonify(_clean(result))
-    except Exception as e:
-        log.error(f"Full scan error: {e}")
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        log.exception("Full scan endpoint error")
+        return _error_response("Internal server error", 500)
 
 
 def _clean(obj):
@@ -435,12 +490,17 @@ def _clean(obj):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    host = "0.0.0.0" if config.DASHBOARD_ALLOW_REMOTE else "127.0.0.1"
+    port = config.DASHBOARD_PORT
+    if config.DASHBOARD_ALLOW_REMOTE and not has_auth_config():
+        raise SystemExit("DASHBOARD_ALLOW_REMOTE=true requires DASHBOARD_API_KEY or DASHBOARD_API_KEYS")
+
     print("""
 ╔══════════════════════════════════════════════════════╗
-║         UFGenius — Robinhood Signal Bot              ║
-║         Dashboard running at http://localhost:5000   ║
+║         UFGenius — Alpaca Signal Bot                 ║
+║         Dashboard running at http://localhost:5001   ║
 ║                                                      ║
 ║  ⚠️  NOT FINANCIAL ADVICE — Educational only         ║
 ╚══════════════════════════════════════════════════════╝
 """)
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host=host, port=port, debug=False)

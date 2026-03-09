@@ -1,7 +1,8 @@
 """Market regime detection: SPY/VIX/breadth/gold/bonds analysis."""
 
-import yfinance as yf
+import pandas as pd
 
+from src.data.fetcher import fetch_ohlcv
 from src.utils import config
 from src.utils.logger import get_logger
 
@@ -134,15 +135,10 @@ def _compute_regime() -> dict:
 
 
 def _download(ticker: str, period: str = "1y") -> "pd.DataFrame":
-    import pandas as pd
     try:
-        df = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return df
+        return fetch_ohlcv(ticker, period=period, interval="1d")
     except Exception as e:
         log.debug(f"Failed to download {ticker}: {e}")
-        import pandas as pd
         return pd.DataFrame()
 
 

@@ -1,12 +1,10 @@
 """Insider activity via SEC EDGAR Form 4 filings (no API key required)."""
 
-import re
 import time
 from datetime import datetime, timedelta
 from typing import List
 
-import requests
-
+from src.utils.http import get_json
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -48,9 +46,7 @@ def _fetch_form4(ticker: str, start_date: str) -> List[dict]:
     url = f"https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&dateRange=custom&startdt={start_date}&forms=4"
 
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        data = get_json(url, headers=_HEADERS)
     except Exception as e:
         log.debug(f"EDGAR Form 4 fetch error: {e}")
         return []
@@ -105,7 +101,7 @@ def _score_transactions(transactions: List[dict]) -> dict:
         flags.append(f"Multiple insiders buying ({len(buy_transactions)} transactions) ✅")
     elif len(buy_transactions) >= 1:
         insider_score += 10
-        flags.append(f"Insider purchase detected ✅")
+        flags.append("Insider purchase detected ✅")
 
     # Large sell volume is mildly negative (could be diversification)
     if len(sell_transactions) >= 5:

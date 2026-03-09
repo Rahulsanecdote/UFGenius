@@ -161,3 +161,19 @@ class TestCompositeScore:
         grow  = _growth_metrics(distressed_fd)
         score = _composite(f, z, val, grow)
         assert score < 50, f"Expected <50 for distressed company, got {score}"
+
+    def test_peg_non_positive_or_non_finite_gets_no_valuation_bonus(self):
+        growth = {"revenue_growth_yoy_pct": None}
+        baseline = _composite(0, None, {"peg_ratio": None}, growth)
+        for bad in [0, -0.5, float("inf"), float("-inf"), float("nan"), "abc"]:
+            score = _composite(0, None, {"peg_ratio": bad}, growth)
+            assert score == baseline, f"Bad PEG {bad} should not increase score"
+
+    def test_positive_finite_peg_tiers_apply(self):
+        growth = {"revenue_growth_yoy_pct": None}
+        score_peg_lt_1 = _composite(0, None, {"peg_ratio": 0.9}, growth)
+        score_peg_mid = _composite(0, None, {"peg_ratio": 1.3}, growth)
+        score_peg_high = _composite(0, None, {"peg_ratio": 1.8}, growth)
+        score_peg_very_high = _composite(0, None, {"peg_ratio": 2.5}, growth)
+
+        assert score_peg_lt_1 > score_peg_mid > score_peg_high >= score_peg_very_high

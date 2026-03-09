@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Robinhood Signal Bot — Main CLI Entry Point
+Alpaca Signal Bot — Main CLI Entry Point
 
 Usage:
     python bot.py --mode scan                          # Run full market scan once
@@ -8,7 +8,7 @@ Usage:
     python bot.py --mode paper                         # Run on schedule (no live alerts)
     python bot.py --mode live                          # Run on schedule (live alerts)
     python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
-    python bot.py --mode portfolio                     # View Robinhood portfolio (read-only)
+    python bot.py --mode portfolio                     # View Alpaca portfolio (read-only)
 
 ⚠️  DISCLAIMER: This tool is for educational purposes only.
     NOT financial advice. All trading involves risk of loss.
@@ -27,7 +27,7 @@ from src.alerts.email_alert import send_scan_digest
 from src.alerts.telegram_alert import send_telegram_alert
 from src.backtest.engine import backtest_signal_system
 from src.data.universe import get_universe
-from src.robinhood.portfolio import get_portfolio_data
+from src.alpaca.portfolio import get_portfolio_data
 from src.scanner.daily_scan import run_daily_scan, scan_single_ticker
 from src.utils import config
 from src.utils.logger import get_logger
@@ -85,14 +85,14 @@ def _print_trade_plan(plan: dict) -> None:
     print(f"\n  Position: {pos.get('shares', '?')} shares = ${pos.get('position_value', '?')}")
     print(f"  Risk:     ${pos.get('risk_dollars', '?')} ({pos.get('risk_percent', '?')}% of account)")
     print(f"  EV/trade: ${plan.get('expected_value', '?')}")
-    print(f"\n  Reasons:")
+    print("\n  Reasons:")
     for r in reasons[:6]:
         print(f"    • {r}")
     if risks:
-        print(f"\n  Risk Factors:")
+        print("\n  Risk Factors:")
         for r in risks[:3]:
             print(f"    ⚠ {r}")
-    print(f"\n  ⚠️  NOT FINANCIAL ADVICE. Paper trade first.")
+    print("\n  ⚠️  NOT FINANCIAL ADVICE. Paper trade first.")
     print(f"{'='*60}\n")
 
 
@@ -169,7 +169,7 @@ def cmd_backtest(args) -> None:
     print(f"  Profit Factor:     {result.get('profit_factor', 0):.2f}")
     print(f"  EV / Trade:        ${result.get('ev_per_trade', 0):.2f}")
     print(f"  Final Capital:     ${result.get('final_capital', 0):,.2f}")
-    print(f"\n  Acceptance Check:")
+    print("\n  Acceptance Check:")
 
     checks = result.get("minimum_acceptance", {})
     for k, v in checks.items():
@@ -184,7 +184,7 @@ def cmd_backtest(args) -> None:
 
 
 def cmd_portfolio(args) -> None:
-    """Display Robinhood portfolio (read-only)."""
+    """Display Alpaca portfolio (read-only)."""
     data = get_portfolio_data()
 
     if "error" in data:
@@ -192,11 +192,11 @@ def cmd_portfolio(args) -> None:
         return
 
     print(f"\n{'='*60}")
-    print(f"  ROBINHOOD PORTFOLIO (READ-ONLY)")
+    print("  ALPACA PORTFOLIO (READ-ONLY)")
     print(f"{'='*60}")
     print(f"  Total Equity:  ${data.get('total_equity', 0):,.2f}")
     print(f"  Buying Power:  ${data.get('buying_power', 0):,.2f}")
-    print(f"\n  Holdings:")
+    print("\n  Holdings:")
     for h in data.get("holdings", []):
         pnl_str = f"+${h['pnl']:.2f}" if h["pnl"] >= 0 else f"-${abs(h['pnl']):.2f}"
         print(
@@ -225,7 +225,7 @@ def _schedule_scan(args) -> None:
         schedule.every().day.at(time_str).do(_run)
 
     log.info(f"Scheduled scans at: {', '.join([sched.get(k, '') for k in ['pre_market','market_open','post_market','overnight']])}")
-    log.info("Running in {'PAPER' if args.mode == 'paper' else 'LIVE'} mode. Press Ctrl+C to stop.")
+    log.info(f"Running in {'PAPER' if args.mode == 'paper' else 'LIVE'} mode. Press Ctrl+C to stop.")
 
     # Run immediately on startup
     _run()
@@ -239,7 +239,7 @@ def main() -> None:
     print(DISCLAIMER)
 
     parser = argparse.ArgumentParser(
-        description="Robinhood Signal Bot — Educational Stock Analysis Tool",
+        description="Alpaca Signal Bot — Educational Stock Analysis Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Modes:
@@ -247,7 +247,7 @@ Modes:
   paper     Run on schedule, log signals only (no live alerts)
   live      Run on schedule with Telegram/email alerts
   backtest  Historical simulation
-  portfolio View Robinhood portfolio (read-only)
+  portfolio View Alpaca portfolio (read-only)
 
 Examples:
   python bot.py --mode scan --ticker AAPL

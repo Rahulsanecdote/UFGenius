@@ -1,0 +1,33 @@
+# Compatibility constraints for reproducible environments (Python 3.11/3.12)
+# Keep numpy/pandas/compiled deps pinned together to avoid ABI mismatches.
+
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==17.0.0
+numexpr==2.10.2
+bottleneck==1.4.2
+scipy==1.13.1
+
+# Core runtime
+requests==2.32.3
+python-dotenv==1.0.1
+PyYAML==6.0.2
+schedule==1.2.2
+flask==3.0.3
+
+# Data / APIs
+yfinance==0.2.54
+newsapi-python==0.2.7
+praw==7.8.1
+fredapi==0.5.2
+alpaca-py==0.43.1
+
+# Analysis stack
+vaderSentiment==3.3.2
+matplotlib==3.9.2
+scikit-learn==1.5.2
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# Testing
+pytest==8.3.4

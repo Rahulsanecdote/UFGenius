@@ -1,12 +1,14 @@
 """Fundamental scoring: Piotroski F-Score, Altman Z-Score, valuation composite."""
 
+import math
+
 from src.fundamental.fetcher import fetch_fundamentals
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 
-def calculate_fundamental_score(ticker: str) -> dict:
+def calculate_fundamental_score(ticker: str, fundamentals_data: dict | None = None) -> dict:
     """
     Compute composite fundamental score (0-100) for a ticker.
 
@@ -16,7 +18,7 @@ def calculate_fundamental_score(ticker: str) -> dict:
         Valuation (PEG):     25%
         Growth:              30%
     """
-    fd = fetch_fundamentals(ticker)
+    fd = fundamentals_data if fundamentals_data is not None else fetch_fundamentals(ticker)
 
     f_score, f_breakdown = _piotroski(fd)
     z_score = _altman_z(fd)
@@ -27,12 +29,14 @@ def calculate_fundamental_score(ticker: str) -> dict:
 
     return {
         "ticker":            ticker,
+        "market_cap":        fd.get("market_cap"),
         "piotroski_f_score": f_score,
         "piotroski_detail":  f_breakdown,
         "altman_z_score":    z_score,
         "valuation":         valuation,
         "growth":            growth,
         "fundamental_score": composite,
+        "raw_fundamentals":  fd,
     }
 
 
@@ -218,7 +222,7 @@ def _composite(f_score: int, z_score, valuation: dict, growth: dict) -> int:
         # else: 0 — distress zone
 
     # PEG (lower = better growth at reasonable price)
-    peg = valuation.get("peg_ratio")
+    peg = _as_positive_finite_float(valuation.get("peg_ratio"))
     if peg is not None:
         if peg < 1.0:
             score += 25
@@ -226,7 +230,7 @@ def _composite(f_score: int, z_score, valuation: dict, growth: dict) -> int:
             score += 15
         elif peg < 2.0:
             score += 8
-        # Negative PEG (declining earnings) → 0
+        # Positive PEG >= 2.0 → 0
 
     # Revenue Growth
     rev_pct = growth.get("revenue_growth_yoy_pct")
@@ -239,3 +243,15 @@ def _composite(f_score: int, z_score, valuation: dict, growth: dict) -> int:
             score += 10
 
     return min(int(score), 100)
+
+
+def _as_positive_finite_float(value) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed

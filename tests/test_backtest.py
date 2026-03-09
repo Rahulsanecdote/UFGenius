@@ -1,10 +1,31 @@
 """Unit tests for the backtesting engine."""
 
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.backtest.engine import _minimum_check, _simulate_ticker
+from src.backtest import engine
+from src.backtest.engine import _minimum_check, _simulate_ticker, backtest_signal_system
+
+
+def _frame(
+    closes: list[float],
+    *,
+    entry_flags: list[bool],
+    atr: float = 2.0,
+    start: str = "2024-01-01",
+) -> pd.DataFrame:
+    dates = pd.date_range(start, periods=len(closes), freq="D")
+    return pd.DataFrame(
+        {
+            "Close": closes,
+            "ATR_14": [atr] * len(closes),
+            "entry_signal": entry_flags,
+        },
+        index=dates,
+    )
 
 
 class TestMinimumCheck:
@@ -32,8 +53,60 @@ class TestMinimumCheck:
         assert result["all_pass"] is False
 
 
+class TestPortfolioAccounting:
+    def test_forced_close_at_end_date(self, monkeypatch):
+        frame = _frame([100, 101, 102, 103, 104], entry_flags=[True, False, False, False, False], atr=2.0)
+
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_args, **_kwargs: frame)
+
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-05", initial_capital=10_000)
+        trades = result["trades"]
+        assert trades, "Expected at least one trade"
+        assert any(t["exit_reason"] == "FORCE_CLOSE" for t in trades)
+        assert all(t["exit_date"] == "2024-01-05" for t in trades if t["exit_reason"] == "FORCE_CLOSE")
+
+    def test_max_concurrent_positions_enforced(self, monkeypatch):
+        frame = _frame([100, 101, 102], entry_flags=[True, False, False], atr=1.0)
+
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_args, **_kwargs: frame)
+
+        result = backtest_signal_system(
+            ["AAA", "BBB", "CCC"],
+            "2024-01-01",
+            "2024-01-03",
+            initial_capital=10_000,
+            max_concurrent_positions=1,
+        )
+        assert result["max_open_positions"] <= 1
+
+    def test_equity_curve_reconciles_to_final_capital(self, monkeypatch):
+        frame = _frame([100, 101, 99, 100], entry_flags=[True, False, False, False], atr=1.0)
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_args, **_kwargs: frame)
+
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-04", initial_capital=10_000)
+        equity_curve = result["equity_curve"]
+        assert equity_curve, "Expected non-empty equity curve"
+
+        last = equity_curve[-1]
+        assert np.isclose(last["portfolio_value"], result["final_capital"])
+        assert last["open_positions"] == 0
+        assert np.isclose(last["unrealized_pnl"], 0.0)
+
+    def test_true_entry_and_exit_timestamps_present(self, monkeypatch):
+        frame = _frame([100, 101, 102, 103], entry_flags=[True, False, False, False], atr=1.0)
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_args, **_kwargs: frame)
+
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-04", initial_capital=10_000)
+        trades = result["trades"]
+        assert trades
+        for trade in trades:
+            assert "entry_date" in trade and trade["entry_date"]
+            assert "exit_date" in trade and trade["exit_date"]
+            assert trade["entry_date"] <= trade["exit_date"]
+
+
 class TestSimulateTicker:
-    """Integration-level test using real yfinance data (may be slow, marks as integration)."""
+    """Integration-level tests using live data when available."""
 
     @pytest.mark.integration
     def test_returns_list_of_dicts(self):
@@ -53,5 +126,4 @@ class TestSimulateTicker:
     def test_pnl_bounded(self):
         trades = _simulate_ticker("MSFT", "2022-01-01", "2022-12-31", capital_slice=5_000)
         for t in trades:
-            # PnL should be finite
             assert np.isfinite(t["pnl"])

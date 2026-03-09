@@ -4,7 +4,6 @@ import smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import List
 
 from src.utils import config
 from src.utils.logger import get_logger
@@ -83,7 +82,7 @@ def _format_html(scan: dict) -> str:
 
     return f"""
     <html><body>
-    <h2>Robinhood Signal Bot — Daily Scan</h2>
+    <h2>Alpaca Signal Bot — Daily Scan</h2>
     <p><b>Date:</b> {date} | <b>Regime:</b> {regime} | <b>VIX:</b> {vix} | <b>Scanned:</b> {total}</p>
     <table border="1" cellpadding="5" cellspacing="0">
         <tr>

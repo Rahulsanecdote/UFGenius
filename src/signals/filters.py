@@ -17,7 +17,8 @@ BANKRUPTCY_Z       = 1.0          # Altman Z-Score bankruptcy floor
 def run_disqualification_filters(
     ticker: str,
     df: pd.DataFrame,
-    fundamental: dict,
+    fundamental_score: dict,
+    fundamentals_raw: dict | None = None,
 ) -> list:
     """
     Return a list of disqualification reasons.
@@ -48,20 +49,32 @@ def run_disqualification_filters(
         reasons.append(f"ILLIQUID: Avg vol {avg_vol_20:,.0f} < {MIN_AVG_VOLUME:,}")
 
     # Altman Z-Score bankruptcy risk
-    z_score = fundamental.get("altman_z_score")
+    z_score = fundamental_score.get("altman_z_score")
     if z_score is not None and z_score < BANKRUPTCY_Z:
         reasons.append(f"BANKRUPTCY_RISK: Z-Score {z_score:.2f} < {BANKRUPTCY_Z}")
 
-    # Market cap
-    mkt_cap = fundamental.get("valuation", {}) if isinstance(fundamental, dict) else {}
-    # Try to get from fundamentals dict directly
-    fd = fundamental  # fundamental module returns nested dict
-    if isinstance(fd, dict):
-        inner = fd  # Could be the full result dict
-        # Look for market cap inside nested valuation or directly
-        # The scorer returns: {"ticker", "piotroski_f_score", ..., "valuation": {...}}
-        # We can't get market cap easily from scorer output; skip this check
-        pass
+    # Market cap from raw fundamentals is canonical source
+    market_cap = None
+    if isinstance(fundamentals_raw, dict):
+        market_cap = fundamentals_raw.get("market_cap")
+    if market_cap is None and isinstance(fundamental_score, dict):
+        market_cap = fundamental_score.get("market_cap")
+        if market_cap is None:
+            market_cap = (
+                fundamental_score.get("raw_fundamentals", {}) or {}
+            ).get("market_cap")
+
+    try:
+        market_cap = float(market_cap) if market_cap is not None else None
+    except (TypeError, ValueError):
+        market_cap = None
+
+    if market_cap is None:
+        reasons.append("UNKNOWN_MARKET_CAP: Unable to verify market cap")
+    elif market_cap < MIN_MARKET_CAP:
+        reasons.append(
+            f"MICRO_CAP: Market cap ${market_cap:,.0f} < ${MIN_MARKET_CAP:,.0f}"
+        )
 
     # 5-day surge (chaser trap)
     if len(df) >= 6:

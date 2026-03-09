@@ -1,8 +1,7 @@
 """Telegram bot notifications — gracefully skipped if token not configured."""
 
-import requests
-
 from src.utils import config
+from src.utils.http import post_form
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -23,17 +22,15 @@ def send_telegram_alert(trade_plan: dict) -> bool:
     message = _format_message(trade_plan)
 
     try:
-        url  = TELEGRAM_API.format(token=config.TELEGRAM_BOT_TOKEN)
-        resp = requests.post(
+        url = TELEGRAM_API.format(token=config.TELEGRAM_BOT_TOKEN)
+        post_form(
             url,
             data={
                 "chat_id":    config.TELEGRAM_CHAT_ID,
                 "text":       message,
                 "parse_mode": "HTML",
             },
-            timeout=10,
         )
-        resp.raise_for_status()
         log.info(f"Telegram alert sent for {trade_plan.get('ticker')}")
         return True
     except Exception as e:

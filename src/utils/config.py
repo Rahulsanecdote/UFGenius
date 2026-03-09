@@ -42,6 +42,25 @@ def env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
+def env_int(key: str, default: int) -> int:
+    try:
+        return int(env(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(key: str, default: float) -> float:
+    try:
+        return float(env(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_bool(key: str, default: bool = False) -> bool:
+    raw = env(key, str(default)).strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
 # Convenience accessors
 ACCOUNT_SIZE: float = float(get("account_size", 10_000))
 RISK_PER_TRADE: float = float(get("risk_per_trade", 0.01))
@@ -76,9 +95,39 @@ NEWSAPI_KEY: str = env("NEWSAPI_KEY")
 ALPHA_VANTAGE_KEY: str = env("ALPHA_VANTAGE_KEY")
 POLYGON_KEY: str = env("POLYGON_KEY")
 FMP_KEY: str = env("FMP_KEY")
+FINNHUB_KEY: str = env("FINNHUB_KEY")
 FRED_API_KEY: str = env("FRED_API_KEY")
 REDDIT_CLIENT_ID: str = env("REDDIT_CLIENT_ID")
 REDDIT_CLIENT_SECRET: str = env("REDDIT_CLIENT_SECRET")
-REDDIT_USER_AGENT: str = env("REDDIT_USER_AGENT", "StockBot/1.0")
+REDDIT_USER_AGENT: str = env("REDDIT_USER_AGENT", "StockBot/1.0 by u/yourusername")
 TELEGRAM_BOT_TOKEN: str = env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: str = env("TELEGRAM_CHAT_ID")
+EMAIL_FROM: str = env("EMAIL_FROM")
+EMAIL_PASSWORD: str = env("EMAIL_PASSWORD")
+EMAIL_TO: str = env("EMAIL_TO")
+
+# Alpaca Official API
+ALPACA_API_KEY: str = env("ALPACA_API_KEY")
+ALPACA_SECRET_KEY: str = env("ALPACA_SECRET_KEY")
+ALPACA_PAPER: bool = env_bool("ALPACA_PAPER", True)
+
+# Network hardening
+REQUEST_TIMEOUT_SEC: float = env_float("REQUEST_TIMEOUT_SEC", 10.0)
+REQUEST_CONNECT_TIMEOUT_SEC: float = env_float("REQUEST_CONNECT_TIMEOUT_SEC", 5.0)
+REQUEST_MAX_RETRIES: int = env_int("REQUEST_MAX_RETRIES", 3)
+REQUEST_BACKOFF_SEC: float = env_float("REQUEST_BACKOFF_SEC", 0.5)
+REQUEST_POOL_SIZE: int = env_int("REQUEST_POOL_SIZE", 20)
+YFINANCE_TIMEOUT_SEC: float = env_float("YFINANCE_TIMEOUT_SEC", 15.0)
+
+# Dashboard hardening
+DASHBOARD_HOST: str = env("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT: int = env_int("DASHBOARD_PORT", 5001)
+DASHBOARD_ALLOW_REMOTE: bool = env_bool("DASHBOARD_ALLOW_REMOTE", False)
+DASHBOARD_API_KEY: str = env("DASHBOARD_API_KEY")
+DASHBOARD_API_KEYS: str = env("DASHBOARD_API_KEYS")
+DASHBOARD_RATE_LIMIT_PER_MIN: int = env_int("DASHBOARD_RATE_LIMIT_PER_MIN", 60)
+DASHBOARD_MAX_ACCOUNT_SIZE: float = env_float("DASHBOARD_MAX_ACCOUNT_SIZE", 10_000_000.0)
+DASHBOARD_MIN_ACCOUNT_SIZE: float = env_float("DASHBOARD_MIN_ACCOUNT_SIZE", 100.0)
+DASHBOARD_RATE_LIMIT_BACKEND: str = env("DASHBOARD_RATE_LIMIT_BACKEND", "sqlite")
+DASHBOARD_RATE_LIMIT_DB_PATH: str = env("DASHBOARD_RATE_LIMIT_DB_PATH", "/tmp/ufgenius_rate_limit.sqlite3")
+DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)

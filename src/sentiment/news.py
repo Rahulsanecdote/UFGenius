@@ -2,7 +2,6 @@
 
 import math
 from datetime import datetime, timedelta
-from typing import Optional
 from urllib.parse import urlparse
 
 from src.utils import config

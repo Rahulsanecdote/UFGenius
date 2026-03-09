@@ -1,19 +1,23 @@
 """Fundamental data fetcher — yfinance .info as primary source."""
 
+from __future__ import annotations
+
+from typing import Any
+
 from src.data.fetcher import fetch_ticker_info
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 
-def fetch_fundamentals(ticker: str) -> dict:
+def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
     """
     Fetch fundamental financial data for a ticker.
 
     Maps yfinance .info keys into a standardised dict.
     Returns a dict with all required fields; missing values default to None.
     """
-    info = fetch_ticker_info(ticker)
+    info = info if info is not None else fetch_ticker_info(ticker)
     if not info:
         return _empty_fundamentals()
 
@@ -31,6 +35,13 @@ def fetch_fundamentals(ticker: str) -> dict:
     market_cap = _get("marketCap")
     shares     = _get("sharesOutstanding")
 
+    liabilities = _get("totalLiab", "totalLiabilities", "totalDebt")
+    total_equity = None
+    if shares is not None and shares > 0:
+        bvps = _get("bookValue")
+        if bvps is not None:
+            total_equity = bvps * shares
+
     return {
         "ticker":        ticker,
         "price":         price,
@@ -47,8 +58,8 @@ def fetch_fundamentals(ticker: str) -> dict:
 
         # Balance Sheet
         "total_assets":        _get("totalAssets"),
-        "total_liabilities":   _get("totalDebt"),
-        "total_equity":        _get("bookValue"),  # per share — multiply by shares
+        "total_liabilities":   liabilities,
+        "total_equity":        total_equity,
         "current_assets":      _get("totalCurrentAssets"),
         "current_liabilities": _get("totalCurrentLiabilities"),
         "retained_earnings":   _get("retainedEarnings"),
