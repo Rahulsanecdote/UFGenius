@@ -10,7 +10,9 @@ Autonomous stock scanner that generates BUY/SELL/HOLD signals, risk-aware trade 
 bot.py                     ← CLI entry point
  dashboard.py              ← Local web dashboard + API
 src/
+├── core/                  ← Canonical typed models + provider contracts
 ├── data/                  ← Market/universe fetch with retry/cache
+│   └── providers/         ← Provider adapters + default registry
 ├── technical/             ← Trend/momentum/volatility/volume indicators
 ├── fundamental/           ← Fundamental fetch + scoring
 ├── sentiment/             ← News/social/insider sentiment

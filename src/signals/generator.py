@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.core.contracts import TickerSnapshotProvider
 from src.fundamental.scorer import calculate_fundamental_score
 from src.macro.regime import detect_market_regime
 from src.sentiment.insider import analyze_insider_activity
@@ -51,6 +52,7 @@ def generate_signal(
     context: SignalContext | None = None,
     price_df: pd.DataFrame | None = None,
     ticker_info: dict | None = None,
+    provider: TickerSnapshotProvider | None = None,
 ) -> dict:
     """
     Run full multi-dimensional analysis and return a signal dict.
@@ -62,7 +64,12 @@ def generate_signal(
     log.info(f"Analyzing {symbol} ...")
 
     if context is None:
-        context = build_signal_context(symbol, price_df=price_df, ticker_info=ticker_info)
+        context = build_signal_context(
+            symbol,
+            price_df=price_df,
+            ticker_info=ticker_info,
+            provider=provider,
+        )
     if context is None or context.price_df.empty or len(context.price_df) < 30:
         return _error_signal(symbol, "Insufficient price data")
 
@@ -174,6 +181,7 @@ def generate_signal(
         "volatility": vol_ind,
         "_df": df,
         "_context": context,
+        "_provider": context.provider,
     }
 
 
