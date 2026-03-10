@@ -32,11 +32,16 @@ def build_signal_context(
     provider: TickerSnapshotProvider | None = None,
 ) -> SignalContext | None:
     symbol = ticker.upper()
+    explicit_provider = provider is not None
 
     if provider is None:
         provider = get_default_ticker_snapshot_provider()
 
-    if provider is not None:
+    # Preserve fast/prefetched scanner path: when caller already has price_df and
+    # did not explicitly request a provider adapter, use legacy local fetch helpers.
+    use_provider = explicit_provider or (price_df is None and ticker_info is None)
+
+    if provider is not None and use_provider:
         snapshot = provider.get_ticker_snapshot(
             symbol,
             period="1y",

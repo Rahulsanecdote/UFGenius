@@ -13,6 +13,7 @@ src/
 ├── core/                  ← Canonical typed models + provider contracts
 ├── data/                  ← Market/universe fetch with retry/cache
 │   └── providers/         ← Provider adapters + default registry
+├── features/              ← Feature registry/store + weighting policies
 ├── technical/             ← Trend/momentum/volatility/volume indicators
 ├── fundamental/           ← Fundamental fetch + scoring
 ├── sentiment/             ← News/social/insider sentiment
@@ -59,6 +60,7 @@ Set API keys as needed. Core environment controls include:
 
 - `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER`
 - `REQUEST_*` and `YFINANCE_TIMEOUT_SEC` for retry/timeout behavior
+- `FEATURE_*` for feature-store TTL/version and optional regime-aware weighting
 - `DASHBOARD_*` for binding/auth/rate limiting
 
 ## CLI Usage
@@ -109,7 +111,7 @@ Backtest now uses portfolio-level accounting with:
 ## Testing
 
 ```bash
-python -m pytest tests/test_technical.py tests/test_signals.py tests/test_fundamental.py tests/test_backtest.py tests/test_scanner.py tests/test_dashboard_api.py tests/test_data_fetcher.py tests/test_security.py tests/test_provider_consistency.py -v
+python -m pytest tests/test_technical.py tests/test_signals.py tests/test_fundamental.py tests/test_backtest.py tests/test_scanner.py tests/test_dashboard_api.py tests/test_data_fetcher.py tests/test_security.py tests/test_provider_consistency.py tests/test_phase2_providers.py tests/test_phase3_features.py -v
 python -m pytest tests -m integration -v
 ```
 

@@ -14,6 +14,8 @@ from __future__ import annotations
 import pandas as pd
 
 from src.core.contracts import TickerSnapshotProvider
+from src.features.policies import resolve_signal_weights
+from src.features.signal_features import compute_signal_features
 from src.fundamental.scorer import calculate_fundamental_score
 from src.macro.regime import detect_market_regime
 from src.sentiment.insider import analyze_insider_activity
@@ -21,11 +23,7 @@ from src.sentiment.news import analyze_news_sentiment
 from src.sentiment.social import analyze_social_sentiment
 from src.signals.context import SignalContext, build_signal_context
 from src.signals.filters import run_disqualification_filters
-from src.technical.momentum import calculate_momentum_indicators, score_momentum
 from src.technical.support_resistance import calculate_support_resistance
-from src.technical.trend import calculate_trend_indicators, score_trend
-from src.technical.volatility import calculate_volatility_indicators
-from src.technical.volume import calculate_volume_indicators, score_volume
 from src.utils import config
 from src.utils.logger import get_logger
 
@@ -95,18 +93,17 @@ def generate_signal(
             df=df,
         )
 
-    # ── Technical ──────────────────────────────────────────────────────────
-    trend_ind = calculate_trend_indicators(df)
-    mom_ind = calculate_momentum_indicators(df)
-    vol_ind = calculate_volatility_indicators(df)
-    volm_ind = calculate_volume_indicators(df)
-
-    trend_score = score_trend(trend_ind, current_price)
-    mom_score = score_momentum(mom_ind)
-    volume_score = score_volume(volm_ind)
-
-    # Combined technical score (trend 65%, momentum 35%)
-    technical_combined = trend_score["score"] * 0.65 + mom_score["score"] * 0.35
+    # ── Technical (Phase 3 feature registry/store) ────────────────────────
+    feature_bundle, feature_cache_hit = compute_signal_features(
+        ticker=symbol,
+        price_df=df,
+        current_price=current_price,
+    )
+    trend_score = feature_bundle["trend_score"]
+    mom_score = feature_bundle["momentum_score"]
+    volume_score = feature_bundle["volume_score"]
+    technical_combined = feature_bundle["technical_combined"]
+    vol_ind = feature_bundle["volatility_indicators"]
 
     # ── Sentiment ──────────────────────────────────────────────────────────
     company_name = context.ticker_info.get("longName", symbol)
@@ -129,7 +126,12 @@ def generate_signal(
     macro_score_norm = (macro_regime.get("regime_score", 0) + 100) / 2
 
     # ── Composite ──────────────────────────────────────────────────────────
-    w = WEIGHTS
+    w = resolve_signal_weights(
+        WEIGHTS,
+        regime=macro_regime.get("regime"),
+        asset_class=(context.instrument.asset_class.value if context.instrument is not None else "equity"),
+        enable_regime_weighting=config.FEATURE_ENABLE_REGIME_WEIGHTING,
+    )
     composite = (
         technical_combined * w.get("technical", 0.35)
         + volume_score["score"] * w.get("volume", 0.20)
@@ -182,6 +184,9 @@ def generate_signal(
         "_df": df,
         "_context": context,
         "_provider": context.provider,
+        "_feature_cache_hit": feature_cache_hit,
+        "_feature_cache_key": feature_bundle.get("feature_cache_key"),
+        "_feature_version": feature_bundle.get("feature_version"),
     }
 
 

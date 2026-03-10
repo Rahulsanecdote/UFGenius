@@ -50,6 +50,17 @@ multi-asset analysis and decision engine with strict separation:
   crypto market data, forex, and macro series.
 - Add fallback provider chain (primary/secondary).
 
+### Implemented
+
+- `src/core/models.py`
+  - Added canonical entities (`Instrument`, `Fundamentals`, `TickerSnapshot`).
+- `src/core/contracts.py`
+  - Added typed provider contracts for OHLCV/info/fundamentals/snapshots.
+- `src/data/providers/*`
+  - Added default yfinance snapshot adapter and provider registry.
+- `src/signals/context.py`, `src/signals/generator.py`
+  - Added provider-injected signal context path.
+
 ## Phase 3: Signal and Feature Store
 
 ### Target files
@@ -63,6 +74,19 @@ multi-asset analysis and decision engine with strict separation:
 - Centralized feature registry (momentum, carry, value, volatility, sentiment).
 - Reusable feature cache with TTL and data-version keys.
 - Regime-aware weighting and per-asset scoring policies.
+
+### Implemented
+
+- `src/features/signal_features.py`
+  - Added centralized feature registry and cache-backed technical feature bundle.
+- `src/features/store.py`
+  - Added TTL + version keyed in-memory feature store with bounded size.
+- `src/features/policies.py`
+  - Added optional regime-aware signal weight policy resolver.
+- `src/signals/generator.py`
+  - Migrated technical computation to registry/store path and added feature metadata.
+- `tests/test_phase3_features.py`
+  - Added cache, policy, and generator integration coverage.
 
 ## Phase 4: Portfolio + Risk Engine
 
