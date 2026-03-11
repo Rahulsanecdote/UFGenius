@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ufgenius-dashboard
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.lock
+    startCommand: gunicorn --bind 0.0.0.0:$PORT wsgi:app
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.2
+      - key: DASHBOARD_ALLOW_REMOTE
+        value: "true"
+      - key: DASHBOARD_TRUST_PROXY
+        value: "true"
+      - key: DASHBOARD_API_KEY
+        generateValue: true

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import dashboard
-from src.utils.security import InMemoryRateLimiter
+from src.utils.security import InMemoryRateLimiter, issue_dashboard_ui_token
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +21,12 @@ def _reset_security_state(monkeypatch):
 @pytest.fixture
 def client():
     return dashboard.app.test_client()
+
+
+def test_healthz_available_without_auth(client):
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "ok"
 
 
 def test_invalid_ticker_rejected(client):
@@ -87,3 +93,24 @@ def test_remote_mode_allows_bearer_or_multi_keys(client, monkeypatch):
 
     assert bearer.status_code == 200
     assert bad.status_code == 401
+
+
+def test_remote_mode_allows_signed_dashboard_ui_token(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
+    monkeypatch.setattr(dashboard, "run_daily_scan", lambda **_kwargs: {"ok": True})
+
+    token = issue_dashboard_ui_token()
+    response = client.get("/api/scan?account_size=10000", headers={"X-Dashboard-Token": token})
+
+    assert response.status_code == 200
+
+
+def test_index_embeds_dashboard_ui_token_when_remote_enabled(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "const API_TOKEN =" in response.get_data(as_text=True)

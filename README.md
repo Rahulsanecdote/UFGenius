@@ -82,13 +82,14 @@ python dashboard.py
 
 Default bind is `127.0.0.1:5001`.
 
-Remote exposure is disabled by default. To enable remote mode safely:
+Remote exposure is disabled by default. For a public single-host deployment:
 
 - set `DASHBOARD_ALLOW_REMOTE=true`
 - set `DASHBOARD_API_KEY` or `DASHBOARD_API_KEYS` (comma-separated)
-- send either:
+- external API clients can send either:
 - `Authorization: Bearer <key>`
 - `X-API-Key: <key>`
+- the built-in browser dashboard now uses a short-lived signed same-origin token automatically, so the frontend still works when remote mode is enabled
 - keep `DASHBOARD_RATE_LIMIT_BACKEND=sqlite` for multi-process shared-store throttling
 - configure `DASHBOARD_RATE_LIMIT_DB_PATH` on persistent storage
 
@@ -97,6 +98,34 @@ Built-in API protections:
 - strict ticker/account-size validation
 - sanitized 4xx/5xx errors (no internal exception leakage)
 - per-IP rate limiting (SQLite shared store by default)
+- short-lived signed browser token for same-origin dashboard requests in remote mode
+
+## Single-Host Deployment
+
+This repository is now prepared to deploy the whole app on one Python host.
+
+Included deployment files:
+
+- `wsgi.py` for WSGI hosts
+- `Procfile` for hosts that read process types
+- `render.yaml` for Render blueprint deploys
+
+Recommended production start command:
+
+```bash
+gunicorn --bind 0.0.0.0:$PORT wsgi:app
+```
+
+Recommended environment for a public deployment:
+
+- `DASHBOARD_ALLOW_REMOTE=true`
+- `DASHBOARD_API_KEY=<strong random secret>`
+- `DASHBOARD_TRUST_PROXY=true`
+- host-managed `PORT` value
+
+Health check endpoint:
+
+- `/healthz`
 
 ## Backtest Model
 

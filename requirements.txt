@@ -19,4 +19,5 @@ beautifulsoup4
 alpaca-py
 lxml
 flask
+gunicorn
 pytest

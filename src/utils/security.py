@@ -10,11 +10,14 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from flask import Request
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+_UI_TOKEN_SALT = "dashboard-ui"
+_UI_TOKEN_SCOPE = "dashboard-ui"
 
 
 class InMemoryRateLimiter:
@@ -100,6 +103,10 @@ def _extract_supplied_token(request: Request) -> str:
     return request.headers.get("X-API-Key", "").strip()
 
 
+def _extract_ui_token(request: Request) -> str:
+    return request.headers.get("X-Dashboard-Token", "").strip()
+
+
 def _configured_tokens() -> list[str]:
     raw_multi = (config.DASHBOARD_API_KEYS or "").strip()
     tokens: list[str] = []
@@ -116,14 +123,46 @@ def _configured_tokens() -> list[str]:
     return unique_tokens
 
 
+def _token_signing_secret() -> str | None:
+    tokens = _configured_tokens()
+    return tokens[0] if tokens else None
+
+
+def _ui_token_serializer() -> URLSafeTimedSerializer | None:
+    secret = _token_signing_secret()
+    if not secret:
+        return None
+    return URLSafeTimedSerializer(secret_key=secret, salt=_UI_TOKEN_SALT)
+
+
+def issue_dashboard_ui_token() -> str | None:
+    serializer = _ui_token_serializer()
+    if serializer is None:
+        return None
+    return serializer.dumps({"scope": _UI_TOKEN_SCOPE})
+
+
+def is_authorized_dashboard_ui_token(token: str) -> bool:
+    serializer = _ui_token_serializer()
+    if serializer is None or not token:
+        return False
+    try:
+        payload = serializer.loads(
+            token,
+            max_age=max(60, int(config.DASHBOARD_UI_TOKEN_TTL_SEC)),
+        )
+    except (BadSignature, SignatureExpired):
+        return False
+    return payload.get("scope") == _UI_TOKEN_SCOPE
+
+
 def is_authorized_request(request: Request) -> bool:
     supplied = _extract_supplied_token(request)
-    if not supplied:
-        return False
-    for token in _configured_tokens():
-        if secrets.compare_digest(supplied, token):
-            return True
-    return False
+    if supplied:
+        for token in _configured_tokens():
+            if secrets.compare_digest(supplied, token):
+                return True
+    return is_authorized_dashboard_ui_token(_extract_ui_token(request))
 
 
 def has_auth_config() -> bool:

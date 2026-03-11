@@ -17,6 +17,7 @@ from src.utils.security import (
     build_rate_limiter,
     has_auth_config,
     is_authorized_request,
+    issue_dashboard_ui_token,
     resolve_client_ip,
 )
 
@@ -25,6 +26,9 @@ app = Flask(__name__)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 _rate_limiter = build_rate_limiter()
+
+if config.DASHBOARD_ALLOW_REMOTE and not has_auth_config():
+    raise RuntimeError("DASHBOARD_ALLOW_REMOTE=true requires DASHBOARD_API_KEY or DASHBOARD_API_KEYS")
 
 # ── HTML template ────────────────────────────────────────────────────────────
 
@@ -197,6 +201,7 @@ HTML = """
 
 <script>
 const $ = id => document.getElementById(id);
+const API_TOKEN = {{ ui_token | tojson }};
 
 function setLoading(on) {
   $('spinner').style.display = on ? 'block' : 'none';
@@ -208,6 +213,12 @@ function showAlert(msg) {
 }
 
 function clearAlert() { $('alertBox').innerHTML = ''; }
+
+function apiFetch(url) {
+  const headers = {};
+  if (API_TOKEN) headers['X-Dashboard-Token'] = API_TOKEN;
+  return fetch(url, { headers });
+}
 
 function scoreColor(s) {
   if (s >= 65) return 'fill-green';
@@ -338,7 +349,7 @@ async function scanTicker() {
 
   setLoading(true); clearAlert();
   try {
-    const res  = await fetch(`/api/scan-ticker?ticker=${ticker}&account_size=${account}`);
+    const res  = await apiFetch(`/api/scan-ticker?ticker=${ticker}&account_size=${account}`);
     const data = await res.json();
     if (data.error) { showAlert(data.error); return; }
 
@@ -371,7 +382,7 @@ async function runFullScan() {
   $('emptyState').style.display = 'none';
 
   try {
-    const res  = await fetch(`/api/scan?account_size=${account}`);
+    const res  = await apiFetch(`/api/scan?account_size=${account}`);
     const data = await res.json();
     renderResults(data);
   } catch(e) {
@@ -384,7 +395,7 @@ async function runFullScan() {
 // Load regime on page load
 (async () => {
   try {
-    const res = await fetch('/api/regime');
+    const res = await apiFetch('/api/regime');
     const r   = await res.json();
     const reg = r.regime || 'NEUTRAL_CHOPPY';
     const bar = $('regimeBar');
@@ -438,6 +449,18 @@ def _parse_ticker(raw_value: str | None) -> tuple[str | None, str | None]:
     return ticker, None
 
 
+def _runtime_host() -> str:
+    if config.env("PORT"):
+        return "0.0.0.0"
+    if config.DASHBOARD_ALLOW_REMOTE:
+        return "0.0.0.0"
+    return config.DASHBOARD_HOST
+
+
+def _runtime_port() -> int:
+    return config.env_int("PORT", config.DASHBOARD_PORT)
+
+
 @app.before_request
 def _api_security_guards():
     if not request.path.startswith("/api/"):
@@ -457,7 +480,13 @@ def _api_security_guards():
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    ui_token = issue_dashboard_ui_token() if config.DASHBOARD_ALLOW_REMOTE else ""
+    return render_template_string(HTML, ui_token=ui_token)
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/api/regime")
@@ -525,17 +554,15 @@ def _clean(obj):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    host = "0.0.0.0" if config.DASHBOARD_ALLOW_REMOTE else "127.0.0.1"
-    port = config.DASHBOARD_PORT
-    if config.DASHBOARD_ALLOW_REMOTE and not has_auth_config():
-        raise SystemExit("DASHBOARD_ALLOW_REMOTE=true requires DASHBOARD_API_KEY or DASHBOARD_API_KEYS")
+    host = _runtime_host()
+    port = _runtime_port()
 
     print("""
 ╔══════════════════════════════════════════════════════╗
 ║         UFGenius — Alpaca Signal Bot                 ║
-║         Dashboard running at http://localhost:5001   ║
+║         Dashboard running at http://localhost:{port:<5} ║
 ║                                                      ║
 ║  ⚠️  NOT FINANCIAL ADVICE — Educational only         ║
 ╚══════════════════════════════════════════════════════╝
-""")
+""".format(port=port))
     app.run(host=host, port=port, debug=False)
