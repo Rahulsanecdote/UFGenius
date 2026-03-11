@@ -489,6 +489,29 @@ def healthz():
     return jsonify({"status": "ok"}), 200
 
 
+@app.route("/api/diagnose")
+def api_diagnose():
+    """Health check — test yfinance connectivity."""
+    try:
+        from src.data.fetcher import diagnose
+        return jsonify(diagnose())
+    except Exception:
+        log.exception("Diagnose endpoint error")
+        return jsonify({"error": "Diagnosis failed"}), 500
+
+
+@app.route("/api/clear-cache")
+def api_clear_cache():
+    """Clear all cached data to force fresh fetches."""
+    try:
+        from src.data.fetcher import clear_data_caches
+        clear_data_caches()
+        return jsonify({"status": "ok", "message": "All caches cleared"})
+    except Exception:
+        log.exception("Clear cache error")
+        return jsonify({"error": "Failed to clear cache"}), 500
+
+
 @app.route("/api/regime")
 def api_regime():
     try:

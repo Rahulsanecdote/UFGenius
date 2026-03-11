@@ -52,9 +52,14 @@ def _compute_regime() -> dict:
     tlt = _download("TLT",  period="3mo")
     gld = _download("GLD",  period="3mo")
 
+    # SPY is required — if we can't get it, fall back to neutral
+    if spy.empty or len(spy) < 50:
+        log.warning("SPY data unavailable or insufficient — falling back to neutral regime")
+        return _fallback_regime()
+
     spy_price   = float(spy["Close"].iloc[-1])
-    spy_sma200  = float(spy["Close"].rolling(200).mean().iloc[-1])
-    spy_sma50   = float(spy["Close"].rolling(50).mean().iloc[-1])
+    spy_sma200  = float(spy["Close"].rolling(200).mean().iloc[-1]) if len(spy) >= 200 else spy_price
+    spy_sma50   = float(spy["Close"].rolling(50).mean().iloc[-1])  if len(spy) >= 50  else spy_price
     current_vix = float(vix["Close"].iloc[-1]) if not vix.empty else 20.0
 
     regime_score = 0

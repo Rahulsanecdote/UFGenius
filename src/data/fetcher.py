@@ -1,7 +1,13 @@
-"""OHLCV data fetcher — yfinance primary, with caching, retry, timeout, and parallel batch fetch."""
+"""
+OHLCV data fetcher — yfinance primary, with caching, retry, timeout,
+and parallel batch fetch.
+
+Compatible with yfinance 0.2.x AND 1.x.
+"""
 
 from __future__ import annotations
 
+import time as _time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Dict, Optional
 
@@ -20,40 +26,98 @@ _BACKOFF = max(0.0, config.REQUEST_BACKOFF_SEC)
 _YF_TIMEOUT = max(1.0, config.YFINANCE_TIMEOUT_SEC)
 _BATCH_WORKERS = 8  # parallel threads for batch fetches
 
+# Detect yfinance major version once at import time
+_YF_VERSION = getattr(yf, "__version__", "0.0.0")
+_YF_MAJOR = int(_YF_VERSION.split(".")[0]) if _YF_VERSION else 0
+log.debug(f"yfinance version: {_YF_VERSION} (major={_YF_MAJOR})")
 
-def _call_with_timeout(fn, *, timeout_sec: float):
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        fut = executor.submit(fn)
-        return fut.result(timeout=timeout_sec)
+
+# ── Low-level fetch helpers ──────────────────────────────────────────────────
+
+def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Flatten MultiIndex columns and title-case names.
+
+    yfinance ≥0.2.40 and all 1.x versions return MultiIndex columns
+    from yf.download() — e.g. ('Close', 'AAPL').  Ticker.history()
+    returns flat columns.  This handles both.
+    """
+    if isinstance(df.columns, pd.MultiIndex):
+        # Try level 0 first (usually the field name)
+        df.columns = df.columns.get_level_values(0)
+    # Normalise to Title Case (Open, High, Low, Close, Volume)
+    df.columns = [str(c).strip().title() for c in df.columns]
+    # De-duplicate in case MultiIndex had repeated field names
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+    return df
 
 
-def _download_ohlcv_once(
-    ticker: str,
+def _download_ohlcv_via_ticker(
+    symbol: str,
     *,
     period: str,
     interval: str,
 ) -> pd.DataFrame:
-    # yfinance supports timeout in some paths; we enforce an upper bound regardless
-    # via a guarded future to avoid hung calls.
-    return _call_with_timeout(
-        lambda: yf.download(
-            ticker,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=True,
-            timeout=_YF_TIMEOUT,
-        ),
-        timeout_sec=_YF_TIMEOUT,
+    """
+    Use yf.Ticker().history() — more reliable across yfinance versions
+    and avoids the MultiIndex quirks of yf.download().
+    """
+    t = yf.Ticker(symbol)
+    df = t.history(period=period, interval=interval, auto_adjust=True)
+    return df
+
+
+def _download_ohlcv_via_download(
+    symbol: str,
+    *,
+    period: str,
+    interval: str,
+) -> pd.DataFrame:
+    """Fallback: use yf.download() if Ticker.history() fails."""
+    kwargs = dict(
+        tickers=symbol,
+        period=period,
+        interval=interval,
+        progress=False,
+        auto_adjust=True,
     )
+    # timeout kwarg only supported in some yfinance versions
+    try:
+        df = yf.download(**kwargs, timeout=_YF_TIMEOUT)
+    except TypeError:
+        df = yf.download(**kwargs)
+    return df
+
+
+def _download_ohlcv_once(
+    symbol: str,
+    *,
+    period: str,
+    interval: str,
+) -> pd.DataFrame:
+    """
+    Try Ticker.history() first (most reliable), fall back to yf.download().
+    """
+    try:
+        df = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
+        if df is not None and not df.empty:
+            return df
+    except Exception as e:
+        log.debug(f"{symbol}: Ticker.history() failed ({e}), trying yf.download()")
+
+    return _download_ohlcv_via_download(symbol, period=period, interval=interval)
 
 
 def _fetch_ticker_info_once(ticker: str) -> dict:
-    return _call_with_timeout(
-        lambda: yf.Ticker(ticker).info,
-        timeout_sec=_YF_TIMEOUT,
-    )
+    t = yf.Ticker(ticker)
+    info = t.info
+    if info is None:
+        return {}
+    return info if isinstance(info, dict) else {}
 
+
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def clear_data_caches() -> None:
     """Clear all on-disk cache entries used by data/fundamental fetch paths."""
@@ -90,27 +154,30 @@ def fetch_ohlcv(
             backoff=_BACKOFF,
         )
     except TimeoutError:
-        log.error(f"{symbol}: OHLCV fetch timed out")
+        log.error(f"{symbol}: OHLCV fetch timed out after {_YF_TIMEOUT}s")
         return pd.DataFrame()
     except Exception as exc:
-        log.error(f"{symbol}: failed to fetch OHLCV after {_MAX_RETRIES + 1} attempts: {exc}")
+        log.error(f"{symbol}: OHLCV fetch failed after {_MAX_RETRIES + 1} attempts: {exc}")
         return pd.DataFrame()
 
-    if df.empty:
-        log.warning(f"{symbol}: empty OHLCV response")
+    if df is None or df.empty:
+        log.warning(f"{symbol}: empty OHLCV response from yfinance {_YF_VERSION}")
         return pd.DataFrame()
 
-    # Flatten MultiIndex columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    # Normalise column names across yfinance versions
+    df = _normalise_columns(df)
 
     required_cols = ["Open", "High", "Low", "Close", "Volume"]
     missing_cols = [c for c in required_cols if c not in df.columns]
     if missing_cols:
-        log.warning(f"{symbol}: OHLCV response missing columns: {missing_cols}")
+        log.warning(f"{symbol}: OHLCV missing columns {missing_cols} (got: {list(df.columns)})")
         return pd.DataFrame()
 
     cleaned = df[required_cols].dropna()
+    if cleaned.empty:
+        log.warning(f"{symbol}: all rows dropped after NaN removal")
+        return pd.DataFrame()
+
     if use_cache:
         cache.set(cache_key, cleaned)
     return cleaned
@@ -198,3 +265,51 @@ def get_current_price(ticker: str) -> Optional[float]:
     if df.empty:
         return None
     return float(df["Close"].iloc[-1])
+
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+def diagnose() -> dict:
+    """
+    Run a quick health check on yfinance connectivity.
+    Call this to debug data issues.
+    """
+    import sys
+
+    results = {
+        "python": sys.version,
+        "yfinance_version": _YF_VERSION,
+        "pandas_version": pd.__version__,
+        "tests": {},
+    }
+
+    for symbol in ["AAPL", "SPY", "^VIX"]:
+        start = _time.time()
+        try:
+            t = yf.Ticker(symbol)
+            df = t.history(period="5d", auto_adjust=True)
+            elapsed = round(_time.time() - start, 2)
+            if df is not None and not df.empty:
+                results["tests"][symbol] = {
+                    "status": "OK",
+                    "rows": len(df),
+                    "columns": list(df.columns),
+                    "last_close": round(float(df["Close"].iloc[-1]), 2),
+                    "elapsed_sec": elapsed,
+                }
+            else:
+                results["tests"][symbol] = {
+                    "status": "EMPTY",
+                    "elapsed_sec": elapsed,
+                }
+        except Exception as e:
+            elapsed = round(_time.time() - start, 2)
+            results["tests"][symbol] = {
+                "status": "ERROR",
+                "error": str(e),
+                "elapsed_sec": elapsed,
+            }
+
+    all_ok = all(t["status"] == "OK" for t in results["tests"].values())
+    results["overall"] = "HEALTHY" if all_ok else "DEGRADED"
+    return results
