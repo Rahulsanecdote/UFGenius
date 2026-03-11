@@ -211,6 +211,8 @@ def scan_single_ticker(ticker: str, account_size: Optional[float] = None) -> dic
     signal = generate_signal(ticker, macro_regime=regime)
 
     if signal["signal"] in ("ERROR", "FILTERED_OUT"):
+        signal["regime"] = regime["regime"]
+        signal["regime_context"] = regime
         return signal
 
     plan = generate_trade_plan(
@@ -222,5 +224,6 @@ def scan_single_ticker(ticker: str, account_size: Optional[float] = None) -> dic
     plan["composite_score"] = signal["score"]
     plan["scores"] = signal.get("scores", {})
     plan["regime"] = regime["regime"]
+    plan["regime_context"] = regime
 
     return plan

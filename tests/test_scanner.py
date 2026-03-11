@@ -94,3 +94,69 @@ def test_run_daily_scan_passes_prefetched_df(monkeypatch):
     result = daily_scan.run_daily_scan(account_size=10_000, max_signals=2, pre_filter=True)
     assert result["total_scanned"] == 2
     assert captured == [("AAA", True), ("BBB", True)]
+
+
+def test_scan_single_ticker_preserves_regime_context(monkeypatch):
+    df = _sample_price_df(80)
+    regime = {
+        "regime": "MILD_BULL",
+        "regime_score": 25,
+        "vix": 18.0,
+        "spy_vs_200": 2.5,
+        "strategy": {"bias": "LONG", "position_size_multiplier": 0.8},
+    }
+
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)
+    monkeypatch.setattr(
+        daily_scan,
+        "generate_signal",
+        lambda ticker, macro_regime=None: {
+            "signal": "BUY",
+            "score": 72,
+            "scores": {"technical": 65},
+            "_df": df,
+        },
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "generate_trade_plan",
+        lambda ticker, signal, account_size=None, df=None: {
+            "ticker": ticker,
+            "entry": {"price": 100},
+            "stop_loss": {"price": 95},
+            "targets": {},
+            "position": {},
+            "reasoning": [],
+        },
+    )
+
+    result = daily_scan.scan_single_ticker("AAPL", account_size=10_000)
+
+    assert result["regime"] == "MILD_BULL"
+    assert result["regime_context"] == regime
+
+
+def test_scan_single_ticker_error_preserves_regime_context(monkeypatch):
+    regime = {
+        "regime": "NEUTRAL_CHOPPY",
+        "regime_score": 0,
+        "strategy": {"bias": "NEUTRAL", "position_size_multiplier": 0.5},
+    }
+
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)
+    monkeypatch.setattr(
+        daily_scan,
+        "generate_signal",
+        lambda ticker, macro_regime=None: {
+            "ticker": ticker,
+            "signal": "ERROR",
+            "score": 0,
+            "reasons": ["Insufficient price data"],
+            "disqualifiers": ["Insufficient price data"],
+        },
+    )
+
+    result = daily_scan.scan_single_ticker("AAPL", account_size=10_000)
+
+    assert result["regime"] == "NEUTRAL_CHOPPY"
+    assert result["regime_context"] == regime

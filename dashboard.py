@@ -118,6 +118,9 @@ HTML = """
     /* Error / alert */
     .alert { background: #2a0d0d; border: 1px solid #f85149; border-radius: 8px;
              padding: 16px; margin-bottom: 24px; color: #f85149; }
+    .alert-details { margin-top: 10px; padding-left: 18px; color: #ffb4a9; }
+    .alert-details li { margin: 4px 0; }
+    .alert-hint { margin-top: 10px; color: #d29922; font-size: 0.84rem; }
 
     /* Scores breakdown */
     .scores-grid { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -212,16 +215,46 @@ function scoreColor(s) {
   return 'fill-red';
 }
 
+function formatScore(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(1) : '0.0';
+}
+
+function collectReasons(plan) {
+  const items = [
+    ...(plan.disqualifiers || []),
+    ...(plan.reasons || []),
+    ...(plan.reasoning || []),
+  ];
+  return [...new Set(items.filter(Boolean))];
+}
+
+function buildSignalAlert(ticker, plan) {
+  const signal = plan.signal || 'UNKNOWN';
+  const score = formatScore(plan.composite_score ?? plan.score ?? 0);
+  const reasons = collectReasons(plan).slice(0, 3);
+  const hasPriceDataIssue = reasons.some(r => String(r).toLowerCase().includes('price data'));
+
+  let html = `Signal for ${ticker}: <strong>${signal}</strong> (score: ${score})`;
+  if (reasons.length) {
+    html += `<ul class="alert-details">${reasons.map(r => `<li>${r}</li>`).join('')}</ul>`;
+  }
+  if (hasPriceDataIssue) {
+    html += `<div class="alert-hint">Market data may be unavailable or rate limited right now. Retry in a few minutes.</div>`;
+  }
+  return html;
+}
+
 function renderCard(plan) {
   const signal  = plan.signal || '?';
   const ticker  = plan.ticker || '?';
-  const score   = (plan.composite_score || 0).toFixed(1);
+  const score   = formatScore(plan.composite_score ?? plan.score ?? 0);
   const entry   = plan.entry   || {};
   const stop    = plan.stop_loss || {};
   const targets = plan.targets || {};
   const pos     = plan.position || {};
   const scores  = plan.scores  || {};
-  const reasons = (plan.reasoning || []).slice(0, 5);
+  const reasons = collectReasons(plan).slice(0, 5);
 
   const chipKeys = ['technical','momentum','volume','sentiment','fundamental','macro'];
   const chips = chipKeys
@@ -311,17 +344,19 @@ async function scanTicker() {
 
     // Wrap single plan into scan-like structure for renderResults
     const sig = data.signal || 'UNKNOWN';
+    const regimeContext = data.regime_context || {};
     const scanlike = {
       scan_date: new Date().toLocaleString(),
-      market_regime: data.regime || '—',
-      regime: {},
+      market_regime: data.regime || regimeContext.regime || '—',
+      regime: regimeContext,
       strong_buys: sig === 'STRONG_BUY' ? [data] : [],
       buys:        sig === 'BUY'         ? [data] : [],
       watch_list:  sig === 'WEAK_BUY'   ? [data] : [],
     };
     renderResults(scanlike);
     if (!['STRONG_BUY','BUY','WEAK_BUY'].includes(sig)) {
-      showAlert(`Signal for ${ticker}: <strong>${sig}</strong> (score: ${data.composite_score || 0})`);
+      $('emptyState').style.display = 'none';
+      showAlert(buildSignalAlert(ticker, data));
     }
   } catch(e) {
     showAlert('Request failed: ' + e.message);
