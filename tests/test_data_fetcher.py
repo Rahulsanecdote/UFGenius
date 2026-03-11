@@ -50,3 +50,35 @@ def test_fetch_ticker_info_uses_cache(monkeypatch):
     two = fetcher.fetch_ticker_info("AAPL")
     assert calls["n"] == 1
     assert one["marketCap"] == two["marketCap"] == 1_000
+
+
+def test_fetch_ticker_info_backfills_market_cap_from_fast_info(monkeypatch):
+    class _FakeFastInfo:
+        def get(self, key, default=None):
+            values = {
+                "market_cap": 2_500_000_000,
+                "shares": 100_000_000,
+                "last_price": 25.0,
+                "currency": "USD",
+                "exchange": "NYSE",
+            }
+            return values.get(key, default)
+
+    class _FakeTicker:
+        def __init__(self):
+            self.fast_info = _FakeFastInfo()
+
+        @property
+        def info(self):
+            return {"longName": "Advance Auto Parts"}
+
+    monkeypatch.setattr(fetcher.yf, "Ticker", lambda _symbol: _FakeTicker())
+
+    info = fetcher._fetch_ticker_info_once("AAP")
+
+    assert info["longName"] == "Advance Auto Parts"
+    assert info["marketCap"] == 2_500_000_000
+    assert info["sharesOutstanding"] == 100_000_000
+    assert info["currentPrice"] == 25.0
+    assert info["currency"] == "USD"
+    assert info["exchange"] == "NYSE"

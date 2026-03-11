@@ -109,12 +109,56 @@ def _download_ohlcv_once(
     return _download_ohlcv_via_download(symbol, period=period, interval=interval)
 
 
+def _merge_fast_info_fields(info: dict, ticker_obj: yf.Ticker, symbol: str) -> dict:
+    """Backfill brittle .info fields from yfinance fast_info when available."""
+    try:
+        fast_info = ticker_obj.fast_info
+    except Exception as exc:
+        log.debug(f"{symbol}: fast_info unavailable ({exc})")
+        return info
+
+    field_map = {
+        "marketCap": ("marketCap", "market_cap"),
+        "sharesOutstanding": ("sharesOutstanding", "shares"),
+        "currentPrice": ("currentPrice", "lastPrice", "last_price"),
+        "regularMarketPrice": ("regularMarketPrice", "lastPrice", "last_price"),
+        "previousClose": ("previousClose", "previous_close"),
+        "currency": ("currency",),
+        "exchange": ("exchange",),
+        "quoteType": ("quoteType", "quote_type"),
+    }
+
+    for target_key, fast_keys in field_map.items():
+        if info.get(target_key) is not None:
+            continue
+        for fast_key in fast_keys:
+            try:
+                value = fast_info.get(fast_key)
+            except Exception as exc:
+                log.debug(f"{symbol}: fast_info[{fast_key}] failed ({exc})")
+                value = None
+            if value is not None:
+                info[target_key] = value
+                break
+    return info
+
+
 def _fetch_ticker_info_once(ticker: str) -> dict:
-    t = yf.Ticker(ticker)
-    info = t.info
+    symbol = ticker.upper()
+    t = yf.Ticker(symbol)
+
+    try:
+        info = t.info
+    except Exception as exc:
+        log.debug(f"{symbol}: Ticker.info failed ({exc}), falling back to fast_info")
+        info = {}
+
     if info is None:
-        return {}
-    return info if isinstance(info, dict) else {}
+        info = {}
+    if not isinstance(info, dict):
+        info = {}
+
+    return _merge_fast_info_fields(dict(info), t, symbol)
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
