@@ -114,6 +114,16 @@ def _analyze_ticker(
         )
         plan["composite_score"] = signal["score"]
         plan["signal"] = signal["signal"]
+        plan["confidence"] = signal.get("confidence", plan.get("confidence", "N/A"))
+        plan["current_price"] = signal.get("current_price")
+        plan["market_cap"] = signal.get("market_cap")
+        plan["raw_composite"] = signal.get("raw_composite")
+        plan["scores"] = signal.get("scores", {})
+        plan["reasons"] = signal.get("reasons", [])
+        plan["disqualifiers"] = signal.get("disqualifiers", [])
+        plan["support_resistance"] = signal.get("support_resistance", {})
+        plan["volatility"] = signal.get("volatility", {})
+        plan["regime"] = regime.get("regime")
         return plan
 
     except Exception as e:
@@ -222,7 +232,14 @@ def scan_single_ticker(ticker: str, account_size: Optional[float] = None) -> dic
         df=signal.get("_df"),
     )
     plan["composite_score"] = signal["score"]
+    plan["current_price"] = signal.get("current_price")
+    plan["market_cap"] = signal.get("market_cap")
+    plan["raw_composite"] = signal.get("raw_composite")
     plan["scores"] = signal.get("scores", {})
+    plan["reasons"] = signal.get("reasons", [])
+    plan["disqualifiers"] = signal.get("disqualifiers", [])
+    plan["support_resistance"] = signal.get("support_resistance", {})
+    plan["volatility"] = signal.get("volatility", {})
     plan["regime"] = regime["regime"]
     plan["regime_context"] = regime
 

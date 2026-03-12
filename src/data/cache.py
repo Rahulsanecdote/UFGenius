@@ -18,8 +18,7 @@ def _cache_path(key: str) -> Path:
     return _CACHE_DIR / f"{h}.pkl"
 
 
-def get(key: str) -> Optional[Any]:
-    p = _cache_path(key)
+def _read_entry(p: Path) -> Optional[dict]:
     if not p.exists():
         return None
     try:
@@ -28,8 +27,28 @@ def get(key: str) -> Optional[Any]:
     except Exception:
         p.unlink(missing_ok=True)
         return None
+    if not isinstance(entry, dict) or "data" not in entry or "expires" not in entry:
+        p.unlink(missing_ok=True)
+        return None
+    return entry
+
+
+def get(key: str) -> Optional[Any]:
+    p = _cache_path(key)
+    entry = _read_entry(p)
+    if entry is None:
+        return None
     if time.time() > entry["expires"]:
         p.unlink(missing_ok=True)
+        return None
+    return entry["data"]
+
+
+def get_stale(key: str) -> Optional[Any]:
+    """Return cached data even if the entry is expired."""
+    p = _cache_path(key)
+    entry = _read_entry(p)
+    if entry is None:
         return None
     return entry["data"]
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 import dashboard
@@ -113,4 +114,38 @@ def test_index_embeds_dashboard_ui_token_when_remote_enabled(client, monkeypatch
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "const API_TOKEN =" in response.get_data(as_text=True)
+    html = response.get_data(as_text=True)
+    assert "const API_TOKEN =" in html
+    assert "Analysis Workspace" in html
+    assert "Provider Health" in html
+
+
+def test_price_history_rejects_invalid_range(client):
+    response = client.get("/api/price-history?ticker=AAPL&range=bad")
+
+    assert response.status_code == 400
+    assert "range" in response.get_json()["error"].lower()
+
+
+def test_price_history_returns_chart_payload(client, monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    sample = pd.DataFrame(
+        {
+            "Open": [10, 11, 12, 13, 14],
+            "High": [11, 12, 13, 14, 15],
+            "Low": [9, 10, 11, 12, 13],
+            "Close": [10, 11, 12, 13, 14],
+            "Volume": [1000, 1100, 1200, 1300, 1400],
+        },
+        index=idx,
+    )
+    monkeypatch.setattr(dashboard, "fetch_ohlcv", lambda *_args, **_kwargs: sample)
+
+    response = client.get("/api/price-history?ticker=AAPL&range=1M")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ticker"] == "AAPL"
+    assert payload["status"] == "READY"
+    assert len(payload["points"]) == 5
+    assert "accessible_summary" in payload["summary"]

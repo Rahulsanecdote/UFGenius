@@ -168,6 +168,14 @@ def clear_data_caches() -> None:
     cache.clear_all()
 
 
+def _fallback_to_stale_cache(cache_key: str, *, symbol: str, label: str):
+    stale = cache.get_stale(cache_key)
+    if stale is not None:
+        log.warning(f"{symbol}: using stale cached {label} due to upstream fetch failure")
+        return stale
+    return None
+
+
 def fetch_ohlcv(
     ticker: str,
     period: str = "1y",
@@ -199,14 +207,17 @@ def fetch_ohlcv(
         )
     except TimeoutError:
         log.error(f"{symbol}: OHLCV fetch timed out after {_YF_TIMEOUT}s")
-        return pd.DataFrame()
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
+        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
     except Exception as exc:
         log.error(f"{symbol}: OHLCV fetch failed after {_MAX_RETRIES + 1} attempts: {exc}")
-        return pd.DataFrame()
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
+        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
     if df is None or df.empty:
         log.warning(f"{symbol}: empty OHLCV response from yfinance {_YF_VERSION}")
-        return pd.DataFrame()
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
+        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
     # Normalise column names across yfinance versions
     df = _normalise_columns(df)
@@ -215,12 +226,14 @@ def fetch_ohlcv(
     missing_cols = [c for c in required_cols if c not in df.columns]
     if missing_cols:
         log.warning(f"{symbol}: OHLCV missing columns {missing_cols} (got: {list(df.columns)})")
-        return pd.DataFrame()
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
+        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
     cleaned = df[required_cols].dropna()
     if cleaned.empty:
         log.warning(f"{symbol}: all rows dropped after NaN removal")
-        return pd.DataFrame()
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
+        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
     if use_cache:
         cache.set(cache_key, cleaned)
@@ -292,15 +305,18 @@ def fetch_ticker_info(ticker: str) -> dict:
         )
         if not isinstance(info, dict):
             log.warning(f"{symbol}: ticker info payload was not a dict")
-            return {}
+            stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
+            return stale if isinstance(stale, dict) else {}
         cache.set(cache_key, info, ttl=3_600 * 6)  # 6-hour TTL for info
         return info
     except TimeoutError:
         log.error(f"{symbol}: ticker info fetch timed out")
-        return {}
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
+        return stale if isinstance(stale, dict) else {}
     except Exception as e:
         log.error(f"{symbol}: failed to fetch info: {e}")
-        return {}
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
+        return stale if isinstance(stale, dict) else {}
 
 
 def get_current_price(ticker: str) -> Optional[float]:
@@ -325,6 +341,7 @@ def diagnose() -> dict:
         "yfinance_version": _YF_VERSION,
         "pandas_version": pd.__version__,
         "tests": {},
+        "fundamentals": {},
     }
 
     for symbol in ["AAPL", "SPY", "^VIX"]:
@@ -354,6 +371,34 @@ def diagnose() -> dict:
                 "elapsed_sec": elapsed,
             }
 
-    all_ok = all(t["status"] == "OK" for t in results["tests"].values())
+    start = _time.time()
+    try:
+        ticker = yf.Ticker("AAPL")
+        info = ticker.info
+        elapsed = round(_time.time() - start, 2)
+        if info and isinstance(info, dict):
+            market_cap = info.get("marketCap")
+            results["fundamentals"] = {
+                "status": "OK",
+                "market_cap": market_cap,
+                "keys": sorted(list(info.keys()))[:12],
+                "elapsed_sec": elapsed,
+            }
+        else:
+            results["fundamentals"] = {
+                "status": "EMPTY",
+                "elapsed_sec": elapsed,
+            }
+    except Exception as e:
+        elapsed = round(_time.time() - start, 2)
+        results["fundamentals"] = {
+            "status": "ERROR",
+            "error": str(e),
+            "elapsed_sec": elapsed,
+        }
+
+    price_ok = all(t["status"] == "OK" for t in results["tests"].values())
+    fundamentals_ok = results["fundamentals"].get("status") == "OK"
+    all_ok = price_ok and fundamentals_ok
     results["overall"] = "HEALTHY" if all_ok else "DEGRADED"
     return results

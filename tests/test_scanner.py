@@ -113,7 +113,15 @@ def test_scan_single_ticker_preserves_regime_context(monkeypatch):
         lambda ticker, macro_regime=None: {
             "signal": "BUY",
             "score": 72,
+            "raw_composite": 74,
+            "confidence": "HIGH",
+            "current_price": 123.45,
+            "market_cap": 10_000_000_000,
             "scores": {"technical": 65},
+            "reasons": ["Above 200 SMA"],
+            "disqualifiers": [],
+            "support_resistance": {"nearest_support": 120},
+            "volatility": {"ATR_14": None},
             "_df": df,
         },
     )
@@ -134,6 +142,9 @@ def test_scan_single_ticker_preserves_regime_context(monkeypatch):
 
     assert result["regime"] == "MILD_BULL"
     assert result["regime_context"] == regime
+    assert result["current_price"] == 123.45
+    assert result["market_cap"] == 10_000_000_000
+    assert result["reasons"] == ["Above 200 SMA"]
 
 
 def test_scan_single_ticker_error_preserves_regime_context(monkeypatch):

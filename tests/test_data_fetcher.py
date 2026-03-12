@@ -35,6 +35,28 @@ def test_fetch_ohlcv_uses_cache(monkeypatch):
     assert not one.empty and not two.empty
 
 
+def test_fetch_ohlcv_falls_back_to_stale_cache_on_fetch_error(monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    stale = pd.DataFrame(
+        {
+            "Open": [1, 2, 3, 4, 5],
+            "High": [1, 2, 3, 4, 5],
+            "Low": [1, 2, 3, 4, 5],
+            "Close": [1, 2, 3, 4, 5],
+            "Volume": [100, 100, 100, 100, 100],
+        },
+        index=idx,
+    )
+
+    monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: stale)
+    monkeypatch.setattr(fetcher, "retry_call", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rate limited")))
+
+    result = fetcher.fetch_ohlcv("AAPL", period="1y", interval="1d")
+
+    assert result.equals(stale)
+
+
 def test_fetch_ticker_info_uses_cache(monkeypatch):
     calls = {"n": 0}
 
@@ -50,6 +72,18 @@ def test_fetch_ticker_info_uses_cache(monkeypatch):
     two = fetcher.fetch_ticker_info("AAPL")
     assert calls["n"] == 1
     assert one["marketCap"] == two["marketCap"] == 1_000
+
+
+def test_fetch_ticker_info_falls_back_to_stale_cache_on_fetch_error(monkeypatch):
+    stale = {"marketCap": 9_000_000_000, "longName": "Stale Corp"}
+
+    monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: stale)
+    monkeypatch.setattr(fetcher, "retry_call", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rate limited")))
+
+    result = fetcher.fetch_ticker_info("AAPL")
+
+    assert result == stale
 
 
 def test_fetch_ticker_info_backfills_market_cap_from_fast_info(monkeypatch):
