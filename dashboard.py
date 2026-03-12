@@ -49,6 +49,9 @@ HTML = '''
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>UFGenius Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-canvas: #07111b;
@@ -85,6 +88,8 @@ HTML = '''
       --radius-pill: 999px;
       --transition-fast: 120ms ease;
       --transition-base: 160ms ease;
+      --font-sans: "DM Sans", "Avenir Next", "Segoe UI", sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", "SFMono-Regular", ui-monospace, monospace;
     }
 
     * { box-sizing: border-box; }
@@ -98,11 +103,14 @@ HTML = '''
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      font-family: var(--font-sans);
       background:
+        linear-gradient(rgba(90, 167, 255, 0.028) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(90, 167, 255, 0.028) 1px, transparent 1px),
         radial-gradient(circle at top left, rgba(79, 140, 255, 0.18), transparent 32%),
         radial-gradient(circle at top right, rgba(31, 191, 117, 0.10), transparent 28%),
         linear-gradient(180deg, #081321 0%, #07111b 48%, #061019 100%);
+      background-size: 44px 44px, 44px 44px, auto, auto, auto;
       color: var(--text-primary);
     }
 
@@ -159,8 +167,8 @@ HTML = '''
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
-      padding: 18px 24px;
+      gap: 18px;
+      padding: 14px 24px;
       border-bottom: 1px solid rgba(58, 77, 105, 0.55);
       background: rgba(7, 17, 27, 0.88);
       backdrop-filter: blur(18px);
@@ -186,25 +194,27 @@ HTML = '''
 
     .eyebrow {
       margin: 0;
+      font-family: var(--font-mono);
       font-size: 12px;
       line-height: 18px;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--text-muted);
     }
 
     .brand-lockup h1 {
       margin: 0;
-      font-size: 24px;
-      line-height: 32px;
-      font-weight: 600;
+      font-size: 22px;
+      line-height: 30px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
       color: var(--text-primary);
     }
 
     .topbar-subtitle {
       color: var(--text-secondary);
-      font-size: 14px;
-      line-height: 20px;
+      font-size: 13px;
+      line-height: 18px;
     }
 
     .topbar-actions {
@@ -315,7 +325,8 @@ HTML = '''
     }
 
     .sync-chip strong {
-      font-size: 14px;
+      font-family: var(--font-mono);
+      font-size: 13px;
       line-height: 20px;
       color: var(--text-primary);
     }
@@ -365,11 +376,11 @@ HTML = '''
     }
 
     .page-shell {
-      width: min(1280px, calc(100% - 32px));
+      width: min(1380px, calc(100% - 32px));
       margin: 0 auto;
-      padding: 28px 0 40px;
+      padding: 18px 0 40px;
       display: grid;
-      gap: 24px;
+      gap: 20px;
     }
 
     .panel {
@@ -385,7 +396,9 @@ HTML = '''
       content: "";
       position: absolute;
       inset: 0;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 32%);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 32%),
+        linear-gradient(90deg, transparent 0%, rgba(90, 167, 255, 0.06) 50%, transparent 100%);
       pointer-events: none;
     }
 
@@ -402,15 +415,16 @@ HTML = '''
       align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      padding: 24px 24px 0;
+      padding: 20px 20px 0;
     }
 
     .panel-heading h2,
     .panel-heading h3 {
       margin: 0;
-      font-size: 20px;
-      line-height: 28px;
-      font-weight: 600;
+      font-size: 18px;
+      line-height: 24px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
     }
 
     .panel-heading p {
@@ -422,39 +436,44 @@ HTML = '''
 
     .overview-grid {
       display: grid;
-      gap: 16px;
-      padding: 24px;
+      gap: 1px;
+      padding: 1px;
       grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-top: 1px solid rgba(58, 77, 105, 0.5);
+      background: rgba(38, 54, 77, 0.52);
     }
 
     .metric-card {
       display: grid;
-      gap: 12px;
-      padding: 18px;
+      gap: 10px;
+      padding: 16px 18px;
       text-align: left;
-      border: 1px solid rgba(58, 77, 105, 0.7);
-      background: linear-gradient(180deg, rgba(20, 32, 51, 0.96), rgba(12, 20, 33, 0.94));
+      border: none;
+      min-height: 142px;
+      background: linear-gradient(180deg, rgba(14, 23, 38, 0.98), rgba(8, 17, 30, 0.98));
       color: var(--text-primary);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
     .metric-value {
-      font-size: 24px;
-      line-height: 32px;
-      font-weight: 600;
+      font-family: var(--font-mono);
+      font-size: 28px;
+      line-height: 34px;
+      font-weight: 700;
+      letter-spacing: -0.04em;
     }
 
     .metric-note {
-      font-size: 14px;
-      line-height: 20px;
+      font-size: 13px;
+      line-height: 18px;
       color: var(--text-secondary);
-      min-height: 40px;
+      min-height: 36px;
     }
 
     .workspace-shell {
-      padding: 24px;
+      padding: 20px;
       display: grid;
-      gap: 20px;
+      gap: 18px;
     }
 
     .analysis-form {
@@ -470,10 +489,12 @@ HTML = '''
     }
 
     .field label {
-      font-size: 13px;
+      font-size: 12px;
       line-height: 18px;
       font-weight: 500;
       color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
     }
 
     .field-input,
@@ -486,6 +507,16 @@ HTML = '''
       color: var(--text-primary);
       padding: 0 14px;
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .field-input,
+    .toolbar-input,
+    .scan-pill,
+    .table-action,
+    .summary-action,
+    .status-chip,
+    .status-pill {
+      font-family: var(--font-mono);
     }
 
     .field-input::placeholder,
@@ -530,7 +561,7 @@ HTML = '''
     .toolbar-row,
     .suggestion-row {
       display: flex;
-      gap: 12px;
+      gap: 10px;
       flex-wrap: wrap;
       align-items: center;
     }
@@ -540,7 +571,7 @@ HTML = '''
       grid-template-columns: auto 1fr;
       gap: 14px;
       align-items: center;
-      padding: 16px 18px;
+      padding: 14px 16px;
       border-radius: var(--radius-md);
       border: 1px solid rgba(58, 77, 105, 0.62);
       background: rgba(16, 35, 58, 0.54);
@@ -568,10 +599,14 @@ HTML = '''
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      min-height: 36px;
       padding: 0 12px;
       border: 1px solid rgba(58, 77, 105, 0.72);
       background: rgba(14, 23, 38, 0.82);
       color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 0.04em;
     }
 
     .chip-button.active {
@@ -600,7 +635,7 @@ HTML = '''
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 0 24px;
+      padding: 0 20px;
     }
 
     .status-chip {
@@ -640,14 +675,15 @@ HTML = '''
     .result-content {
       display: grid;
       gap: 18px;
-      padding: 18px 24px 0;
+      padding: 18px 20px 0;
     }
 
     .result-headline {
       margin: 0;
-      font-size: 28px;
-      line-height: 36px;
-      font-weight: 600;
+      font-size: 26px;
+      line-height: 32px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
     }
 
     .summary-copy {
@@ -747,7 +783,7 @@ HTML = '''
     }
 
     .summary-actions {
-      padding: 0 24px;
+      padding: 0 20px;
     }
 
     .summary-action {
@@ -771,7 +807,7 @@ HTML = '''
     .explain-panel {
       display: grid;
       gap: 12px;
-      padding: 0 24px;
+      padding: 0 20px;
     }
 
     .explain-card {
@@ -791,7 +827,7 @@ HTML = '''
     .factor-list {
       display: grid;
       gap: 12px;
-      padding: 18px 24px 0;
+      padding: 18px 20px 0;
     }
 
     .factor-row {
@@ -889,7 +925,7 @@ HTML = '''
     .chart-body {
       display: grid;
       gap: 18px;
-      padding: 18px 24px 0;
+      padding: 18px 20px 0;
     }
 
     .chart-frame {
@@ -951,7 +987,7 @@ HTML = '''
     .scan-mobile-list {
       display: grid;
       gap: 12px;
-      padding: 18px 24px 0;
+      padding: 18px 20px 0;
     }
 
     .recent-item,
@@ -999,7 +1035,7 @@ HTML = '''
     }
 
     .toolbar-row {
-      padding: 0 24px;
+      padding: 0 20px;
     }
 
     .toolbar-input,
@@ -1013,12 +1049,270 @@ HTML = '''
     }
 
     .scan-feedback {
-      padding: 18px 24px 0;
+      padding: 14px 20px 0;
       color: var(--text-secondary);
     }
 
+    .scan-spotlights {
+      display: grid;
+      gap: 18px;
+      padding: 18px 20px 0;
+    }
+
+    .spotlight-empty {
+      padding: 18px;
+      border-radius: var(--radius-md);
+      border: 1px dashed rgba(58, 77, 105, 0.62);
+      background: rgba(7, 17, 27, 0.54);
+      color: var(--text-secondary);
+    }
+
+    .spotlight-bucket {
+      display: grid;
+      gap: 12px;
+    }
+
+    .spotlight-bucket-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .spotlight-bucket-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 15px;
+      line-height: 20px;
+      font-weight: 700;
+    }
+
+    .spotlight-bucket-title::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: currentColor;
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.08);
+    }
+
+    .spotlight-bucket-title.strong {
+      color: var(--status-success);
+    }
+
+    .spotlight-bucket-title.buy {
+      color: var(--status-info);
+    }
+
+    .spotlight-bucket-title.watch {
+      color: var(--status-warning);
+    }
+
+    .spotlight-bucket-count {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 18px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .spotlight-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .spotlight-card {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(58, 77, 105, 0.7);
+      background:
+        linear-gradient(180deg, rgba(14, 23, 38, 0.95), rgba(7, 17, 27, 0.95)),
+        linear-gradient(135deg, rgba(90, 167, 255, 0.08), transparent 58%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .spotlight-card.strong {
+      border-color: rgba(31, 191, 117, 0.32);
+    }
+
+    .spotlight-card.buy {
+      border-color: rgba(90, 167, 255, 0.34);
+    }
+
+    .spotlight-card.watch {
+      border-color: rgba(242, 184, 75, 0.32);
+    }
+
+    .spotlight-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .spotlight-ticker {
+      display: grid;
+      gap: 4px;
+    }
+
+    .spotlight-ticker strong {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      line-height: 28px;
+      letter-spacing: -0.04em;
+    }
+
+    .spotlight-price {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 18px;
+      color: var(--text-muted);
+    }
+
+    .spotlight-signal {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 16px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 6px 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(58, 77, 105, 0.72);
+      background: rgba(20, 32, 51, 0.88);
+    }
+
+    .spotlight-score-row {
+      display: grid;
+      gap: 8px;
+    }
+
+    .spotlight-score-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      line-height: 18px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .spotlight-score {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      line-height: 28px;
+      font-weight: 700;
+      color: var(--status-success);
+    }
+
+    .spotlight-score.cautious {
+      color: var(--status-warning);
+    }
+
+    .spotlight-score.low {
+      color: var(--status-error);
+    }
+
+    .spotlight-track {
+      height: 6px;
+      border-radius: var(--radius-pill);
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .spotlight-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--status-success), #00e2b2);
+    }
+
+    .spotlight-fill.cautious {
+      background: linear-gradient(90deg, var(--status-warning), #ffd166);
+    }
+
+    .spotlight-fill.low {
+      background: linear-gradient(90deg, var(--status-error), #ff7b90);
+    }
+
+    .spotlight-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .spotlight-stat {
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(58, 77, 105, 0.56);
+      background: rgba(7, 17, 27, 0.78);
+    }
+
+    .spotlight-stat span {
+      display: block;
+      font-size: 11px;
+      line-height: 16px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .spotlight-stat strong {
+      display: block;
+      margin-top: 4px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 20px;
+    }
+
+    .spotlight-levels {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .spotlight-level {
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      background: rgba(7, 17, 27, 0.78);
+      border: 1px solid rgba(58, 77, 105, 0.54);
+    }
+
+    .spotlight-level span {
+      display: block;
+      font-size: 11px;
+      line-height: 16px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .spotlight-level strong {
+      display: block;
+      margin-top: 4px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 20px;
+    }
+
+    .spotlight-reasons {
+      margin: 0;
+      padding-left: 16px;
+      display: grid;
+      gap: 6px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 18px;
+    }
+
     .scan-table-wrap {
-      padding: 18px 24px 0;
+      padding: 18px 20px 0;
       overflow-x: auto;
     }
 
@@ -1067,7 +1361,7 @@ HTML = '''
     }
 
     .scan-empty {
-      padding: 18px 24px 0;
+      padding: 18px 20px 0;
     }
 
     .empty-box {
@@ -1183,6 +1477,7 @@ HTML = '''
       text-align: center;
       font-size: 13px;
       line-height: 18px;
+      font-family: var(--font-mono);
     }
 
     @media (max-width: 1023px) {
@@ -1221,7 +1516,6 @@ HTML = '''
 
       .overview-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        padding: 18px;
       }
 
       .metric-value {
@@ -1244,6 +1538,7 @@ HTML = '''
       .recent-list,
       .health-list,
       .scan-table-wrap,
+      .scan-spotlights,
       .toolbar-row,
       .scan-feedback,
       .scan-empty {
@@ -1253,6 +1548,11 @@ HTML = '''
 
       .workspace-shell {
         padding: 18px;
+      }
+
+      .spotlight-stats,
+      .spotlight-levels {
+        grid-template-columns: 1fr 1fr;
       }
 
       .scan-table-wrap {
@@ -1558,6 +1858,10 @@ HTML = '''
             <h2 id="scanTitle">Full Market Scan</h2>
             <p>Filter, sort, and inspect the strongest opportunities from the latest scan.</p>
           </div>
+        </div>
+
+        <div id="scanSpotlights" class="scan-spotlights">
+          <div class="spotlight-empty">Run a full market scan to surface ranked candidates as compact trading cards.</div>
         </div>
 
         <div class="toolbar-row">
@@ -2390,6 +2694,123 @@ HTML = '''
       return 'Cautious';
     }
 
+    function spotlightBucketModel(key) {
+      if (key === 'strong_buys') {
+        return { title: 'Strong Buy', tone: 'strong' };
+      }
+      if (key === 'buys') {
+        return { title: 'Buy', tone: 'buy' };
+      }
+      return { title: 'Watch List', tone: 'watch' };
+    }
+
+    function spotlightScoreClass(score) {
+      const value = Number(score);
+      if (!Number.isFinite(value) || value < 45) return 'low';
+      if (value < 70) return 'cautious';
+      return '';
+    }
+
+    function summarizeSpotlightReasons(item) {
+      return collectReasons(item).slice(0, 3).map(reason => cleanReason(reason)).filter(Boolean);
+    }
+
+    function signalRowsForSpotlights(scan) {
+      return [
+        ['strong_buys', scan && scan.strong_buys ? scan.strong_buys : []],
+        ['buys', scan && scan.buys ? scan.buys : []],
+        ['watch_list', scan && scan.watch_list ? scan.watch_list : []],
+      ];
+    }
+
+    function renderScanSpotlights(scan) {
+      const root = $('scanSpotlights');
+      const groups = signalRowsForSpotlights(scan).filter(([, items]) => items.length);
+
+      if (!groups.length) {
+        root.innerHTML = '<div class="spotlight-empty">Run a full market scan to surface ranked candidates as compact trading cards.</div>';
+        return;
+      }
+
+      root.innerHTML = groups.map(([key, items]) => {
+        const bucket = spotlightBucketModel(key);
+        return `
+          <section class="spotlight-bucket" aria-label="${escapeHtml(bucket.title)} candidates">
+            <div class="spotlight-bucket-header">
+              <div class="spotlight-bucket-title ${bucket.tone}">${escapeHtml(bucket.title)}</div>
+              <div class="spotlight-bucket-count">${items.length} candidate${items.length === 1 ? '' : 's'}</div>
+            </div>
+            <div class="spotlight-grid">
+              ${items.slice(0, 3).map(item => {
+                const score = Number(item.composite_score ?? item.score ?? 0);
+                const scoreClass = spotlightScoreClass(score);
+                const confidence = item.confidence || 'N/A';
+                const reasons = summarizeSpotlightReasons(item);
+                const entryPrice = item.entry && item.entry.price;
+                const stopPrice = item.stop_loss && item.stop_loss.price;
+                const positionSize = item.position && item.position.shares;
+                return `
+                  <article class="spotlight-card ${bucket.tone}">
+                    <div class="spotlight-head">
+                      <div class="spotlight-ticker">
+                        <strong>${escapeHtml(item.ticker || '?')}</strong>
+                        <div class="spotlight-price">${escapeHtml(formatPrice(item.current_price ?? entryPrice))}</div>
+                      </div>
+                      <div class="spotlight-signal">${escapeHtml(normalizeSignalLabel(item.signal || bucket.title))}</div>
+                    </div>
+                    <div class="spotlight-score-row">
+                      <div class="spotlight-score-meta">
+                        <span>Composite score</span>
+                        <span>${escapeHtml(confidence)}</span>
+                      </div>
+                      <div class="spotlight-score ${scoreClass}">${escapeHtml(formatScore(score))}<span style="color:var(--text-muted);font-size:12px">/100</span></div>
+                      <div class="spotlight-track" aria-hidden="true">
+                        <div class="spotlight-fill ${scoreClass}" style="width:${Math.max(0, Math.min(100, score))}%"></div>
+                      </div>
+                    </div>
+                    <div class="spotlight-stats">
+                      <div class="spotlight-stat">
+                        <span>Regime fit</span>
+                        <strong>${escapeHtml(deriveRegimeFit(item))}</strong>
+                      </div>
+                      <div class="spotlight-stat">
+                        <span>Volume</span>
+                        <strong>${Number.isFinite(Number((item.scores || {}).volume)) ? escapeHtml(formatScore((item.scores || {}).volume)) : '--'}</strong>
+                      </div>
+                      <div class="spotlight-stat">
+                        <span>Sentiment</span>
+                        <strong>${Number.isFinite(Number((item.scores || {}).sentiment)) ? escapeHtml(formatScore((item.scores || {}).sentiment)) : '--'}</strong>
+                      </div>
+                    </div>
+                    <div class="spotlight-levels">
+                      <div class="spotlight-level">
+                        <span>Entry</span>
+                        <strong>${escapeHtml(formatPrice(entryPrice))}</strong>
+                      </div>
+                      <div class="spotlight-level">
+                        <span>Stop</span>
+                        <strong>${escapeHtml(formatPrice(stopPrice))}</strong>
+                      </div>
+                      <div class="spotlight-level">
+                        <span>Position</span>
+                        <strong>${Number.isFinite(Number(positionSize)) ? escapeHtml(String(positionSize)) + ' sh' : '--'}</strong>
+                      </div>
+                      <div class="spotlight-level">
+                        <span>Risk</span>
+                        <strong>${item.position && Number.isFinite(Number(item.position.risk_percent)) ? escapeHtml(formatPercent(item.position.risk_percent, 2)) : '--'}</strong>
+                      </div>
+                    </div>
+                    ${reasons.length ? `<ul class="spotlight-reasons">${reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>` : ''}
+                    <button class="table-action" type="button" data-view-ticker="${escapeHtml(item.ticker || '')}">Open analysis</button>
+                  </article>
+                `;
+              }).join('')}
+            </div>
+          </section>
+        `;
+      }).join('');
+    }
+
     function flattenScanRows(scan) {
       const groups = [
         ...(scan.strong_buys || []),
@@ -2440,6 +2861,7 @@ HTML = '''
 
     function renderScanResults(scan) {
       state.currentScan = scan;
+      renderScanSpotlights(scan);
       const rows = flattenScanRows(scan);
       const filtered = applyScanFilters(rows);
       $('scanFeedback').textContent = rows.length
@@ -2728,6 +3150,7 @@ HTML = '''
         showToast(`Scan complete. ${total} actionable candidates found.`, 'success');
       } catch (error) {
         $('scanFeedback').textContent = `Scan failed: ${error.message}`;
+        renderScanSpotlights(null);
         $('scanTableBody').innerHTML = '';
         $('scanMobileList').innerHTML = '';
         $('scanEmptyState').hidden = false;
