@@ -118,6 +118,8 @@ def test_index_embeds_dashboard_ui_token_when_remote_enabled(client, monkeypatch
     assert "const API_TOKEN =" in html
     assert "Analysis Workspace" in html
     assert "Provider Health" in html
+    assert "[hidden] {" in html
+    assert "display: none !important;" in html
 
 
 def test_price_history_rejects_invalid_range(client):
