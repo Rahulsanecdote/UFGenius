@@ -60,6 +60,7 @@ Set API keys as needed. Core environment controls include:
 
 - `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER`
 - `REQUEST_*` and `YFINANCE_TIMEOUT_SEC` for retry/timeout behavior
+- `ALLOW_PENNY_STOCKS` and `SIGNAL_MIN_PRICE` for minimum price hard filter behavior
 - `FEATURE_*` for feature-store TTL/version and optional regime-aware weighting
 - `DASHBOARD_*` for binding/auth/rate limiting
 

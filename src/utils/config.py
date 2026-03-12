@@ -119,6 +119,10 @@ REQUEST_BACKOFF_SEC: float = env_float("REQUEST_BACKOFF_SEC", 0.5)
 REQUEST_POOL_SIZE: int = env_int("REQUEST_POOL_SIZE", 20)
 YFINANCE_TIMEOUT_SEC: float = env_float("YFINANCE_TIMEOUT_SEC", 15.0)
 
+# Signal filtering
+ALLOW_PENNY_STOCKS: bool = env_bool("ALLOW_PENNY_STOCKS", False)
+SIGNAL_MIN_PRICE: float = max(0.0, env_float("SIGNAL_MIN_PRICE", 1.0))
+
 # Dashboard hardening
 DASHBOARD_HOST: str = env("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_PORT: int = env_int("DASHBOARD_PORT", 5001)

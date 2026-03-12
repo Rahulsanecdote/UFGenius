@@ -2,12 +2,13 @@
 
 import pandas as pd
 
+from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 # Hard stop thresholds
-MIN_PRICE          = 1.0          # Penny stock floor
+MIN_PRICE          = max(0.0, config.SIGNAL_MIN_PRICE)  # Penny stock floor
 MIN_AVG_VOLUME     = 100_000      # Illiquidity floor
 MIN_MARKET_CAP     = 100_000_000  # Nano-cap trap floor
 MAX_5DAY_GAIN_PCT  = 50.0         # Chaser trap ceiling
@@ -26,7 +27,7 @@ def run_disqualification_filters(
 
     Checks:
     ✗ Altman Z-Score < 1.0           (bankruptcy risk)
-    ✗ Price < $1.00                   (penny stock)
+    ✗ Price < configured minimum      (penny stock, optional)
     ✗ Avg 20-day volume < 100K        (illiquid)
     ✗ Already up >50% in 5 days       (chaser trap)
     ✗ Market cap < $100M              (nano-cap)
@@ -39,8 +40,8 @@ def run_disqualification_filters(
 
     current_price = float(df["Close"].iloc[-1])
 
-    # Price floor
-    if current_price < MIN_PRICE:
+    # Price floor (optional; disabled when penny stocks are explicitly allowed)
+    if not config.ALLOW_PENNY_STOCKS and current_price < MIN_PRICE:
         reasons.append(f"PENNY_STOCK: Price ${current_price:.2f} < ${MIN_PRICE}")
 
     # Volume floor

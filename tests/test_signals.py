@@ -89,12 +89,25 @@ class TestDisqualificationFilters:
         )
         assert result == [], f"Expected no disqualifiers, got: {result}"
 
-    def test_penny_stock_flagged(self, penny_df):
+    def test_penny_stock_flagged(self, penny_df, monkeypatch):
+        from src.signals import filters as signal_filters
+
+        monkeypatch.setattr(signal_filters.config, "ALLOW_PENNY_STOCKS", False)
         fundamental = {"altman_z_score": 2.0}
         result = run_disqualification_filters(
             "PENNY", penny_df, fundamental, {"market_cap": 5_000_000_000}
         )
         assert any("PENNY_STOCK" in r for r in result)
+
+    def test_penny_stock_allowed_when_enabled(self, penny_df, monkeypatch):
+        from src.signals import filters as signal_filters
+
+        monkeypatch.setattr(signal_filters.config, "ALLOW_PENNY_STOCKS", True)
+        fundamental = {"altman_z_score": 2.0}
+        result = run_disqualification_filters(
+            "PENNY", penny_df, fundamental, {"market_cap": 5_000_000_000}
+        )
+        assert not any("PENNY_STOCK" in r for r in result)
 
     def test_illiquid_flagged(self, illiquid_df):
         fundamental = {"altman_z_score": 2.5}

@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 
 from src.data import cache, fetcher
+from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -56,7 +57,7 @@ def get_russell1000_tickers() -> List[str]:
 
 def filter_universe(
     tickers: List[str],
-    min_price: float = 1.0,
+    min_price: Optional[float] = None,
     min_avg_volume: int = 200_000,
     min_market_cap: Optional[int] = None,
 ) -> List[str]:
@@ -64,6 +65,9 @@ def filter_universe(
     Apply basic filters to a ticker list using yfinance info.
     This is a slower, accurate filter — use for overnight scans.
     """
+    effective_min_price = 0.0 if config.ALLOW_PENNY_STOCKS else max(0.0, config.SIGNAL_MIN_PRICE)
+    min_price = effective_min_price if min_price is None else min_price
+
     passed = []
     for ticker in tickers:
         try:
