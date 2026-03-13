@@ -43,6 +43,21 @@ SIGNAL_MAP = [
 WEIGHTS = config.SIGNAL_WEIGHTS
 
 
+def _neutral_fundamental_score(ticker: str, fundamentals_raw: dict | None = None) -> dict:
+    raw = fundamentals_raw if isinstance(fundamentals_raw, dict) else {}
+    return {
+        "ticker": ticker,
+        "market_cap": raw.get("market_cap"),
+        "piotroski_f_score": 5,   # Neutral midpoint
+        "piotroski_detail": {},
+        "altman_z_score": None,
+        "valuation": {},
+        "growth": {},
+        "fundamental_score": 50,  # Neutral fallback on 0-100 scale
+        "raw_fundamentals": raw,
+    }
+
+
 def generate_signal(
     ticker: str,
     macro_regime: dict | None = None,
@@ -75,7 +90,15 @@ def generate_signal(
     current_price = float(df["Close"].iloc[-1])
 
     # Fundamental score can be computed from pre-fetched raw fundamentals.
-    fundamental = calculate_fundamental_score(symbol, fundamentals_data=context.fundamentals_raw)
+    try:
+        fundamental = calculate_fundamental_score(symbol, fundamentals_data=context.fundamentals_raw)
+        if not isinstance(fundamental, dict):
+            raise TypeError("fundamental score payload was not a dict")
+        if not isinstance(fundamental.get("fundamental_score"), (int, float)):
+            raise ValueError("fundamental_score missing or non-numeric")
+    except Exception as exc:
+        log.warning(f"{symbol}: fundamental scoring failed ({exc}); using neutral fallback")
+        fundamental = _neutral_fundamental_score(symbol, context.fundamentals_raw)
 
     # Run disqualifiers early to avoid expensive downstream analysis for invalid tickers.
     disqualifiers = run_disqualification_filters(

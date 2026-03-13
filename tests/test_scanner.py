@@ -5,8 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.core.models import Instrument
 from src.scanner import daily_scan
 from src.signals import generator
+from src.signals.context import SignalContext
 
 
 def _sample_price_df(rows: int = 260) -> pd.DataFrame:
@@ -171,3 +173,31 @@ def test_scan_single_ticker_error_preserves_regime_context(monkeypatch):
 
     assert result["regime"] == "NEUTRAL_CHOPPY"
     assert result["regime_context"] == regime
+
+
+def test_generate_signal_falls_back_to_neutral_fundamentals_on_scoring_error(monkeypatch):
+    df = _sample_price_df()
+    ctx = SignalContext(
+        ticker="TEST",
+        price_df=df,
+        ticker_info={"longName": "Test Corp"},
+        fundamentals_raw={"market_cap": 10_000_000_000},
+        instrument=Instrument(symbol="TEST"),
+        provider="unit",
+    )
+
+    def _fund_boom(*_args, **_kwargs):
+        raise RuntimeError("fundamental scorer failed")
+
+    monkeypatch.setattr(generator, "calculate_fundamental_score", _fund_boom)
+    monkeypatch.setattr(generator, "analyze_news_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 55, "signal": "NEUTRAL"})
+    monkeypatch.setattr(generator, "analyze_social_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 50, "signal": "NEUTRAL"})
+    monkeypatch.setattr(generator, "analyze_insider_activity", lambda *_args, **_kwargs: {"insider_score": 50, "flags": [], "signal": "NEUTRAL"})
+    monkeypatch.setattr(generator, "detect_market_regime", lambda: {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "strategy": {"position_size_multiplier": 0.5}})
+
+    result = generator.generate_signal("TEST", context=ctx)
+
+    assert result["ticker"] == "TEST"
+    assert result["signal"] != "ERROR"
+    assert result["scores"]["fundamental"] == 50
+    assert result["market_cap"] == 10_000_000_000
