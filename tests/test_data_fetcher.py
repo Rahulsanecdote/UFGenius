@@ -65,6 +65,7 @@ def test_fetch_ticker_info_uses_cache(monkeypatch):
         return {"marketCap": 1_000}
 
     fetcher.clear_data_caches()
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: False)
     monkeypatch.setattr(fetcher, "_fetch_ticker_info_once", _fake_once)
     monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fn(*a, **kw))
 
@@ -77,6 +78,7 @@ def test_fetch_ticker_info_uses_cache(monkeypatch):
 def test_fetch_ticker_info_falls_back_to_stale_cache_on_fetch_error(monkeypatch):
     stale = {"marketCap": 9_000_000_000, "longName": "Stale Corp"}
 
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: False)
     monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: stale)
     monkeypatch.setattr(fetcher, "retry_call", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rate limited")))
@@ -118,6 +120,97 @@ def test_fetch_ticker_info_backfills_market_cap_from_fast_info(monkeypatch):
     assert info["exchange"] == "NYSE"
 
 
+def test_download_ohlcv_once_prefers_alpaca_over_yfinance(monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    alpaca_df = pd.DataFrame(
+        {
+            "Open": [10, 11, 12],
+            "High": [11, 12, 13],
+            "Low": [9, 10, 11],
+            "Close": [10, 11, 12],
+            "Volume": [1000, 1100, 1200],
+        },
+        index=idx,
+    )
+
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
+    monkeypatch.setattr(fetcher, "_download_ohlcv_via_alpaca", lambda *_args, **_kwargs: alpaca_df)
+    monkeypatch.setattr(
+        fetcher,
+        "_download_ohlcv_via_ticker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("yfinance ticker path should not run")),
+    )
+
+    result = fetcher._download_ohlcv_once("AAPL", period="1y", interval="1d")
+
+    assert result.equals(alpaca_df)
+
+
+def test_download_ohlcv_once_falls_back_to_yfinance_when_alpaca_fails(monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    yf_df = pd.DataFrame(
+        {
+            "Open": [20, 21, 22],
+            "High": [21, 22, 23],
+            "Low": [19, 20, 21],
+            "Close": [20, 21, 22],
+            "Volume": [2000, 2100, 2200],
+        },
+        index=idx,
+    )
+
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
+    monkeypatch.setattr(
+        fetcher,
+        "_download_ohlcv_via_alpaca",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("alpaca unavailable")),
+    )
+    monkeypatch.setattr(fetcher, "_download_ohlcv_via_ticker", lambda *_args, **_kwargs: yf_df)
+
+    result = fetcher._download_ohlcv_once("AAPL", period="1y", interval="1d")
+
+    assert result.equals(yf_df)
+
+
+def test_fetch_ticker_info_prefers_alpaca_primary(monkeypatch):
+    fetcher.clear_data_caches()
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
+    monkeypatch.setattr(fetcher, "_fetch_ticker_info_via_alpaca_once", lambda *_args, **_kwargs: {"longName": "Alpaca Inc"})
+    monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fn(*a, **kw))
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_ticker_info_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("yfinance fallback should not run")),
+    )
+
+    result = fetcher.fetch_ticker_info("AAPL")
+
+    assert result["longName"] == "Alpaca Inc"
+
+
+def test_fetch_ticker_info_falls_back_to_yfinance_when_alpaca_fails(monkeypatch):
+    calls = {"n": 0}
+
+    def _fake_yf(*_args, **_kwargs):
+        calls["n"] += 1
+        return {"marketCap": 1_500_000_000}
+
+    fetcher.clear_data_caches()
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_ticker_info_via_alpaca_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("alpaca down")),
+    )
+    monkeypatch.setattr(fetcher, "_fetch_ticker_info_once", _fake_yf)
+    monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fn(*a, **kw))
+
+    result = fetcher.fetch_ticker_info("AAPL")
+
+    assert result["marketCap"] == 1_500_000_000
+    assert calls["n"] == 1
+
+
 def test_get_fundamentals_returns_empty_dict_when_provider_returns_none(monkeypatch):
     monkeypatch.setattr(fetcher, "fetch_ticker_info", lambda *_args, **_kwargs: None)
 
@@ -156,14 +249,7 @@ def _mock_diagnose_price_history(monkeypatch):
         index=idx,
     )
 
-    class _FakeTicker:
-        def __init__(self, _symbol):
-            self.symbol = _symbol
-
-        def history(self, **_kwargs):
-            return sample
-
-    monkeypatch.setattr(fetcher.yf, "Ticker", _FakeTicker)
+    monkeypatch.setattr(fetcher, "fetch_ohlcv", lambda *_args, **_kwargs: sample)
 
 
 def test_diagnose_marks_fundamentals_ok_when_get_fundamentals_returns_dict(monkeypatch):
