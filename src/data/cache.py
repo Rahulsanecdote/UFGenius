@@ -33,6 +33,35 @@ def _read_entry(p: Path) -> Optional[dict]:
     return entry
 
 
+def get_metadata(key: str, allow_expired: bool = True) -> Optional[dict]:
+    """Return metadata for a cache key, including age and fetched timestamp."""
+    p = _cache_path(key)
+    entry = _read_entry(p)
+    if entry is None:
+        return None
+
+    now = time.time()
+    is_expired = now > entry["expires"]
+    if is_expired and not allow_expired:
+        p.unlink(missing_ok=True)
+        return None
+
+    fetched_at = entry.get("fetched_at")
+    if not isinstance(fetched_at, (int, float)):
+        try:
+            fetched_at = p.stat().st_mtime
+        except Exception:
+            fetched_at = now
+
+    fetched_at = float(fetched_at)
+    return {
+        "fetched_at": fetched_at,
+        "expires": float(entry["expires"]),
+        "age_sec": max(0.0, now - fetched_at),
+        "is_expired": is_expired,
+    }
+
+
 def get(key: str) -> Optional[Any]:
     p = _cache_path(key)
     entry = _read_entry(p)
@@ -55,8 +84,9 @@ def get_stale(key: str) -> Optional[Any]:
 
 def set(key: str, data: Any, ttl: int = DEFAULT_TTL) -> None:
     p = _cache_path(key)
+    now = time.time()
     with open(p, "wb") as f:
-        pickle.dump({"data": data, "expires": time.time() + ttl}, f)
+        pickle.dump({"data": data, "expires": now + ttl, "fetched_at": now}, f)
     _enforce_size_limit()
 
 

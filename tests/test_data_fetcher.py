@@ -199,3 +199,45 @@ def test_diagnose_handles_get_fundamentals_exception_as_error(monkeypatch):
     assert result["fundamentals"]["status"] == "ERROR"
     assert "provider exploded" in result["fundamentals"]["error"]
     assert result["overall"] == "DEGRADED"
+
+
+def test_get_critical_cache_freshness_flags_stale_symbol(monkeypatch):
+    def _fake_meta(key, allow_expired=True):
+        data = {
+            "info:AAPL": {"age_sec": 1200, "is_expired": False},
+            "ohlcv:SPY:1y:1d": {"age_sec": 7500, "is_expired": False},
+            "ohlcv:^VIX:3mo:1d": {"age_sec": 900, "is_expired": False},
+        }
+        return data.get(key)
+
+    monkeypatch.setattr(fetcher.cache, "get_metadata", _fake_meta)
+
+    freshness = fetcher.get_critical_cache_freshness(max_age_sec=3600)
+
+    assert freshness["any_critical_stale"] is True
+    assert freshness["symbols"]["SPY"]["is_stale"] is True
+    assert freshness["symbols"]["AAPL"]["is_stale"] is False
+    assert freshness["max_age_human"] == "2h 05m"
+
+
+def test_diagnose_includes_cache_freshness_payload(monkeypatch):
+    _mock_diagnose_price_history(monkeypatch)
+    monkeypatch.setattr(fetcher, "get_fundamentals", lambda *_args, **_kwargs: {"marketCap": 5_000_000_000})
+    monkeypatch.setattr(
+        fetcher,
+        "get_critical_cache_freshness",
+        lambda *_args, **_kwargs: {
+            "symbols": {},
+            "stale_threshold_sec": 3600,
+            "any_stale": True,
+            "any_critical_stale": True,
+            "max_age_sec": 7200,
+            "max_age_human": "2h 00m",
+        },
+    )
+
+    result = fetcher.diagnose()
+
+    assert result["overall"] == "HEALTHY"
+    assert result["cache_freshness"]["any_critical_stale"] is True
+    assert result["cache_freshness"]["max_age_human"] == "2h 00m"

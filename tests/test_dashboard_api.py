@@ -152,3 +152,24 @@ def test_price_history_returns_chart_payload(client, monkeypatch):
     assert payload["status"] == "READY"
     assert len(payload["points"]) == 5
     assert "accessible_summary" in payload["summary"]
+
+
+def test_regime_endpoint_includes_cache_freshness(client, monkeypatch):
+    monkeypatch.setattr(
+        dashboard,
+        "detect_market_regime",
+        lambda: {"regime": "NEUTRAL_CHOPPY", "strategy": {"bias": "NEUTRAL"}, "flags": []},
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "get_regime_cache_freshness",
+        lambda **_kwargs: {"any_regime_stale": True, "max_age_human": "2h 30m"},
+    )
+
+    response = client.get("/api/regime")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["regime"] == "NEUTRAL_CHOPPY"
+    assert payload["cache_freshness"]["any_regime_stale"] is True
+    assert payload["cache_freshness"]["max_age_human"] == "2h 30m"

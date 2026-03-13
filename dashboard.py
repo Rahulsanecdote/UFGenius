@@ -12,7 +12,12 @@ import re
 import pandas as pd
 from flask import Flask, jsonify, render_template_string, request
 
-from src.data.fetcher import clear_data_caches, diagnose, fetch_ohlcv
+from src.data.fetcher import (
+    clear_data_caches,
+    diagnose,
+    fetch_ohlcv,
+    get_regime_cache_freshness,
+)
 from src.macro.regime import detect_market_regime
 from src.scanner.daily_scan import run_daily_scan, scan_single_ticker
 from src.utils import config
@@ -2570,9 +2575,13 @@ HTML = '''
       state.currentRegime = regime;
       const regimeLabel = normalizeSignalLabel(regime && regime.regime);
       $('regimeLabel').textContent = regime && regime.regime ? regimeLabel : '--';
-      $('regimeNote').textContent = regime && regime.flags && regime.flags.length
+      const baseRegimeNote = regime && regime.flags && regime.flags.length
         ? cleanReason(regime.flags[0])
         : 'Regime explanation unavailable.';
+      const freshness = regime && regime.cache_freshness;
+      const dataAge = freshness && freshness.max_age_human ? freshness.max_age_human : 'Unknown';
+      const staleTag = freshness && freshness.any_regime_stale ? 'Stale cache > 1h' : 'Fresh cache';
+      $('regimeNote').textContent = `${baseRegimeNote} • Data age: ${dataAge} (${staleTag}).`;
 
       $('vixLabel').textContent = regime && Number.isFinite(Number(regime.vix))
         ? Number(regime.vix).toFixed(1)
@@ -2611,15 +2620,21 @@ HTML = '''
         return { className: 'status-stale', label: 'Stale', narrative: 'Provider diagnostics are older than five minutes.' };
       }
 
-      if (payload.overall === 'HEALTHY') {
-        return { className: 'status-healthy', label: 'Connected', narrative: 'Price and fundamentals look healthy.' };
-      }
-
       const fundamentalsError = payload.fundamentals && payload.fundamentals.status !== 'OK';
       const testStatuses = Object.values(payload.tests || {}).map(item => item.status);
       const anyPriceSuccess = testStatuses.some(status => status === 'OK');
       if (!anyPriceSuccess && fundamentalsError) {
         return { className: 'status-down', label: 'Down', narrative: 'Both price history and fundamentals are failing.' };
+      }
+
+      const cacheFreshness = payload.cache_freshness || {};
+      if (cacheFreshness.any_critical_stale) {
+        const ageText = cacheFreshness.max_age_human || 'unknown';
+        return { className: 'status-degraded', label: 'Degraded', narrative: `Critical cache data is stale (oldest age ${ageText}).` };
+      }
+
+      if (payload.overall === 'HEALTHY') {
+        return { className: 'status-healthy', label: 'Connected', narrative: 'Price and fundamentals look healthy.' };
       }
       return { className: 'status-degraded', label: 'Degraded', narrative: 'Some provider checks are failing or incomplete.' };
     }
@@ -2644,6 +2659,7 @@ HTML = '''
 
       const tests = payload.tests || {};
       const fundamentals = payload.fundamentals || {};
+      const cacheFreshness = payload.cache_freshness || {};
       const priceRows = Object.entries(tests).map(([symbol, item]) => `
         <div class="health-item">
           <strong>${escapeHtml(symbol)} price feed: ${escapeHtml(item.status || 'UNKNOWN')}</strong>
@@ -2654,12 +2670,19 @@ HTML = '''
       const fundamentalsSummary = fundamentals.status === 'OK'
         ? `Market cap ${formatCurrency(fundamentals.market_cap)}`
         : (fundamentals.error || 'Fundamental payload unavailable.');
+      const freshnessSummary = cacheFreshness.max_age_human
+        ? `Oldest critical cache age ${cacheFreshness.max_age_human}${cacheFreshness.any_critical_stale ? ' (over 1h threshold)' : ''}`
+        : 'Critical cache age unavailable.';
 
       healthList.innerHTML = `
         ${priceRows}
         <div class="health-item">
           <strong>Fundamentals: ${escapeHtml(fundamentals.status || 'UNKNOWN')}</strong>
           <span>${escapeHtml(fundamentalsSummary)}</span>
+        </div>
+        <div class="health-item">
+          <strong>Cache freshness: ${escapeHtml(cacheFreshness.any_critical_stale ? 'STALE' : 'OK')}</strong>
+          <span>${escapeHtml(freshnessSummary)}</span>
         </div>
         <div class="health-item">
           <strong>Sentiment services: External</strong>
@@ -3105,7 +3128,8 @@ HTML = '''
         state.providerHealth = {
           overall: 'DEGRADED',
           tests: {},
-          fundamentals: { status: 'ERROR', error: error.message }
+          fundamentals: { status: 'ERROR', error: error.message },
+          cache_freshness: { any_critical_stale: false, max_age_human: 'Unknown' }
         };
         state.providerCheckedAt = new Date().toISOString();
         renderProviderHealth();
@@ -3610,6 +3634,7 @@ def api_regime():
     try:
         regime = detect_market_regime()
         regime.pop("_df", None)
+        regime["cache_freshness"] = get_regime_cache_freshness(max_age_sec=3600)
         return jsonify(regime)
     except Exception:
         log.exception("Regime endpoint error")

@@ -25,6 +25,20 @@ _MAX_RETRIES = max(0, config.REQUEST_MAX_RETRIES)
 _BACKOFF = max(0.0, config.REQUEST_BACKOFF_SEC)
 _YF_TIMEOUT = max(1.0, config.YFINANCE_TIMEOUT_SEC)
 _BATCH_WORKERS = 8  # parallel threads for batch fetches
+_STALE_CACHE_THRESHOLD_SEC = 3_600
+
+_CRITICAL_CACHE_KEYS = {
+    "AAPL": "info:AAPL",
+    "SPY": "ohlcv:SPY:1y:1d",
+    "^VIX": "ohlcv:^VIX:3mo:1d",
+}
+
+_REGIME_CACHE_KEYS = {
+    "SPY": "ohlcv:SPY:1y:1d",
+    "^VIX": "ohlcv:^VIX:3mo:1d",
+    "TLT": "ohlcv:TLT:3mo:1d",
+    "GLD": "ohlcv:GLD:3mo:1d",
+}
 
 # Detect yfinance major version once at import time
 _YF_VERSION = getattr(yf, "__version__", "0.0.0")
@@ -355,6 +369,79 @@ def get_current_price(ticker: str) -> Optional[float]:
     return float(df["Close"].iloc[-1])
 
 
+def _format_cache_age(age_sec: float | None) -> str:
+    if age_sec is None:
+        return "Unknown"
+    total = int(max(0, age_sec))
+    hours, remainder = divmod(total, 3600)
+    minutes = remainder // 60
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m"
+
+
+def _cache_freshness_for_keys(
+    symbol_to_key: dict[str, str],
+    *,
+    stale_threshold_sec: int = _STALE_CACHE_THRESHOLD_SEC,
+) -> dict:
+    symbols: dict[str, dict] = {}
+    max_age_sec: float | None = None
+    any_stale = False
+
+    for symbol, cache_key in symbol_to_key.items():
+        meta = cache.get_metadata(cache_key, allow_expired=True)
+        age_sec: float | None = None
+        is_expired = False
+        has_cache = meta is not None
+
+        if isinstance(meta, dict):
+            raw_age = meta.get("age_sec")
+            if isinstance(raw_age, (int, float)):
+                age_sec = float(raw_age)
+            is_expired = bool(meta.get("is_expired"))
+
+        is_stale = age_sec is not None and age_sec > stale_threshold_sec
+        any_stale = any_stale or is_stale
+        if age_sec is not None and (max_age_sec is None or age_sec > max_age_sec):
+            max_age_sec = age_sec
+
+        symbols[symbol] = {
+            "cache_key": cache_key,
+            "has_cache": has_cache,
+            "is_expired": is_expired,
+            "is_stale": is_stale,
+            "age_sec": round(age_sec, 2) if age_sec is not None else None,
+            "age_human": _format_cache_age(age_sec),
+        }
+
+    return {
+        "symbols": symbols,
+        "stale_threshold_sec": stale_threshold_sec,
+        "any_stale": any_stale,
+        "max_age_sec": round(max_age_sec, 2) if max_age_sec is not None else None,
+        "max_age_human": _format_cache_age(max_age_sec),
+    }
+
+
+def get_critical_cache_freshness(max_age_sec: int = _STALE_CACHE_THRESHOLD_SEC) -> dict:
+    snapshot = _cache_freshness_for_keys(
+        _CRITICAL_CACHE_KEYS,
+        stale_threshold_sec=max_age_sec,
+    )
+    snapshot["any_critical_stale"] = snapshot["any_stale"]
+    return snapshot
+
+
+def get_regime_cache_freshness(max_age_sec: int = _STALE_CACHE_THRESHOLD_SEC) -> dict:
+    snapshot = _cache_freshness_for_keys(
+        _REGIME_CACHE_KEYS,
+        stale_threshold_sec=max_age_sec,
+    )
+    snapshot["any_regime_stale"] = snapshot["any_stale"]
+    return snapshot
+
+
 # ── Diagnostics ──────────────────────────────────────────────────────────────
 
 def diagnose() -> dict:
@@ -432,4 +519,16 @@ def diagnose() -> dict:
     fundamentals_ok = results["fundamentals"].get("status") == "OK"
     all_ok = price_ok and fundamentals_ok
     results["overall"] = "HEALTHY" if all_ok else "DEGRADED"
+    try:
+        results["cache_freshness"] = get_critical_cache_freshness()
+    except Exception as exc:
+        log.debug(f"diagnose: cache freshness snapshot failed ({exc})")
+        results["cache_freshness"] = {
+            "symbols": {},
+            "stale_threshold_sec": _STALE_CACHE_THRESHOLD_SEC,
+            "any_stale": False,
+            "any_critical_stale": False,
+            "max_age_sec": None,
+            "max_age_human": "Unknown",
+        }
     return results
