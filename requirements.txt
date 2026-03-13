@@ -2,7 +2,7 @@
 # Install with constraints for deterministic resolution:
 #   python -m pip install -r requirements.txt -c constraints.txt
 
-yfinance
+yfinance>=0.2.54,<1.0
 pandas
 numpy
 vaderSentiment
