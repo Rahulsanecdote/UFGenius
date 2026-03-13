@@ -81,7 +81,12 @@ def test_fetch_ticker_info_falls_back_to_stale_cache_on_fetch_error(monkeypatch)
     monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: False)
     monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: stale)
-    monkeypatch.setattr(fetcher, "retry_call", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rate limited")))
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_ticker_info_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("rate limited")),
+    )
+    monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fn(*a, **kw))
 
     result = fetcher.fetch_ticker_info("AAPL")
 
@@ -211,6 +216,30 @@ def test_fetch_ticker_info_falls_back_to_yfinance_when_alpaca_fails(monkeypatch)
     assert calls["n"] == 1
 
 
+def test_fetch_ticker_info_does_not_cache_empty_payload(monkeypatch):
+    calls = {"fetch": 0, "cache_set": 0}
+
+    def _empty_info(*_args, **_kwargs):
+        calls["fetch"] += 1
+        return {}
+
+    fetcher.clear_data_caches()
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: False)
+    monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fetcher.cache, "set", lambda *_args, **_kwargs: calls.__setitem__("cache_set", calls["cache_set"] + 1))
+    monkeypatch.setattr(fetcher, "_fetch_ticker_info_once", _empty_info)
+    monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fn(*a, **kw))
+
+    one = fetcher.fetch_ticker_info("AAPL")
+    two = fetcher.fetch_ticker_info("AAPL")
+
+    assert one == {}
+    assert two == {}
+    assert calls["fetch"] == 2
+    assert calls["cache_set"] == 0
+
+
 def test_get_fundamentals_returns_empty_dict_when_provider_returns_none(monkeypatch):
     monkeypatch.setattr(fetcher, "fetch_ticker_info", lambda *_args, **_kwargs: None)
 
@@ -249,7 +278,14 @@ def _mock_diagnose_price_history(monkeypatch):
         index=idx,
     )
 
-    monkeypatch.setattr(fetcher, "fetch_ohlcv", lambda *_args, **_kwargs: sample)
+    monkeypatch.setattr(
+        fetcher,
+        "_probe_ohlcv_live",
+        lambda *_args, **_kwargs: (
+            sample,
+            {"status": "OK", "source": "mock", "reason": None, "provider_failures": []},
+        ),
+    )
 
 
 def test_diagnose_marks_fundamentals_ok_when_get_fundamentals_returns_dict(monkeypatch):
@@ -265,10 +301,24 @@ def test_diagnose_marks_fundamentals_ok_when_get_fundamentals_returns_dict(monke
 def test_diagnose_marks_fundamentals_empty_when_get_fundamentals_returns_empty_dict(monkeypatch):
     _mock_diagnose_price_history(monkeypatch)
     monkeypatch.setattr(fetcher, "get_fundamentals", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_ticker_info_with_diagnostics",
+        lambda *_args, **_kwargs: (
+            {},
+            {
+                "status": "EMPTY",
+                "source": None,
+                "reason": "ALL_PROVIDERS_FAILED_OR_EMPTY",
+                "provider_failures": [],
+            },
+        ),
+    )
 
     result = fetcher.diagnose()
 
     assert result["fundamentals"]["status"] == "EMPTY"
+    assert result["fundamentals"]["reason"] == "ALL_PROVIDERS_FAILED_OR_EMPTY"
     assert result["overall"] == "DEGRADED"
 
 
@@ -285,6 +335,42 @@ def test_diagnose_handles_get_fundamentals_exception_as_error(monkeypatch):
     assert result["fundamentals"]["status"] == "ERROR"
     assert "provider exploded" in result["fundamentals"]["error"]
     assert result["overall"] == "DEGRADED"
+
+
+def test_diagnose_reports_explicit_price_failure_reason(monkeypatch):
+    monkeypatch.setattr(
+        fetcher,
+        "_probe_ohlcv_live",
+        lambda *_args, **_kwargs: (
+            pd.DataFrame(),
+            {
+                "status": "EMPTY",
+                "source": None,
+                "reason": "ALL_PROVIDERS_FAILED_OR_EMPTY",
+                "provider_failures": [{"provider": "yfinance_ticker", "reason": "RATE_LIMITED"}],
+            },
+        ),
+    )
+    monkeypatch.setattr(fetcher, "get_fundamentals", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_ticker_info_with_diagnostics",
+        lambda *_args, **_kwargs: (
+            {},
+            {
+                "status": "EMPTY",
+                "source": None,
+                "reason": "ALL_PROVIDERS_FAILED_OR_EMPTY",
+                "provider_failures": [{"provider": "yfinance", "reason": "RATE_LIMITED"}],
+            },
+        ),
+    )
+
+    result = fetcher.diagnose()
+
+    assert result["tests"]["AAPL"]["status"] == "EMPTY"
+    assert result["tests"]["AAPL"]["reason"] == "ALL_PROVIDERS_FAILED_OR_EMPTY"
+    assert result["tests"]["AAPL"]["provider_failures"][0]["reason"] == "RATE_LIMITED"
 
 
 def test_get_critical_cache_freshness_flags_stale_symbol(monkeypatch):

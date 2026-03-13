@@ -130,6 +130,47 @@ def _as_float(value) -> float | None:
         return None
 
 
+def _is_nonempty_dict(payload) -> bool:
+    return isinstance(payload, dict) and bool(payload)
+
+
+def _classify_provider_exception(exc: Exception) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
+        return "TIMEOUT"
+    if "429" in text or "too many requests" in text or "rate limit" in text:
+        return "RATE_LIMITED"
+    if "401" in text or "403" in text or "unauthorized" in text or "forbidden" in text:
+        return "AUTH_ERROR"
+    if "not configured" in text:
+        return "NOT_CONFIGURED"
+    return "PROVIDER_ERROR"
+
+
+def _provider_failure(provider: str, reason: str, detail: str | None = None) -> dict:
+    item = {"provider": provider, "reason": reason}
+    if detail:
+        item["detail"] = detail[:240]
+    return item
+
+
+def _validate_ohlcv_frame(df: pd.DataFrame | None) -> tuple[pd.DataFrame, str | None]:
+    """Normalize and validate OHLCV payload shape."""
+    if df is None or df.empty:
+        return pd.DataFrame(), "EMPTY_PAYLOAD"
+
+    normalized = _normalise_columns(df.copy())
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    missing_cols = [c for c in required_cols if c not in normalized.columns]
+    if missing_cols:
+        return pd.DataFrame(), f"MISSING_COLUMNS:{','.join(missing_cols)}"
+
+    cleaned = normalized[required_cols].dropna()
+    if cleaned.empty:
+        return pd.DataFrame(), "EMPTY_AFTER_NA_DROP"
+    return cleaned, None
+
+
 # ── Low-level fetch helpers ──────────────────────────────────────────────────
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -418,6 +459,215 @@ def _fetch_ticker_info_via_alpaca_once(ticker: str) -> dict:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+
+def _fetch_ticker_info_with_diagnostics(
+    ticker: str,
+    *,
+    use_cache: bool = True,
+    allow_stale: bool = True,
+) -> tuple[dict, dict]:
+    """
+    Fetch ticker info with provider trace metadata for diagnostics.
+
+    Returns (info_dict, diagnostics_dict). info_dict is always a dict.
+    """
+    symbol = ticker.upper()
+    cache_key = f"info:{symbol}"
+    failures: list[dict] = []
+
+    if use_cache:
+        cached = cache.get(cache_key)
+        if _is_nonempty_dict(cached):
+            return cached, {
+                "status": "OK",
+                "source": "cache",
+                "reason": None,
+                "provider_failures": failures,
+            }
+        if isinstance(cached, dict) and not cached:
+            failures.append(_provider_failure("cache", "EMPTY_CACHED_PAYLOAD_IGNORED"))
+        elif cached is not None:
+            failures.append(
+                _provider_failure(
+                    "cache",
+                    "INVALID_CACHED_PAYLOAD_IGNORED",
+                    detail=f"type={type(cached).__name__}",
+                )
+            )
+
+    can_try_alpaca = _alpaca_credentials_configured() and _can_use_alpaca_symbol(symbol)
+    if can_try_alpaca:
+        try:
+            info = retry_call(
+                _fetch_ticker_info_via_alpaca_once,
+                symbol,
+                retries=_MAX_RETRIES,
+                backoff=_BACKOFF,
+            )
+            if _is_nonempty_dict(info):
+                cache.set(cache_key, info, ttl=3_600 * 6)
+                return info, {
+                    "status": "OK",
+                    "source": "alpaca",
+                    "reason": None,
+                    "provider_failures": failures,
+                }
+            if info is None:
+                failures.append(_provider_failure("alpaca", "NONE_PAYLOAD"))
+            elif not isinstance(info, dict):
+                failures.append(
+                    _provider_failure(
+                        "alpaca",
+                        "NON_DICT_PAYLOAD",
+                        detail=f"type={type(info).__name__}",
+                    )
+                )
+            else:
+                failures.append(_provider_failure("alpaca", "EMPTY_PAYLOAD"))
+        except Exception as exc:
+            failures.append(
+                _provider_failure("alpaca", _classify_provider_exception(exc), detail=str(exc))
+            )
+    else:
+        if not _alpaca_credentials_configured():
+            failures.append(_provider_failure("alpaca", "NOT_CONFIGURED"))
+        elif not _can_use_alpaca_symbol(symbol):
+            failures.append(_provider_failure("alpaca", "UNSUPPORTED_SYMBOL"))
+
+    try:
+        info = retry_call(
+            _fetch_ticker_info_once,
+            symbol,
+            retries=_MAX_RETRIES,
+            backoff=_BACKOFF,
+        )
+        if _is_nonempty_dict(info):
+            cache.set(cache_key, info, ttl=3_600 * 6)
+            return info, {
+                "status": "OK",
+                "source": "yfinance",
+                "reason": None,
+                "provider_failures": failures,
+            }
+        if info is None:
+            failures.append(_provider_failure("yfinance", "NONE_PAYLOAD"))
+        elif not isinstance(info, dict):
+            failures.append(
+                _provider_failure(
+                    "yfinance",
+                    "NON_DICT_PAYLOAD",
+                    detail=f"type={type(info).__name__}",
+                )
+            )
+        else:
+            failures.append(_provider_failure("yfinance", "EMPTY_PAYLOAD"))
+    except Exception as exc:
+        failures.append(
+            _provider_failure("yfinance", _classify_provider_exception(exc), detail=str(exc))
+        )
+
+    if allow_stale:
+        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
+        if _is_nonempty_dict(stale):
+            return stale, {
+                "status": "OK",
+                "source": "stale_cache",
+                "reason": "STALE_CACHE_FALLBACK",
+                "provider_failures": failures,
+            }
+
+    return {}, {
+        "status": "EMPTY",
+        "source": None,
+        "reason": "ALL_PROVIDERS_FAILED_OR_EMPTY",
+        "provider_failures": failures,
+    }
+
+
+def _probe_ohlcv_live(
+    symbol: str,
+    *,
+    period: str = "5d",
+    interval: str = "1d",
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Probe live OHLCV providers without cache/stale fallbacks.
+
+    Returns (cleaned_df, diagnostics_dict).
+    """
+    ticker = symbol.upper()
+    failures: list[dict] = []
+
+    can_try_alpaca = (
+        _alpaca_credentials_configured()
+        and _can_use_alpaca_symbol(ticker)
+        and str(interval).lower() in _ALPACA_TIMEFRAME_MAP
+        and _period_to_timedelta(period) is not None
+    )
+    if can_try_alpaca:
+        try:
+            raw = _download_ohlcv_via_alpaca(ticker, period=period, interval=interval)
+            cleaned, reason = _validate_ohlcv_frame(raw)
+            if not cleaned.empty:
+                return cleaned, {
+                    "status": "OK",
+                    "source": "alpaca",
+                    "reason": None,
+                    "provider_failures": failures,
+                }
+            failures.append(_provider_failure("alpaca", reason or "EMPTY_PAYLOAD"))
+        except Exception as exc:
+            failures.append(
+                _provider_failure("alpaca", _classify_provider_exception(exc), detail=str(exc))
+            )
+    else:
+        if not _alpaca_credentials_configured():
+            failures.append(_provider_failure("alpaca", "NOT_CONFIGURED"))
+        elif not _can_use_alpaca_symbol(ticker):
+            failures.append(_provider_failure("alpaca", "UNSUPPORTED_SYMBOL"))
+        else:
+            failures.append(_provider_failure("alpaca", "UNSUPPORTED_INTERVAL_OR_PERIOD"))
+
+    try:
+        raw = _download_ohlcv_via_ticker(ticker, period=period, interval=interval)
+        cleaned, reason = _validate_ohlcv_frame(raw)
+        if not cleaned.empty:
+            return cleaned, {
+                "status": "OK",
+                "source": "yfinance_ticker",
+                "reason": None,
+                "provider_failures": failures,
+            }
+        failures.append(_provider_failure("yfinance_ticker", reason or "EMPTY_PAYLOAD"))
+    except Exception as exc:
+        failures.append(
+            _provider_failure("yfinance_ticker", _classify_provider_exception(exc), detail=str(exc))
+        )
+
+    try:
+        raw = _download_ohlcv_via_download(ticker, period=period, interval=interval)
+        cleaned, reason = _validate_ohlcv_frame(raw)
+        if not cleaned.empty:
+            return cleaned, {
+                "status": "OK",
+                "source": "yfinance_download",
+                "reason": None,
+                "provider_failures": failures,
+            }
+        failures.append(_provider_failure("yfinance_download", reason or "EMPTY_PAYLOAD"))
+    except Exception as exc:
+        failures.append(
+            _provider_failure("yfinance_download", _classify_provider_exception(exc), detail=str(exc))
+        )
+
+    return pd.DataFrame(), {
+        "status": "EMPTY",
+        "source": None,
+        "reason": "ALL_PROVIDERS_FAILED_OR_EMPTY",
+        "provider_failures": failures,
+    }
+
+
 def clear_data_caches() -> None:
     """Clear all on-disk cache entries used by data/fundamental fetch paths."""
     cache.clear_all()
@@ -469,24 +719,17 @@ def fetch_ohlcv(
         stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
         return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
-    if df is None or df.empty:
-        log.warning(f"{symbol}: empty OHLCV response from yfinance {_YF_VERSION}")
-        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
-        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
-
-    # Normalise column names across yfinance versions
-    df = _normalise_columns(df)
-
-    required_cols = ["Open", "High", "Low", "Close", "Volume"]
-    missing_cols = [c for c in required_cols if c not in df.columns]
-    if missing_cols:
-        log.warning(f"{symbol}: OHLCV missing columns {missing_cols} (got: {list(df.columns)})")
-        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
-        return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
-
-    cleaned = df[required_cols].dropna()
+    cleaned, invalid_reason = _validate_ohlcv_frame(df)
     if cleaned.empty:
-        log.warning(f"{symbol}: all rows dropped after NaN removal")
+        if invalid_reason == "EMPTY_PAYLOAD":
+            log.warning(f"{symbol}: empty OHLCV response from providers")
+        elif invalid_reason and invalid_reason.startswith("MISSING_COLUMNS:"):
+            missing_cols = invalid_reason.split(":", 1)[1].split(",")
+            log.warning(f"{symbol}: OHLCV missing columns {missing_cols} (provider payload invalid)")
+        elif invalid_reason == "EMPTY_AFTER_NA_DROP":
+            log.warning(f"{symbol}: all OHLCV rows dropped after NaN removal")
+        else:
+            log.warning(f"{symbol}: invalid OHLCV payload ({invalid_reason})")
         stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
         return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
@@ -544,57 +787,24 @@ def fetch_ohlcv_batch(
 
 
 def fetch_ticker_info(ticker: str) -> dict:
-    """Fetch ticker metadata/fundamentals with Alpaca primary and yfinance fallback."""
+    """
+    Fetch ticker metadata/fundamentals with Alpaca primary and yfinance fallback.
+
+    Empty payloads are treated as failures and are never written to cache.
+    """
     symbol = ticker.upper()
-    cache_key = f"info:{symbol}"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
+    info, diag = _fetch_ticker_info_with_diagnostics(symbol, use_cache=True, allow_stale=True)
 
-    can_try_alpaca = _alpaca_credentials_configured() and _can_use_alpaca_symbol(symbol)
-    if can_try_alpaca:
-        try:
-            info = retry_call(
-                _fetch_ticker_info_via_alpaca_once,
-                symbol,
-                retries=_MAX_RETRIES,
-                backoff=_BACKOFF,
-            )
-            if isinstance(info, dict) and info:
-                cache.set(cache_key, info, ttl=3_600 * 6)  # 6-hour TTL for info
-                return info
-            if info is None:
-                log.warning(f"{symbol}: Alpaca ticker info returned None; using yfinance fallback")
-            elif not isinstance(info, dict):
-                log.warning(f"{symbol}: Alpaca ticker info payload was not a dict; using yfinance fallback")
-            else:
-                log.warning(f"{symbol}: Alpaca ticker info empty; using yfinance fallback")
-        except TimeoutError:
-            log.warning(f"{symbol}: Alpaca ticker info timed out; using yfinance fallback")
-        except Exception as exc:
-            log.warning(f"{symbol}: Alpaca ticker info failed ({exc}); using yfinance fallback")
-
-    try:
-        info = retry_call(
-            _fetch_ticker_info_once,
-            symbol,
-            retries=_MAX_RETRIES,
-            backoff=_BACKOFF,
-        )
-        if not isinstance(info, dict):
-            log.warning(f"{symbol}: ticker info payload was not a dict")
-            stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
-            return stale if isinstance(stale, dict) else {}
-        cache.set(cache_key, info, ttl=3_600 * 6)  # 6-hour TTL for info
+    if _is_nonempty_dict(info):
         return info
-    except TimeoutError:
-        log.error(f"{symbol}: ticker info fetch timed out")
-        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
-        return stale if isinstance(stale, dict) else {}
-    except Exception as e:
-        log.error(f"{symbol}: failed to fetch info: {e}")
-        stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="ticker info")
-        return stale if isinstance(stale, dict) else {}
+
+    reason = diag.get("reason") or "UNKNOWN"
+    failures = diag.get("provider_failures") or []
+    if failures:
+        log.warning(f"{symbol}: ticker info unavailable ({reason}) after {len(failures)} provider failures")
+    else:
+        log.warning(f"{symbol}: ticker info unavailable ({reason})")
+    return {}
 
 
 def get_fundamentals(ticker: str) -> dict:
@@ -726,7 +936,7 @@ def diagnose() -> dict:
     for symbol in ["AAPL", "SPY", "^VIX"]:
         start = _time.time()
         try:
-            df = fetch_ohlcv(symbol, period="5d", interval="1d", use_cache=False)
+            df, probe = _probe_ohlcv_live(symbol, period="5d", interval="1d")
             elapsed = round(_time.time() - start, 2)
             if df is not None and not df.empty:
                 results["tests"][symbol] = {
@@ -734,11 +944,14 @@ def diagnose() -> dict:
                     "rows": len(df),
                     "columns": list(df.columns),
                     "last_close": round(float(df["Close"].iloc[-1]), 2),
+                    "provider": probe.get("source"),
                     "elapsed_sec": elapsed,
                 }
             else:
                 results["tests"][symbol] = {
                     "status": "EMPTY",
+                    "reason": probe.get("reason") or "UNKNOWN",
+                    "provider_failures": probe.get("provider_failures", []),
                     "elapsed_sec": elapsed,
                 }
         except Exception as e:
@@ -766,8 +979,15 @@ def diagnose() -> dict:
                 "elapsed_sec": elapsed,
             }
         else:
+            _, fund_diag = _fetch_ticker_info_with_diagnostics(
+                "AAPL",
+                use_cache=False,
+                allow_stale=False,
+            )
             results["fundamentals"] = {
                 "status": "EMPTY",
+                "reason": fund_diag.get("reason") or "UNKNOWN",
+                "provider_failures": fund_diag.get("provider_failures", []),
                 "elapsed_sec": elapsed,
             }
     except Exception as e:
