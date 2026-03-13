@@ -123,16 +123,16 @@ def _configured_tokens() -> list[str]:
     return unique_tokens
 
 
-def _token_signing_secret() -> str | None:
-    tokens = _configured_tokens()
-    return tokens[0] if tokens else None
+def _ui_token_serializers() -> list[URLSafeTimedSerializer]:
+    serializers: list[URLSafeTimedSerializer] = []
+    for secret in _configured_tokens():
+        serializers.append(URLSafeTimedSerializer(secret_key=secret, salt=_UI_TOKEN_SALT))
+    return serializers
 
 
 def _ui_token_serializer() -> URLSafeTimedSerializer | None:
-    secret = _token_signing_secret()
-    if not secret:
-        return None
-    return URLSafeTimedSerializer(secret_key=secret, salt=_UI_TOKEN_SALT)
+    serializers = _ui_token_serializers()
+    return serializers[0] if serializers else None
 
 
 def issue_dashboard_ui_token() -> str | None:
@@ -143,17 +143,18 @@ def issue_dashboard_ui_token() -> str | None:
 
 
 def is_authorized_dashboard_ui_token(token: str) -> bool:
-    serializer = _ui_token_serializer()
-    if serializer is None or not token:
+    serializers = _ui_token_serializers()
+    if not serializers or not token:
         return False
-    try:
-        payload = serializer.loads(
-            token,
-            max_age=max(60, int(config.DASHBOARD_UI_TOKEN_TTL_SEC)),
-        )
-    except (BadSignature, SignatureExpired):
-        return False
-    return payload.get("scope") == _UI_TOKEN_SCOPE
+    max_age = max(60, int(config.DASHBOARD_UI_TOKEN_TTL_SEC))
+    for serializer in serializers:
+        try:
+            payload = serializer.loads(token, max_age=max_age)
+        except (BadSignature, SignatureExpired):
+            continue
+        if payload.get("scope") == _UI_TOKEN_SCOPE:
+            return True
+    return False
 
 
 def is_authorized_request(request: Request) -> bool:

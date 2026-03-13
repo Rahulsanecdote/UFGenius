@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from flask import Flask, request
+from itsdangerous import URLSafeTimedSerializer
 
 from src.utils import security
 
@@ -25,3 +26,16 @@ def test_resolve_client_ip_respects_proxy_flag(monkeypatch):
         monkeypatch.setattr(security.config, "DASHBOARD_TRUST_PROXY", False)
         # In test context, remote_addr may be None -> fallback "unknown"
         assert security.resolve_client_ip(request) in {"unknown", request.remote_addr or "unknown"}
+
+
+def test_ui_token_verification_accepts_all_configured_tokens(monkeypatch):
+    monkeypatch.setattr(security.config, "DASHBOARD_API_KEY", "")
+    monkeypatch.setattr(security.config, "DASHBOARD_API_KEYS", "key1,key2")
+    monkeypatch.setattr(security.config, "DASHBOARD_UI_TOKEN_TTL_SEC", 3600)
+
+    payload = {"scope": "dashboard-ui"}
+    token_key1 = URLSafeTimedSerializer(secret_key="key1", salt="dashboard-ui").dumps(payload)
+    token_key2 = URLSafeTimedSerializer(secret_key="key2", salt="dashboard-ui").dumps(payload)
+
+    assert security.is_authorized_dashboard_ui_token(token_key1) is True
+    assert security.is_authorized_dashboard_ui_token(token_key2) is True

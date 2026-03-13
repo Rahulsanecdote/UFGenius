@@ -1953,6 +1953,9 @@ HTML = '''
   <script>
     const $ = id => document.getElementById(id);
     const API_TOKEN = {{ ui_token | tojson }};
+    const AUTH_RECOVERY_STORAGE_KEY = 'ufgenius.authRecoveryTs';
+    const AUTH_RECOVERY_COOLDOWN_MS = 15000;
+    let authRecoveryTriggered = false;
     const STORAGE_KEYS = {
       recent: 'ufgenius.recentAnalyses',
       saved: 'ufgenius.savedResults'
@@ -2018,6 +2021,41 @@ HTML = '''
         .replaceAll("'", '&#39;');
     }
 
+    function clearAuthRecoveryMarkerIfStale() {
+      const raw = sessionStorage.getItem(AUTH_RECOVERY_STORAGE_KEY);
+      if (!raw) return;
+      const last = Number(raw);
+      if (!Number.isFinite(last)) {
+        sessionStorage.removeItem(AUTH_RECOVERY_STORAGE_KEY);
+        return;
+      }
+      if (Date.now() - last >= AUTH_RECOVERY_COOLDOWN_MS) {
+        sessionStorage.removeItem(AUTH_RECOVERY_STORAGE_KEY);
+      }
+    }
+
+    function handleUnauthorizedResponse(errorMessage) {
+      if (authRecoveryTriggered) return;
+      authRecoveryTriggered = true;
+
+      const last = Number(sessionStorage.getItem(AUTH_RECOVERY_STORAGE_KEY) || 0);
+      const recentlyRetried = Number.isFinite(last) && (Date.now() - last) < AUTH_RECOVERY_COOLDOWN_MS;
+      if (recentlyRetried) {
+        const message = errorMessage || 'Authorization failed. Verify dashboard API key configuration.';
+        showToast(message, 'error', true);
+        announce(message);
+        return;
+      }
+
+      sessionStorage.setItem(AUTH_RECOVERY_STORAGE_KEY, String(Date.now()));
+      const message = 'Authorization expired. Refreshing dashboard session...';
+      showToast(message, 'warning', true);
+      announce(message);
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 150);
+    }
+
     function apiFetch(url, options = {}) {
       const headers = new Headers(options.headers || {});
       if (API_TOKEN) headers.set('X-Dashboard-Token', API_TOKEN);
@@ -2033,6 +2071,11 @@ HTML = '''
         payload = {};
       }
       if (!response.ok) {
+        if (response.status === 401) {
+          const errorMessage = payload.error || 'Unauthorized';
+          handleUnauthorizedResponse(errorMessage);
+          throw new Error('Authorization failed. Refreshing dashboard session.');
+        }
         throw new Error(payload.error || `Request failed (${response.status})`);
       }
       return payload;
@@ -3354,6 +3397,7 @@ HTML = '''
       handleScanRowKeys(event);
     });
 
+    clearAuthRecoveryMarkerIfStale();
     initializeResultState();
     loadRegime();
     loadProviderHealth();
