@@ -8,6 +8,7 @@ Compatible with yfinance 0.2.x AND 1.x.
 from __future__ import annotations
 
 import time as _time
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Dict, Optional
 
@@ -44,6 +45,21 @@ _REGIME_CACHE_KEYS = {
 _YF_VERSION = getattr(yf, "__version__", "0.0.0")
 _YF_MAJOR = int(_YF_VERSION.split(".")[0]) if _YF_VERSION else 0
 log.debug(f"yfinance version: {_YF_VERSION} (major={_YF_MAJOR})")
+_FAST_INFO_FAILURE_WARNED_SYMBOLS: set[str] = set()
+_FAST_INFO_FAILURE_WARNED_LOCK = threading.Lock()
+
+
+def _log_fast_info_failure(symbol: str, exc: Exception) -> None:
+    """Warn once per symbol for fast_info access failures; debug thereafter."""
+    first_occurrence = False
+    with _FAST_INFO_FAILURE_WARNED_LOCK:
+        if symbol not in _FAST_INFO_FAILURE_WARNED_SYMBOLS:
+            _FAST_INFO_FAILURE_WARNED_SYMBOLS.add(symbol)
+            first_occurrence = True
+    if first_occurrence:
+        log.warning(f"{symbol}: fast_info unavailable ({exc})")
+        return
+    log.debug(f"{symbol}: fast_info unavailable ({exc})")
 
 
 # ── Low-level fetch helpers ──────────────────────────────────────────────────
@@ -128,7 +144,7 @@ def _merge_fast_info_fields(info: dict, ticker_obj: yf.Ticker, symbol: str) -> d
     try:
         fast_info = ticker_obj.fast_info
     except Exception as exc:
-        log.debug(f"{symbol}: fast_info unavailable ({exc})")
+        _log_fast_info_failure(symbol, exc)
         return info
 
     field_map = {

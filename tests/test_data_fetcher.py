@@ -241,3 +241,27 @@ def test_diagnose_includes_cache_freshness_payload(monkeypatch):
     assert result["overall"] == "HEALTHY"
     assert result["cache_freshness"]["any_critical_stale"] is True
     assert result["cache_freshness"]["max_age_human"] == "2h 00m"
+
+
+def test_fast_info_failure_warns_once_per_symbol(monkeypatch, caplog):
+    class _FakeTicker:
+        @property
+        def info(self):
+            return {"longName": "Acme"}
+
+        @property
+        def fast_info(self):
+            raise RuntimeError("fast-info-down")
+
+    monkeypatch.setattr(fetcher.yf, "Ticker", lambda _symbol: _FakeTicker())
+    monkeypatch.setattr(fetcher, "_FAST_INFO_FAILURE_WARNED_SYMBOLS", set())
+    caplog.set_level("DEBUG")
+
+    fetcher._fetch_ticker_info_once("AAPL")
+    fetcher._fetch_ticker_info_once("AAPL")
+
+    warnings = [
+        rec for rec in caplog.records
+        if rec.levelname == "WARNING" and "AAPL: fast_info unavailable" in rec.message
+    ]
+    assert len(warnings) == 1

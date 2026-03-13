@@ -1,7 +1,9 @@
 """Disk-based caching with TTL, size limits, and LRU eviction for market data."""
 
 import hashlib
+import os
 import pickle
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -85,9 +87,36 @@ def get_stale(key: str) -> Optional[Any]:
 def set(key: str, data: Any, ttl: int = DEFAULT_TTL) -> None:
     p = _cache_path(key)
     now = time.time()
-    with open(p, "wb") as f:
-        pickle.dump({"data": data, "expires": now + ttl, "fetched_at": now}, f)
+    entry = {"data": data, "expires": now + ttl, "fetched_at": now}
+    _atomic_write_entry(p, entry)
     _enforce_size_limit()
+
+
+def _atomic_write_entry(path: Path, entry: dict) -> None:
+    """
+    Atomically persist cache entry to disk.
+
+    Write to a temp file in the same directory, fsync it, then replace target.
+    This prevents readers from observing partially written pickle payloads.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            pickle.dump(entry, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        # If replace succeeded the tmp path no longer exists.
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def evict_expired() -> int:
