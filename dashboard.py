@@ -2620,14 +2620,25 @@ HTML = '''
         return { className: 'status-stale', label: 'Stale', narrative: 'Provider diagnostics are older than five minutes.' };
       }
 
-      const fundamentalsError = payload.fundamentals && payload.fundamentals.status !== 'OK';
-      const testStatuses = Object.values(payload.tests || {}).map(item => item.status);
+      const fundamentals = payload.fundamentals || {};
+      const testItems = Object.values(payload.tests || {});
+      const testStatuses = testItems.map(item => item.status);
+      const fundamentalsHardError = fundamentals.status === 'ERROR';
       const anyPriceSuccess = testStatuses.some(status => status === 'OK');
-      if (!anyPriceSuccess && fundamentalsError) {
-        return { className: 'status-down', label: 'Down', narrative: 'Both price history and fundamentals are failing.' };
+      const allPriceErrors = testStatuses.length > 0 && testStatuses.every(status => status === 'ERROR');
+
+      const rateLimitPattern = /too many requests|rate limit/i;
+      const rateLimited = testItems.some(item => rateLimitPattern.test(String(item.error || '')))
+        || rateLimitPattern.test(String(fundamentals.error || ''));
+      if (rateLimited) {
+        return { className: 'status-degraded', label: 'Degraded', narrative: 'Upstream provider is rate-limiting requests; retry shortly or use cached data.' };
       }
 
       const cacheFreshness = payload.cache_freshness || {};
+      const anyCriticalCache = Object.values(cacheFreshness.symbols || {}).some(item => item && item.has_cache);
+      if (allPriceErrors && fundamentalsHardError && !anyCriticalCache) {
+        return { className: 'status-down', label: 'Down', narrative: 'Both live price history and fundamentals are failing with no cached fallback.' };
+      }
       if (cacheFreshness.any_critical_stale) {
         const ageText = cacheFreshness.max_age_human || 'unknown';
         return { className: 'status-degraded', label: 'Degraded', narrative: `Critical cache data is stale (oldest age ${ageText}).` };
