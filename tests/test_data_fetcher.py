@@ -116,3 +116,86 @@ def test_fetch_ticker_info_backfills_market_cap_from_fast_info(monkeypatch):
     assert info["currentPrice"] == 25.0
     assert info["currency"] == "USD"
     assert info["exchange"] == "NYSE"
+
+
+def test_get_fundamentals_returns_empty_dict_when_provider_returns_none(monkeypatch):
+    monkeypatch.setattr(fetcher, "fetch_ticker_info", lambda *_args, **_kwargs: None)
+
+    result = fetcher.get_fundamentals("AAPL")
+
+    assert result == {}
+
+
+def test_get_fundamentals_returns_empty_dict_when_provider_returns_non_dict(monkeypatch):
+    monkeypatch.setattr(fetcher, "fetch_ticker_info", lambda *_args, **_kwargs: "bad-payload")
+
+    result = fetcher.get_fundamentals("AAPL")
+
+    assert result == {}
+
+
+def test_get_fundamentals_merges_dict_payload_safely(monkeypatch):
+    provider_payload = {"marketCap": 2_000_000_000, "longName": "Acme Inc"}
+    monkeypatch.setattr(fetcher, "fetch_ticker_info", lambda *_args, **_kwargs: provider_payload)
+
+    result = fetcher.get_fundamentals("AAPL")
+
+    assert result == provider_payload
+
+
+def _mock_diagnose_price_history(monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    sample = pd.DataFrame(
+        {
+            "Open": [10, 11, 12, 13, 14],
+            "High": [11, 12, 13, 14, 15],
+            "Low": [9, 10, 11, 12, 13],
+            "Close": [10, 11, 12, 13, 14],
+            "Volume": [1000, 1100, 1200, 1300, 1400],
+        },
+        index=idx,
+    )
+
+    class _FakeTicker:
+        def __init__(self, _symbol):
+            self.symbol = _symbol
+
+        def history(self, **_kwargs):
+            return sample
+
+    monkeypatch.setattr(fetcher.yf, "Ticker", _FakeTicker)
+
+
+def test_diagnose_marks_fundamentals_ok_when_get_fundamentals_returns_dict(monkeypatch):
+    _mock_diagnose_price_history(monkeypatch)
+    monkeypatch.setattr(fetcher, "get_fundamentals", lambda *_args, **_kwargs: {"marketCap": 5_000_000_000})
+
+    result = fetcher.diagnose()
+
+    assert result["fundamentals"]["status"] == "OK"
+    assert result["overall"] == "HEALTHY"
+
+
+def test_diagnose_marks_fundamentals_empty_when_get_fundamentals_returns_empty_dict(monkeypatch):
+    _mock_diagnose_price_history(monkeypatch)
+    monkeypatch.setattr(fetcher, "get_fundamentals", lambda *_args, **_kwargs: {})
+
+    result = fetcher.diagnose()
+
+    assert result["fundamentals"]["status"] == "EMPTY"
+    assert result["overall"] == "DEGRADED"
+
+
+def test_diagnose_handles_get_fundamentals_exception_as_error(monkeypatch):
+    _mock_diagnose_price_history(monkeypatch)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(fetcher, "get_fundamentals", _boom)
+
+    result = fetcher.diagnose()
+
+    assert result["fundamentals"]["status"] == "ERROR"
+    assert "provider exploded" in result["fundamentals"]["error"]
+    assert result["overall"] == "DEGRADED"

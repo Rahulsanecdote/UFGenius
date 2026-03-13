@@ -319,6 +319,34 @@ def fetch_ticker_info(ticker: str) -> dict:
         return stale if isinstance(stale, dict) else {}
 
 
+def get_fundamentals(ticker: str) -> dict:
+    """
+    Fetch fundamentals payload from the provider in a defensive way.
+
+    Always returns a dictionary and never raises on provider payload shape issues.
+    """
+    symbol = ticker.upper()
+    fundamentals: dict = {}
+
+    try:
+        provider_data = fetch_ticker_info(symbol)
+    except Exception as exc:
+        log.warning(f"{symbol}: fundamentals fetch failed ({exc})")
+        return {}
+
+    fundamentals = fundamentals or {}
+    if provider_data is None:
+        log.warning(f"{symbol}: fundamentals provider returned None")
+    elif not isinstance(provider_data, dict):
+        log.warning(f"{symbol}: fundamentals provider returned non-dict payload")
+    elif provider_data:
+        fundamentals.update(provider_data)
+    else:
+        log.warning(f"{symbol}: fundamentals provider returned empty payload")
+
+    return fundamentals if fundamentals else {}
+
+
 def get_current_price(ticker: str) -> Optional[float]:
     """Get latest closing price."""
     df = fetch_ohlcv(ticker, period="5d")
@@ -373,15 +401,18 @@ def diagnose() -> dict:
 
     start = _time.time()
     try:
-        ticker = yf.Ticker("AAPL")
-        info = ticker.info
+        fund = get_fundamentals("AAPL")
+        is_valid = isinstance(fund, dict)
+        has_data = bool(fund) if is_valid else False
         elapsed = round(_time.time() - start, 2)
-        if info and isinstance(info, dict):
-            market_cap = info.get("marketCap")
+        if is_valid and has_data:
+            market_cap = fund.get("marketCap")
+            if market_cap is None:
+                market_cap = fund.get("market_cap")
             results["fundamentals"] = {
                 "status": "OK",
                 "market_cap": market_cap,
-                "keys": sorted(list(info.keys()))[:12],
+                "keys": sorted(list(fund.keys()))[:12],
                 "elapsed_sec": elapsed,
             }
         else:
