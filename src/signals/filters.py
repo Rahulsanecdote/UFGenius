@@ -71,7 +71,8 @@ def run_disqualification_filters(
         market_cap = None
 
     if market_cap is None:
-        reasons.append("UNKNOWN_MARKET_CAP: Unable to verify market cap")
+        # Provider/rate-limit gaps should not hard-fail otherwise valid large-cap names.
+        log.debug(f"{ticker}: market cap unavailable — skipping market cap filter")
     elif market_cap < MIN_MARKET_CAP:
         reasons.append(
             f"MICRO_CAP: Market cap ${market_cap:,.0f} < ${MIN_MARKET_CAP:,.0f}"

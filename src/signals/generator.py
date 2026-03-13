@@ -163,9 +163,11 @@ def generate_signal(
         + macro_score_norm * w.get("macro", 0.10)
     )
 
-    # Regime multiplier — never fight the macro
+    # Regime multiplier — dampen risk in weak regimes, lighter impact in neutral.
+    # Old: composite * (0.7 + 0.3 * mult) over-penalized neutral conditions.
+    # New: composite * (0.8 + 0.2 * mult) keeps bear dampening but reduces neutral drag.
     size_mult = macro_regime["strategy"]["position_size_multiplier"]
-    adjusted = composite * (0.7 + 0.3 * size_mult)
+    adjusted = composite * (0.8 + 0.2 * size_mult)
 
     signal, confidence = _classify(adjusted)
 

@@ -93,6 +93,7 @@ class TestDisqualificationFilters:
         from src.signals import filters as signal_filters
 
         monkeypatch.setattr(signal_filters.config, "ALLOW_PENNY_STOCKS", False)
+        monkeypatch.setattr(signal_filters, "MIN_PRICE", 1.0)
         fundamental = {"altman_z_score": 2.0}
         result = run_disqualification_filters(
             "PENNY", penny_df, fundamental, {"market_cap": 5_000_000_000}
@@ -145,6 +146,15 @@ class TestDisqualificationFilters:
             {"market_cap": 50_000_000},
         )
         assert any("MICRO_CAP" in r for r in result)
+
+    def test_unknown_market_cap_not_disqualified(self, sample_df):
+        result = run_disqualification_filters(
+            "UNKNOWN",
+            sample_df,
+            {"altman_z_score": 3.0},
+            {},
+        )
+        assert not any("UNKNOWN_MARKET_CAP" in r for r in result)
 
 
 class TestTradePlan:

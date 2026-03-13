@@ -2943,7 +2943,7 @@ HTML = '''
       const filtered = applyScanFilters(rows);
       $('scanFeedback').textContent = rows.length
         ? `${rows.length} candidates available from the latest scan. Showing ${filtered.length} after filters.`
-        : (scan.alert || 'No tickers matched the current market conditions.');
+        : (scan.pipeline_note || scan.alert || 'No tickers matched the current market conditions.');
 
       $('scanEmptyState').hidden = filtered.length > 0;
       $('scanTableBody').innerHTML = filtered.map(item => `

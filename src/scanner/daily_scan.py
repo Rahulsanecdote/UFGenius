@@ -53,7 +53,7 @@ def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[s
         if rsi_val != rsi_val or rvol_val != rvol_val:
             return None
 
-        if 35 <= rsi_val <= 72 and rvol_val >= 1.3:
+        if 35 <= rsi_val <= 72 and rvol_val >= 0.8:
             return ticker, df
 
     except Exception as e:
@@ -68,7 +68,7 @@ def technical_pre_filter(tickers: list[str]) -> list[tuple[str, pd.DataFrame]]:
 
     Passes a ticker if ALL of:
     - RSI_14 between 35 and 72
-    - RVOL >= 1.3
+    - RVOL >= 0.8
     - Enough history (>50 bars)
     """
     log.info(f"Pre-filtering {len(tickers)} tickers in parallel ...")
@@ -103,7 +103,10 @@ def _analyze_ticker(
     try:
         signal = generate_signal(ticker, macro_regime=regime, price_df=prefetched_df)
 
-        if signal["signal"] not in BUY_SIGNALS:
+        signal_type = signal.get("signal", "UNKNOWN")
+        score = float(signal.get("score", 0) or 0)
+        if signal_type not in BUY_SIGNALS:
+            log.debug(f"{ticker}: signal={signal_type} score={score:.1f} — not a buy, skipping")
             return None
 
         plan = generate_trade_plan(
@@ -156,10 +159,15 @@ def run_daily_scan(
             "market_regime": regime["regime"],
             "vix_level": regime.get("vix"),
             "alert": "BEAR MARKET - Move to cash. No long positions.",
+            "pipeline_note": "Bear-market guardrail active: full long scan skipped.",
             "strong_buys": [],
             "buys": [],
             "watch_list": [],
             "total_scanned": 0,
+            "total_signals": 0,
+            "total_analyzed": 0,
+            "total_non_buy": 0,
+            "universe_size": 0,
             "regime": regime,
         }
 
@@ -175,15 +183,19 @@ def run_daily_scan(
     log.info(f"Running full analysis on {len(candidates)} candidates ...")
 
     results: list[dict] = []
+    analyzed_count = 0
     with ThreadPoolExecutor(max_workers=_SIGNAL_WORKERS) as executor:
         futures = {
             executor.submit(_analyze_ticker, ticker, regime, account_size, prefetched_df): ticker
             for ticker, prefetched_df in candidates
         }
         for future in as_completed(futures):
+            analyzed_count += 1
             plan = future.result()
             if plan is not None:
                 results.append(plan)
+
+    non_buy_count = max(0, analyzed_count - len(results))
 
     results.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
 
@@ -197,6 +209,20 @@ def run_daily_scan(
         f"{len(strong_buys)} STRONG BUY, {len(buys)} BUY, {len(watch_list)} WATCH ==="
     )
 
+    pipeline_note = (
+        f"Loaded {len(universe)} tickers from {universe_name}. "
+        f"Pre-filter passed {len(candidates)}. "
+        f"Full analysis on {analyzed_count}. "
+        f"{len(results)} met buy criteria, {non_buy_count} scored below threshold or were filtered."
+    )
+    if len(results) == 0 and analyzed_count > 0:
+        regime_name = str(regime.get("regime", "UNKNOWN")).replace("_", " ")
+        pipeline_note += (
+            " Most tickers likely scored HOLD or SELL under the current "
+            f"{regime_name} regime (VIX {regime.get('vix', '?')})."
+        )
+    log.info(pipeline_note)
+
     return {
         "scan_date": scan_start.strftime("%Y-%m-%d %H:%M"),
         "elapsed_sec": round(elapsed, 1),
@@ -207,6 +233,10 @@ def run_daily_scan(
         "watch_list": watch_list,
         "total_scanned": len(candidates),
         "total_signals": len(results),
+        "total_analyzed": analyzed_count,
+        "total_non_buy": non_buy_count,
+        "universe_size": len(universe),
+        "pipeline_note": pipeline_note,
         "regime": regime,
         "regime_advice": regime["strategy"],
     }

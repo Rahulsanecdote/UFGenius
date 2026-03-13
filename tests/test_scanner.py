@@ -201,3 +201,80 @@ def test_generate_signal_falls_back_to_neutral_fundamentals_on_scoring_error(mon
     assert result["signal"] != "ERROR"
     assert result["scores"]["fundamental"] == 50
     assert result["market_cap"] == 10_000_000_000
+
+
+def test_prefilter_ticker_uses_rvol_point8_threshold(monkeypatch):
+    df = _sample_price_df(80)
+    idx = pd.date_range("2024-01-01", periods=1, freq="D")
+
+    monkeypatch.setattr(
+        daily_scan,
+        "calculate_momentum_indicators",
+        lambda *_args, **_kwargs: {"RSI_14": pd.Series([50.0], index=idx)},
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "calculate_volume_indicators",
+        lambda *_args, **_kwargs: {"RVOL": pd.Series([0.8], index=idx)},
+    )
+    passed = daily_scan._prefilter_ticker("AAA", {"AAA": df})
+    assert passed is not None
+
+    monkeypatch.setattr(
+        daily_scan,
+        "calculate_volume_indicators",
+        lambda *_args, **_kwargs: {"RVOL": pd.Series([0.79], index=idx)},
+    )
+    failed = daily_scan._prefilter_ticker("AAA", {"AAA": df})
+    assert failed is None
+
+
+def test_run_daily_scan_includes_pipeline_diagnostics(monkeypatch):
+    df = _sample_price_df(80)
+    regime = {"regime": "MILD_BULL", "regime_score": 25, "vix": 18, "strategy": {"position_size_multiplier": 0.8}}
+
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)
+    monkeypatch.setattr(daily_scan, "get_universe", lambda _name: ["AAA", "BBB"])
+    monkeypatch.setattr(daily_scan, "technical_pre_filter", lambda _tickers: [("AAA", df), ("BBB", df)])
+
+    def _fake_signal(ticker, **_kwargs):
+        if ticker == "AAA":
+            return {"signal": "BUY", "score": 71, "_df": df}
+        return {"signal": "HOLD", "score": 42, "_df": df}
+
+    monkeypatch.setattr(daily_scan, "generate_signal", _fake_signal)
+    monkeypatch.setattr(
+        daily_scan,
+        "generate_trade_plan",
+        lambda ticker, *_args, **_kwargs: {"ticker": ticker, "composite_score": 71},
+    )
+
+    result = daily_scan.run_daily_scan(account_size=10_000, max_signals=2, pre_filter=True)
+
+    assert result["total_analyzed"] == 2
+    assert result["total_signals"] == 1
+    assert result["total_non_buy"] == 1
+    assert result["universe_size"] == 2
+    assert "Loaded 2 tickers from" in result["pipeline_note"]
+    assert "Pre-filter passed 2" in result["pipeline_note"]
+
+
+def test_run_daily_scan_zero_buy_pipeline_note_mentions_regime(monkeypatch):
+    df = _sample_price_df(80)
+    regime = {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "vix": 27.2, "strategy": {"position_size_multiplier": 0.5}}
+
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)
+    monkeypatch.setattr(daily_scan, "get_universe", lambda _name: ["AAA", "BBB"])
+    monkeypatch.setattr(daily_scan, "technical_pre_filter", lambda _tickers: [("AAA", df), ("BBB", df)])
+    monkeypatch.setattr(
+        daily_scan,
+        "generate_signal",
+        lambda *_args, **_kwargs: {"signal": "HOLD", "score": 44, "_df": df},
+    )
+
+    result = daily_scan.run_daily_scan(account_size=10_000, max_signals=2, pre_filter=True)
+
+    assert result["total_signals"] == 0
+    assert result["total_non_buy"] == 2
+    assert "Most tickers likely scored HOLD or SELL" in result["pipeline_note"]
+    assert "NEUTRAL CHOPPY regime" in result["pipeline_note"]

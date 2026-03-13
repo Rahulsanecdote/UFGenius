@@ -119,6 +119,7 @@ def test_index_embeds_dashboard_ui_token_when_remote_enabled(client, monkeypatch
     assert "Analysis Workspace" in html
     assert "Provider Health" in html
     assert "scanSpotlights" in html
+    assert "scan.pipeline_note || scan.alert" in html
     assert "[hidden] {" in html
     assert "display: none !important;" in html
 
