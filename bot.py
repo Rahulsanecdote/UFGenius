@@ -22,6 +22,7 @@ import json
 import re
 import sys
 import time
+import threading
 from datetime import datetime
 
 import schedule
@@ -39,15 +40,21 @@ log = get_logger("bot")
 
 # Module-level position tracker — initialised lazily when execution flags are set.
 _position_tracker = None
+_tracker_lock = threading.Lock()
 
 
 def _get_tracker():
     """Return the module-level PositionTracker, creating and loading it on first call."""
     global _position_tracker
-    if _position_tracker is None:
-        from src.alpaca.position_tracker import PositionTracker
-        _position_tracker = PositionTracker()
-        _position_tracker.load()
+    if _position_tracker is not None:
+        return _position_tracker
+    # Double-checked locking: safe when _schedule_scan initialises the tracker
+    # while the monitor thread may also call _get_tracker concurrently.
+    with _tracker_lock:
+        if _position_tracker is None:
+            from src.alpaca.position_tracker import PositionTracker
+            _position_tracker = PositionTracker()
+            _position_tracker.load()
     return _position_tracker
 
 

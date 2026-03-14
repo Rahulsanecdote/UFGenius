@@ -273,7 +273,7 @@ def monitor_positions(tracker: PositionTracker) -> None:
 
     log.debug(f"Monitor cycle: checking {len(open_positions)} open position(s)")
 
-    for ticker, pos in list(open_positions.items()):
+    for ticker, pos in open_positions.items():
         try:
             if pos.status == "pending_fill":
                 _check_entry_fill(ticker, pos, tracker)
@@ -334,7 +334,6 @@ def _check_entry_fill(ticker: str, pos, tracker: PositionTracker) -> None:
 
 def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
     """Check stop and target order fills; update tracker accordingly."""
-    pos = tracker.get(ticker)
     if pos is None:
         return
 
@@ -402,14 +401,14 @@ def _is_market_hours() -> bool:
 
 
 def _monitor_loop(tracker: PositionTracker, interval_sec: int) -> None:
-    """Daemon loop: sleep then poll positions during market hours."""
+    """Daemon loop: poll positions during market hours, then sleep."""
     while True:
         try:
-            time.sleep(interval_sec)
             if _is_market_hours():
                 monitor_positions(tracker)
         except Exception as exc:
             log.error(f"Monitor loop unhandled error: {exc}", exc_info=True)
+        time.sleep(interval_sec)
 
 
 def start_monitor_thread(tracker: PositionTracker) -> threading.Thread:
