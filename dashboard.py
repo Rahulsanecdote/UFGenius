@@ -7,6 +7,7 @@ Then open: http://localhost:5001
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import pandas as pd
@@ -32,6 +33,7 @@ from src.utils.security import (
 
 log = get_logger("dashboard")
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 _rate_limiter = build_rate_limiter()
