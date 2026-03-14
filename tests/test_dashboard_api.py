@@ -155,6 +155,55 @@ def test_price_history_returns_chart_payload(client, monkeypatch):
     assert "accessible_summary" in payload["summary"]
 
 
+def test_ticker_with_html_chars_rejected(client):
+    """Tickers containing HTML characters are rejected with 400."""
+    response = client.get("/api/scan-ticker?ticker=AAPL<script>")
+    assert response.status_code == 400
+
+
+def test_account_size_above_max_rejected(client, monkeypatch):
+    """Account sizes above the configured maximum are rejected."""
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_MAX_ACCOUNT_SIZE", 10_000_000.0)
+    response = client.get("/api/scan?account_size=99999999999")
+    assert response.status_code == 400
+    data = response.get_json()
+    assert "error" in data
+
+
+def test_missing_account_size_uses_default(client, monkeypatch):
+    """Omitting account_size uses the config default instead of erroring."""
+    monkeypatch.setattr(dashboard, "run_daily_scan", lambda **_kwargs: {
+        "strong_buys": [], "buys": [], "watch_list": [],
+        "total_scanned": 0, "total_signals": 0, "total_analyzed": 0,
+        "total_non_buy": 0, "universe_size": 0, "elapsed_sec": 0.1,
+        "market_regime": "NEUTRAL", "vix_level": 15.0, "pipeline_note": "",
+        "scan_date": "2024-01-15 09:25", "regime": {}, "regime_advice": {},
+    })
+    response = client.get("/api/scan")
+    # Should not return 400 for missing account_size; config default is used
+    assert response.status_code != 400
+
+
+def test_bearer_token_is_case_insensitive(client, monkeypatch):
+    """Bearer scheme is case-insensitive per RFC 6750 — lowercase 'bearer' is accepted."""
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "")
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEYS", "validkey")
+    monkeypatch.setattr(dashboard, "run_daily_scan", lambda **_kwargs: {"ok": True})
+
+    # Both casings should be accepted (RFC 6750 permits case-insensitive matching)
+    lower = client.get("/api/scan?account_size=10000",
+                       headers={"Authorization": "bearer validkey"})
+    upper = client.get("/api/scan?account_size=10000",
+                       headers={"Authorization": "Bearer validkey"})
+    assert lower.status_code == upper.status_code == 200
+
+    # Invalid key should still fail regardless of casing
+    bad = client.get("/api/scan?account_size=10000",
+                     headers={"Authorization": "Bearer wrongkey"})
+    assert bad.status_code == 401
+
+
 def test_regime_endpoint_includes_cache_freshness(client, monkeypatch):
     monkeypatch.setattr(
         dashboard,

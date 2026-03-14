@@ -50,14 +50,14 @@ def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[s
         rsi_val = float(rsi.iloc[-1]) if rsi is not None and len(rsi) > 0 else 50.0
         rvol_val = float(rvol.iloc[-1]) if rvol is not None and len(rvol) > 0 else 1.0
 
-        if rsi_val != rsi_val or rvol_val != rvol_val:
+        if pd.isna(rsi_val) or pd.isna(rvol_val):
             return None
 
         if 35 <= rsi_val <= 72 and rvol_val >= 0.8:
             return ticker, df
 
     except Exception as e:
-        log.debug(f"{ticker}: pre-filter error: {e}")
+        log.warning(f"{ticker}: pre-filter error: {e}", exc_info=True)
 
     return None
 
@@ -130,7 +130,7 @@ def _analyze_ticker(
         return plan
 
     except Exception as e:
-        log.error(f"{ticker}: scan error: {e}")
+        log.error(f"{ticker}: scan error: {e}", exc_info=True)
         return None
 
 

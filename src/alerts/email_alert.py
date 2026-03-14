@@ -1,5 +1,6 @@
 """Email digest alerts — gracefully skipped if credentials not configured."""
 
+import html
 import smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -52,10 +53,10 @@ def send_scan_digest(scan_result: dict) -> bool:
 
 
 def _format_html(scan: dict) -> str:
-    regime = scan.get("market_regime", "N/A")
-    vix    = scan.get("vix_level", "N/A")
-    date   = scan.get("scan_date", "N/A")
-    total  = scan.get("total_scanned", 0)
+    regime = html.escape(str(scan.get("market_regime", "N/A")))
+    vix    = html.escape(str(scan.get("vix_level", "N/A")))
+    date   = html.escape(str(scan.get("scan_date", "N/A")))
+    total  = html.escape(str(scan.get("total_scanned", 0)))
 
     rows = ""
     for category, plans in [
@@ -68,16 +69,26 @@ def _format_html(scan: dict) -> str:
             stop   = p.get("stop_loss", {})
             t1     = p.get("targets", {}).get("T1", {})
             pos    = p.get("position", {})
+            # Escape all user-derived values to prevent HTML injection
+            ticker_e   = html.escape(str(p.get("ticker", "-")))
+            category_e = html.escape(str(category))
+            score_e    = html.escape(f"{p.get('composite_score', 0):.1f}")
+            entry_e    = html.escape(str(entry.get("price", "-")))
+            stop_e     = html.escape(str(stop.get("price", "-")))
+            t1_e       = html.escape(str(t1.get("price", "-")))
+            shares_e   = html.escape(str(pos.get("shares", "-")))
+            risk_d_e   = html.escape(str(pos.get("risk_dollars", "-")))
+            risk_p_e   = html.escape(str(pos.get("risk_percent", "-")))
             rows += f"""
             <tr>
-                <td><b>{p.get('ticker')}</b></td>
-                <td>{category}</td>
-                <td>{p.get('composite_score', 0):.1f}</td>
-                <td>${entry.get('price', '-')}</td>
-                <td>${stop.get('price', '-')}</td>
-                <td>${t1.get('price', '-')}</td>
-                <td>{pos.get('shares', '-')}</td>
-                <td>${pos.get('risk_dollars', '-')} ({pos.get('risk_percent', '-')}%)</td>
+                <td><b>{ticker_e}</b></td>
+                <td>{category_e}</td>
+                <td>{score_e}</td>
+                <td>${entry_e}</td>
+                <td>${stop_e}</td>
+                <td>${t1_e}</td>
+                <td>{shares_e}</td>
+                <td>${risk_d_e} ({risk_p_e}%)</td>
             </tr>"""
 
     return f"""

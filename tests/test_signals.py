@@ -204,3 +204,49 @@ class TestTradePlan:
         ev = plan["expected_value"]
         # With 45% win rate and 2.5:1 R:R the EV should be positive
         assert ev > 0, f"Expected positive EV, got {ev}"
+
+    def test_nan_atr_falls_back_to_2pct_of_price(self, mock_signal, sample_df):
+        """When ATR is NaN the trade plan uses 2% of price as fallback stop distance."""
+        import numpy as np
+        from src.technical.volatility import calculate_volatility_indicators
+
+        # Force all ATR values to NaN
+        vol = calculate_volatility_indicators(sample_df)
+        nan_series = vol["ATR_14"].copy()
+        nan_series[:] = np.nan
+        vol["ATR_14"] = nan_series
+
+        signal = dict(mock_signal)
+        signal["volatility"] = vol
+        plan = generate_trade_plan("TEST", signal, account_size=10_000, df=sample_df)
+
+        entry = plan["entry"]["price"]
+        stop  = plan["stop_loss"]["price"]
+        # Stop should be ~entry - (entry * 0.02 * ATR_STOP_MULTIPLIER)
+        # Just verify it's below entry and a plausible distance away
+        assert stop < entry
+        assert (entry - stop) / entry < 0.15, "Fallback stop seems too far from entry"
+
+    def test_zero_risk_still_returns_valid_plan(self, mock_signal, sample_df):
+        """Zero risk (entry == stop) should return a plan with at least 1 share, not crash."""
+        from src.technical.volatility import calculate_volatility_indicators
+        import numpy as np
+
+        # Make ATR = 0 so stop == entry (risk = 0)
+        vol = calculate_volatility_indicators(sample_df)
+        zero_series = vol["ATR_14"].copy()
+        zero_series[:] = 0.0
+        vol["ATR_14"] = zero_series
+
+        signal = dict(mock_signal)
+        signal["volatility"] = vol
+        plan = generate_trade_plan("TEST", signal, account_size=10_000, df=sample_df)
+
+        # Should not raise; should return a usable plan
+        assert "entry" in plan
+        assert plan["position"]["shares"] >= 1
+
+    def test_min_shares_clamped_to_1_for_tiny_account(self, mock_signal, sample_df):
+        """Tiny account ($10) should still yield at least 1 share, not 0."""
+        plan = generate_trade_plan("TEST", mock_signal, account_size=10, df=sample_df)
+        assert plan["position"]["shares"] >= 1

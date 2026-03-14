@@ -7,12 +7,12 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# Hard stop thresholds
-MIN_PRICE          = max(0.0, config.SIGNAL_MIN_PRICE)  # Penny stock floor
-MIN_AVG_VOLUME     = 100_000      # Illiquidity floor
-MIN_MARKET_CAP     = 100_000_000  # Nano-cap trap floor
-MAX_5DAY_GAIN_PCT  = 50.0         # Chaser trap ceiling
-BANKRUPTCY_Z       = 1.0          # Altman Z-Score bankruptcy floor
+# Hard stop thresholds (sourced from config so they can be tuned without code changes)
+MIN_PRICE         = max(0.0, config.SIGNAL_MIN_PRICE)   # Penny stock floor
+MIN_AVG_VOLUME    = config.FILTER_MIN_AVG_VOLUME        # Illiquidity floor (default 100k)
+MIN_MARKET_CAP    = config.FILTER_MIN_MARKET_CAP        # Nano-cap trap floor (default $100M)
+MAX_5DAY_GAIN_PCT = config.FILTER_MAX_5DAY_GAIN         # Chaser trap ceiling (default 50%)
+BANKRUPTCY_Z      = config.FILTER_BANKRUPTCY_Z          # Altman Z distress zone (default 1.0)
 
 
 def run_disqualification_filters(
