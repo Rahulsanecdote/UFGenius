@@ -259,6 +259,71 @@ def test_run_daily_scan_includes_pipeline_diagnostics(monkeypatch):
     assert "Pre-filter passed 2" in result["pipeline_note"]
 
 
+def test_run_daily_scan_bear_market_early_exit(monkeypatch):
+    bear_regime = {
+        "regime": "BEAR_RISK_OFF",
+        "regime_score": -80,
+        "vix": 45.0,
+        "strategy": {"bias": "CASH", "position_size_multiplier": 0.0},
+    }
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: bear_regime)
+    monkeypatch.setattr(daily_scan.config, "SAFETY", {"trade_in_bear_market": False})
+
+    result = daily_scan.run_daily_scan(account_size=10_000, universe_name="SP500")
+
+    assert result["market_regime"] == "BEAR_RISK_OFF"
+    assert result["strong_buys"] == []
+    assert result["buys"] == []
+    assert "BEAR MARKET" in result.get("alert", "")
+    assert result["total_scanned"] == 0
+
+
+def test_run_daily_scan_bear_market_allowed_when_config_permits(monkeypatch):
+    bear_regime = {
+        "regime": "BEAR_RISK_OFF",
+        "regime_score": -80,
+        "vix": 45.0,
+        "strategy": {"bias": "CASH", "position_size_multiplier": 0.0},
+    }
+    df = _sample_price_df(80)
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: bear_regime)
+    monkeypatch.setattr(daily_scan.config, "SAFETY", {"trade_in_bear_market": True})
+    monkeypatch.setattr(daily_scan, "get_universe", lambda _: ["AAA"])
+    monkeypatch.setattr(daily_scan, "technical_pre_filter", lambda _: [])
+
+    result = daily_scan.run_daily_scan(account_size=10_000, universe_name="SP500")
+
+    # Should proceed past bear-market guard and return a normal scan result
+    assert "scan_date" in result
+    assert "strong_buys" in result
+
+
+def test_run_daily_scan_no_prefilter_passes_all_tickers(monkeypatch):
+    regime = {"regime": "MILD_BULL", "regime_score": 25, "vix": 18, "strategy": {"position_size_multiplier": 0.8}}
+    df = _sample_price_df(80)
+
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)
+    monkeypatch.setattr(daily_scan, "get_universe", lambda _: ["AAA", "BBB", "CCC"])
+
+    analyzed = []
+
+    def _fake_signal(ticker, macro_regime=None, price_df=None):
+        analyzed.append(ticker)
+        return {"signal": "HOLD", "score": 40, "_df": df}
+
+    monkeypatch.setattr(daily_scan, "generate_signal", _fake_signal)
+
+    result = daily_scan.run_daily_scan(
+        account_size=10_000,
+        universe_name="SP500",
+        pre_filter=False,
+        max_signals=3,
+    )
+
+    assert result["total_scanned"] == 3
+    assert set(analyzed) == {"AAA", "BBB", "CCC"}
+
+
 def test_run_daily_scan_zero_buy_pipeline_note_mentions_regime(monkeypatch):
     df = _sample_price_df(80)
     regime = {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "vix": 27.2, "strategy": {"position_size_multiplier": 0.5}}

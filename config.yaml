@@ -17,7 +17,7 @@ safety_rules:
   trade_in_bear_market: false
   trade_earnings_week: false
   cooldown_after_loss_hours: 24
-  paper_trade_days_required: 30
+  paper_trade_days_required: 30  # NOTE: currently unread/unenforced — future guardrail
 
 schedule:
   pre_market: "06:00"

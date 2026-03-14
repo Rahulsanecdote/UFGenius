@@ -43,16 +43,26 @@ def env(key: str, default: str = "") -> str:
 
 
 def env_int(key: str, default: int) -> int:
+    raw = env(key, "")
+    if not raw:
+        return default
     try:
-        return int(env(key, str(default)))
+        return int(raw)
     except (TypeError, ValueError):
+        import warnings
+        warnings.warn(f"Config: {key}={raw!r} is not a valid integer; using default {default}", stacklevel=2)
         return default
 
 
 def env_float(key: str, default: float) -> float:
+    raw = env(key, "")
+    if not raw:
+        return default
     try:
-        return float(env(key, str(default)))
+        return float(raw)
     except (TypeError, ValueError):
+        import warnings
+        warnings.warn(f"Config: {key}={raw!r} is not a valid float; using default {default}", stacklevel=2)
         return default
 
 
@@ -121,7 +131,11 @@ YFINANCE_TIMEOUT_SEC: float = env_float("YFINANCE_TIMEOUT_SEC", 15.0)
 
 # Signal filtering
 ALLOW_PENNY_STOCKS: bool = env_bool("ALLOW_PENNY_STOCKS", False)
-SIGNAL_MIN_PRICE: float = max(0.0, env_float("SIGNAL_MIN_PRICE", 1.0))
+_signal_min_price_raw = env_float("SIGNAL_MIN_PRICE", 1.0)
+if _signal_min_price_raw < 0:
+    import warnings
+    warnings.warn(f"SIGNAL_MIN_PRICE={_signal_min_price_raw} is negative; clamping to 0.0", stacklevel=1)
+SIGNAL_MIN_PRICE: float = max(0.0, _signal_min_price_raw)
 
 # Dashboard hardening
 DASHBOARD_HOST: str = env("DASHBOARD_HOST", "127.0.0.1")

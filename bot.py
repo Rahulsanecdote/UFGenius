@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime
@@ -136,8 +137,17 @@ def cmd_scan(args) -> None:
         # Send alerts if live mode
         if args.mode == "live":
             for plan in result.get("strong_buys", []) + result.get("buys", []):
-                send_telegram_alert(plan)
-            send_scan_digest(result)
+                try:
+                    send_telegram_alert(plan)
+                except Exception as exc:
+                    log.warning(
+                        f"Telegram alert failed for {plan.get('ticker', '?')}: {exc}",
+                        exc_info=True,
+                    )
+            try:
+                send_scan_digest(result)
+            except Exception as exc:
+                log.warning(f"Scan digest alert failed: {exc}", exc_info=True)
 
 
 def cmd_backtest(args) -> None:
@@ -216,12 +226,16 @@ def _schedule_scan(args) -> None:
         log.info(f"Scheduled scan triggered at {datetime.now().strftime('%H:%M')}")
         cmd_scan(args)
 
+    _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     for time_str in [
         sched.get("pre_market",  "06:00"),
         sched.get("market_open", "09:25"),
         sched.get("post_market", "16:30"),
         sched.get("overnight",   "21:00"),
     ]:
+        if not _TIME_RE.match(time_str):
+            log.error(f"Invalid schedule time '{time_str}' (expected HH:MM 24h); skipping")
+            continue
         schedule.every().day.at(time_str).do(_run)
 
     log.info(f"Scheduled scans at: {', '.join([sched.get(k, '') for k in ['pre_market','market_open','post_market','overnight']])}")

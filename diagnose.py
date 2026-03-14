@@ -12,6 +12,7 @@ If this fails, try:
     3. Check your internet/VPN/firewall
 """
 
+import re
 import sys
 import time
 
@@ -42,15 +43,26 @@ def main():
         print("   ❌ numpy not installed — run: pip install numpy")
 
     # ── Check yfinance version ───────────────────────────────────────────────
+    def _parse_ver(v: str) -> tuple:
+        """Parse 'X.Y.Z...' safely, ignoring non-numeric suffixes (e.g. rc1, .post1)."""
+        parts = v.split(".")
+        def _int(s: str) -> int:
+            m = re.match(r"\d+", s)
+            return int(m.group()) if m else 0
+        return (
+            _int(parts[0]) if len(parts) > 0 else 0,
+            _int(parts[1]) if len(parts) > 1 else 0,
+            _int(parts[2]) if len(parts) > 2 else 0,
+        )
+
     yf_ver = yf.__version__
-    major = int(yf_ver.split(".")[0])
+    major, minor, patch = _parse_ver(yf_ver)
     print(f"\n2. yfinance version: {yf_ver}")
     if major >= 1:
         print("   ⚠️  yfinance 1.x detected — using curl_cffi backend")
         print("   If fetches fail, try: pip install yfinance==0.2.54")
     else:
-        minor = int(yf_ver.split(".")[1]) if len(yf_ver.split(".")) > 1 else 0
-        if minor >= 2 and int(yf_ver.split(".")[2] if len(yf_ver.split(".")) > 2 else "0") >= 40:
+        if minor >= 2 and patch >= 40:
             print("   ℹ️  yfinance 0.2.40+ — MultiIndex columns enabled")
         print("   ✅ Compatible version")
 
