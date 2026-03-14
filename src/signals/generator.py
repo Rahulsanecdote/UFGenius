@@ -29,16 +29,9 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# Signal thresholds
-SIGNAL_MAP = [
-    (80, "STRONG_BUY", "VERY_HIGH"),
-    (65, "BUY", "HIGH"),
-    (50, "WEAK_BUY", "MODERATE"),
-    (40, "HOLD", "LOW"),
-    (25, "WEAK_SELL", "MODERATE"),
-    (10, "SELL", "HIGH"),
-    (0, "STRONG_SELL", "VERY_HIGH"),
-]
+# Signal thresholds loaded from config (config.yaml: signal_thresholds)
+# Each entry: [min_score, signal_name, confidence_label]
+SIGNAL_MAP = [tuple(row) for row in config.SIGNAL_THRESHOLDS]
 
 WEIGHTS = config.SIGNAL_WEIGHTS
 
@@ -96,9 +89,10 @@ def generate_signal(
             raise TypeError("fundamental score payload was not a dict")
         if not isinstance(fundamental.get("fundamental_score"), (int, float)):
             raise ValueError("fundamental_score missing or non-numeric")
-    except Exception as exc:
-        log.warning(f"{symbol}: fundamental scoring failed ({exc}); using neutral fallback")
+    except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
+        log.warning(f"{symbol}: fundamental scoring failed ({exc}); using neutral fallback", exc_info=True)
         fundamental = _neutral_fundamental_score(symbol, context.fundamentals_raw)
+        fundamental["_fundamental_fallback"] = True
 
     # Run disqualifiers early to avoid expensive downstream analysis for invalid tickers.
     disqualifiers = run_disqualification_filters(
@@ -155,6 +149,9 @@ def generate_signal(
         asset_class=(context.instrument.asset_class.value if context.instrument is not None else "equity"),
         enable_regime_weighting=config.FEATURE_ENABLE_REGIME_WEIGHTING,
     )
+    _weight_total = sum(w.get(k, 0) for k in ("technical", "volume", "sentiment", "fundamental", "macro"))
+    if not (0.95 <= _weight_total <= 1.05):
+        log.warning(f"{symbol}: signal weights sum to {_weight_total:.3f}, expected ~1.0 — check config")
     composite = (
         technical_combined * w.get("technical", 0.35)
         + volume_score["score"] * w.get("volume", 0.20)

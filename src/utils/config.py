@@ -137,6 +137,30 @@ DASHBOARD_RATE_LIMIT_DB_PATH: str = env("DASHBOARD_RATE_LIMIT_DB_PATH", "/tmp/uf
 DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)
 DASHBOARD_UI_TOKEN_TTL_SEC: int = env_int("DASHBOARD_UI_TOKEN_TTL_SEC", 3600)
 
+# Disqualification filter thresholds (overridable via env or config.yaml)
+FILTER_MIN_AVG_VOLUME: int   = int(get("filter_min_avg_volume", 100_000))
+FILTER_MIN_MARKET_CAP: float = float(get("filter_min_market_cap", 100_000_000))
+FILTER_MAX_5DAY_GAIN:  float = float(get("filter_max_5day_gain_pct", 50.0))
+FILTER_BANKRUPTCY_Z:   float = float(get("filter_bankruptcy_z", 1.0))
+
+# Signal classification thresholds (score → signal name, confidence)
+SIGNAL_THRESHOLDS: list = get("signal_thresholds", [
+    [80, "STRONG_BUY",  "VERY_HIGH"],
+    [65, "BUY",         "HIGH"],
+    [50, "WEAK_BUY",    "MODERATE"],
+    [40, "HOLD",        "LOW"],
+    [25, "WEAK_SELL",   "MODERATE"],
+    [10, "SELL",        "HIGH"],
+    [0,  "STRONG_SELL", "VERY_HIGH"],
+])
+
+# Expected value parameters (historical backtested estimates)
+EV_WIN_RATE: float = float(get("ev_win_rate", 0.45))
+EV_AVG_RR:   float = float(get("ev_avg_rr", 2.5))
+
+# T1 resistance snap discount
+RESISTANCE_SNAP_DISCOUNT: float = env_float("RESISTANCE_SNAP_DISCOUNT", float(get("resistance_snap_discount", 0.995)))
+
 # Phase 3 feature store
 FEATURE_CACHE_TTL_SEC: int = env_int("FEATURE_CACHE_TTL_SEC", 300)
 FEATURE_CACHE_MAX_ENTRIES: int = env_int("FEATURE_CACHE_MAX_ENTRIES", 2000)

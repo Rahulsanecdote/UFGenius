@@ -21,6 +21,11 @@ def send_telegram_alert(trade_plan: dict) -> bool:
 
     message = _format_message(trade_plan)
 
+    # Telegram Bot API silently truncates messages over 4096 chars
+    _MAX_TG_LEN = 4096
+    if len(message) > _MAX_TG_LEN:
+        message = message[: _MAX_TG_LEN - 20] + "\n…[truncated]"
+
     try:
         url = TELEGRAM_API.format(token=config.TELEGRAM_BOT_TOKEN)
         post_form(

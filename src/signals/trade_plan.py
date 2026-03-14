@@ -27,8 +27,8 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-WIN_RATE  = 0.45
-AVG_RR    = 2.5
+WIN_RATE  = config.EV_WIN_RATE   # Historical estimate — see config.yaml: ev_win_rate
+AVG_RR    = config.EV_AVG_RR     # Historical estimate — see config.yaml: ev_avg_rr
 
 
 def generate_trade_plan(
@@ -70,7 +70,7 @@ def generate_trade_plan(
         atr_series = vol_indicators.get("ATR_14")
         if atr_series is not None and hasattr(atr_series, "iloc") and len(atr_series) > 0:
             v = atr_series.iloc[-1]
-            atr14 = float(v) if v == v else None  # NaN guard
+            atr14 = float(v) if not pd.isna(v) else None
 
     if atr14 is None or atr14 == 0:
         atr14 = current_price * 0.02  # Fallback: 2% of price
@@ -94,9 +94,10 @@ def generate_trade_plan(
     raw_targets = [round(entry_price + risk * rr, 2) for rr in rr_ratios]
 
     # Snap T1 to nearest resistance if it's between entry and T2
+    # Enter slightly below resistance (configurable discount) to allow for spread/slippage
     nearest_res = sr.get("nearest_resistance")
     if nearest_res and entry_price < nearest_res < raw_targets[1]:
-        raw_targets[0] = round(float(nearest_res) * 0.995, 2)
+        raw_targets[0] = round(float(nearest_res) * config.RESISTANCE_SNAP_DISCOUNT, 2)
 
     targets = {}
     labels = ["T1", "T2", "T3"]
@@ -113,10 +114,22 @@ def generate_trade_plan(
     risk_pct    = config.RISK_PER_TRADE   # e.g. 0.01 = 1%
     max_pos_pct = config.MAX_POSITION_PCT # e.g. 0.10 = 10%
 
+    if risk <= 0:
+        log.warning(
+            f"{ticker}: entry price equals stop loss (risk=0); "
+            "using max-position sizing only — verify ATR and stop multiplier"
+        )
+
     risk_dollars     = account_size * risk_pct
-    shares_by_risk   = risk_dollars / risk if risk > 0 else 0
+    shares_by_risk   = risk_dollars / risk if risk > 0 else float("inf")
     shares_by_max    = (account_size * max_pos_pct) / entry_price
-    shares           = max(int(min(shares_by_risk, shares_by_max)), 1)
+    raw_shares       = int(min(shares_by_risk, shares_by_max))
+    shares           = max(raw_shares, 1)
+    if shares > raw_shares:
+        log.warning(
+            f"{ticker}: position clamped to minimum 1 share "
+            f"(computed {raw_shares} shares); check account size and risk settings"
+        )
 
     position_value  = round(shares * entry_price, 2)
     actual_risk     = round(shares * risk, 2)

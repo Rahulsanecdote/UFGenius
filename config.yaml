@@ -44,3 +44,28 @@ signal_weights:
 atr_stop_multiplier: 2.0
 target_rr_ratios: [1.5, 2.5, 4.0]
 target_exit_pcts: [30, 40, 30]
+
+# Disqualification filter thresholds
+# BANKRUPTCY_Z: Altman Z-Score < 1.0 is the academic distress zone (Altman, 1968)
+filter_min_avg_volume: 100000      # Minimum 20-day average daily volume (liquidity floor)
+filter_min_market_cap: 100000000   # Minimum market cap $100M (nano-cap trap floor)
+filter_max_5day_gain_pct: 50.0     # Maximum 5-day gain % before flagging as chaser trap
+filter_bankruptcy_z: 1.0           # Altman Z-Score below this = bankruptcy risk
+
+# Signal classification thresholds (score out of 100)
+signal_thresholds:
+  - [80, "STRONG_BUY",  "VERY_HIGH"]
+  - [65, "BUY",         "HIGH"]
+  - [50, "WEAK_BUY",    "MODERATE"]
+  - [40, "HOLD",        "LOW"]
+  - [25, "WEAK_SELL",   "MODERATE"]
+  - [10, "SELL",        "HIGH"]
+  - [0,  "STRONG_SELL", "VERY_HIGH"]
+
+# Expected value calculation parameters (historical backtest estimates)
+# WARNING: These are assumptions, not guarantees of future performance.
+ev_win_rate: 0.45    # Estimated win rate (45%)
+ev_avg_rr: 2.5       # Estimated average reward:risk ratio
+
+# T1 target resistance snap — discount applied when snapping T1 to nearest resistance
+resistance_snap_discount: 0.995  # Enter 0.5% below resistance to allow for spread
