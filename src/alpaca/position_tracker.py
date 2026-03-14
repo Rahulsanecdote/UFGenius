@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from src.utils import config
 from src.utils.logger import get_logger
@@ -68,6 +68,22 @@ class LivePosition:
     opened_at: str          # ISO-8601 UTC timestamp
     status: str             # "pending_fill" | "active" | "closed"
     trades_today_date: str  # YYYY-MM-DD (for daily trade count)
+
+
+def _allocate_exit_tranches(shares: int) -> tuple[int, int, int]:
+    """
+    Allocate shares across three exit tranches: T1=30%, T2=40%, T3=remainder.
+
+    Args:
+        shares: Total shares in the position.
+
+    Returns:
+        (t1_shares, t2_shares, t3_shares) — always sum to `shares`.
+    """
+    t1 = max(1, int(round(shares * 0.30)))
+    t2 = max(1, int(round(shares * 0.40)))
+    t3 = max(0, shares - t1 - t2)
+    return t1, t2, t3
 
 
 class PositionTracker:
@@ -150,10 +166,7 @@ class PositionTracker:
         stop_price = float(plan["stop_loss"]["price"])
         targets = plan.get("targets", {})
 
-        # Allocate shares to each exit tranche (30 / 40 / remainder)
-        t1_shares = max(1, int(round(shares_initial * 0.30)))
-        t2_shares = max(1, int(round(shares_initial * 0.40)))
-        t3_shares = max(0, shares_initial - t1_shares - t2_shares)
+        t1_shares, t2_shares, t3_shares = _allocate_exit_tranches(shares_initial)
 
         pos = LivePosition(
             ticker=ticker,
@@ -201,9 +214,7 @@ class PositionTracker:
         pos.shares_initial = shares
         pos.shares_open = shares
         # Recompute tranche sizes against the actual fill qty
-        pos.t1_shares = max(1, int(round(shares * 0.30)))
-        pos.t2_shares = max(1, int(round(shares * 0.40)))
-        pos.t3_shares = max(0, shares - pos.t1_shares - pos.t2_shares)
+        pos.t1_shares, pos.t2_shares, pos.t3_shares = _allocate_exit_tranches(shares)
         pos.status = "active"
         self.save()
         log.info(f"{ticker}: entry filled @ ${fill_price:.2f} x{shares}")
@@ -214,7 +225,7 @@ class PositionTracker:
         pos.stop_order_id = order_id
         self.save()
 
-    def mark_target_placed(self, ticker: str, level: str, order_id: str) -> None:
+    def mark_target_placed(self, ticker: str, level: Literal["t1", "t2", "t3"], order_id: str) -> None:
         """
         Record the order ID for a target limit sell order.
 
@@ -227,7 +238,7 @@ class PositionTracker:
         setattr(pos, f"{level}_order_id", order_id)
         self.save()
 
-    def mark_target_hit(self, ticker: str, level: str) -> None:
+    def mark_target_hit(self, ticker: str, level: Literal["t1", "t2", "t3"]) -> None:
         """
         Record that a target exit was filled.
 

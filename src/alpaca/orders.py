@@ -7,12 +7,15 @@ catching and deciding whether to retry or abort.
 
 from __future__ import annotations
 
+import threading
+
 from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 _client = None  # Module-level singleton
+_client_lock = threading.Lock()
 
 
 class OrderError(Exception):
@@ -25,26 +28,33 @@ def _get_client():
     if _client is not None:
         return _client
 
-    api_key = config.ALPACA_API_KEY
-    api_secret = config.ALPACA_SECRET_KEY
-    if not (api_key and api_secret):
-        raise OrderError(
-            "Alpaca credentials not configured (ALPACA_API_KEY / ALPACA_SECRET_KEY)"
-        )
+    # Double-checked locking: safe when main thread and monitor thread both
+    # call order functions for the first time concurrently.
+    with _client_lock:
+        if _client is not None:
+            return _client
 
-    try:
-        from alpaca.trading.client import TradingClient
-    except ImportError as exc:
-        raise OrderError("alpaca-py not installed — run: pip install alpaca-py") from exc
+        api_key = config.ALPACA_API_KEY
+        api_secret = config.ALPACA_SECRET_KEY
+        if not (api_key and api_secret):
+            raise OrderError(
+                "Alpaca credentials not configured (ALPACA_API_KEY / ALPACA_SECRET_KEY)"
+            )
 
-    _client = TradingClient(api_key, api_secret, paper=config.ALPACA_PAPER)
+        try:
+            from alpaca.trading.client import TradingClient
+        except ImportError as exc:
+            raise OrderError("alpaca-py not installed — run: pip install alpaca-py") from exc
+
+        _client = TradingClient(api_key, api_secret, paper=config.ALPACA_PAPER)
     return _client
 
 
 def _reset_client() -> None:
     """Clear the cached client (used in tests to inject a fresh mock)."""
     global _client
-    _client = None
+    with _client_lock:
+        _client = None
 
 
 def place_entry_order(symbol: str, shares: int, limit_price: float):
