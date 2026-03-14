@@ -180,3 +180,10 @@ FEATURE_CACHE_TTL_SEC: int = env_int("FEATURE_CACHE_TTL_SEC", 300)
 FEATURE_CACHE_MAX_ENTRIES: int = env_int("FEATURE_CACHE_MAX_ENTRIES", 2000)
 FEATURE_CACHE_VERSION: str = env("FEATURE_CACHE_VERSION", "v1")
 FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTING", False)
+
+# Live order execution
+LIVE_POSITION_STORE_PATH: str = env(
+    "LIVE_POSITION_STORE_PATH",
+    str(Path(__file__).parent.parent.parent / "data" / "live_positions.json"),
+)
+MONITOR_INTERVAL_MIN: int = env_int("MONITOR_INTERVAL_MIN", 5)

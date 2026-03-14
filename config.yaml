@@ -69,3 +69,7 @@ ev_avg_rr: 2.5       # Estimated average reward:risk ratio
 
 # T1 target resistance snap — discount applied when snapping T1 to nearest resistance
 resistance_snap_discount: 0.995  # Enter 0.5% below resistance to allow for spread
+
+# Live order execution settings
+live_position_store: "data/live_positions.json"  # Path for live position state JSON
+monitor_interval_min: 5  # How often (minutes) to poll order fills during market hours

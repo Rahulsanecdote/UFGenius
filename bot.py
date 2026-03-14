@@ -7,6 +7,8 @@ Usage:
     python bot.py --mode scan --ticker AAPL            # Analyse a single ticker
     python bot.py --mode paper                         # Run on schedule (no live alerts)
     python bot.py --mode live                          # Run on schedule (live alerts)
+    python bot.py --mode live --execute                # Live alerts + paper-account orders
+    python bot.py --mode live --live-execute           # Live alerts + REAL-MONEY orders
     python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
     python bot.py --mode portfolio                     # View Alpaca portfolio (read-only)
 
@@ -34,6 +36,20 @@ from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger("bot")
+
+# Module-level position tracker — initialised lazily when execution flags are set.
+_position_tracker = None
+
+
+def _get_tracker():
+    """Return the module-level PositionTracker, creating and loading it on first call."""
+    global _position_tracker
+    if _position_tracker is None:
+        from src.alpaca.position_tracker import PositionTracker
+        _position_tracker = PositionTracker()
+        _position_tracker.load()
+    return _position_tracker
+
 
 DISCLAIMER = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -149,6 +165,53 @@ def cmd_scan(args) -> None:
             except Exception as exc:
                 log.warning(f"Scan digest alert failed: {exc}", exc_info=True)
 
+        # Execute trades if --execute or --live-execute flag is active
+        _maybe_execute(args, result)
+
+
+def _maybe_execute(args, scan_result: dict) -> None:
+    """
+    Submit entry orders for BUY/STRONG_BUY plans when execution flags are active.
+
+    --execute       → place orders on the Alpaca PAPER account (ALPACA_PAPER=true)
+    --live-execute  → place orders on the LIVE Alpaca account  (ALPACA_PAPER=false)
+
+    Only runs when --mode live is also set.
+    """
+    execute = getattr(args, "execute", False)
+    live_execute = getattr(args, "live_execute", False)
+    if not (execute or live_execute):
+        return
+    if args.mode != "live":
+        return
+
+    dry_run = not live_execute  # --execute = dry_run against paper account preview;
+                                # --live-execute = real orders (paper or live per config)
+
+    from src.alpaca.executor import execute_trade_plan
+    tracker = _get_tracker()
+    plans = scan_result.get("strong_buys", []) + scan_result.get("buys", [])
+
+    for plan in plans:
+        ticker = plan.get("ticker", "?")
+        try:
+            outcome = execute_trade_plan(plan, tracker, dry_run=dry_run)
+            if outcome.get("dry_run"):
+                log.info(
+                    f"[DRY RUN] {ticker} — would submit"
+                    f" {outcome['shares']} shares @ ${outcome['limit_price']:.2f}"
+                )
+            elif outcome["ok"]:
+                log.info(
+                    f"Order placed: {ticker} x{outcome['shares']}"
+                    f" @ ${outcome['limit_price']:.2f}"
+                    f" (order_id={outcome['order_id']})"
+                )
+            else:
+                log.warning(f"Trade rejected [{ticker}]: {outcome['reason']}")
+        except Exception as exc:
+            log.error(f"Execution error [{ticker}]: {exc}", exc_info=True)
+
 
 def cmd_backtest(args) -> None:
     """Run historical backtest."""
@@ -222,6 +285,12 @@ def _schedule_scan(args) -> None:
     """Run scan on schedule."""
     sched = config.get("schedule", {})
 
+    # Start position monitor thread if execution flags are set
+    if getattr(args, "execute", False) or getattr(args, "live_execute", False):
+        from src.alpaca.executor import start_monitor_thread
+        tracker = _get_tracker()
+        start_monitor_thread(tracker)
+
     def _run():
         log.info(f"Scheduled scan triggered at {datetime.now().strftime('%H:%M')}")
         cmd_scan(args)
@@ -281,8 +350,46 @@ Examples:
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")
     parser.add_argument("--json",         action="store_true", help="Also output raw JSON")
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help=(
+            "Submit entry orders on the Alpaca PAPER account after each scan "
+            "(requires --mode live and ALPACA_PAPER=true in .env)"
+        ),
+    )
+    parser.add_argument(
+        "--live-execute",
+        action="store_true",
+        dest="live_execute",
+        help=(
+            "Submit entry orders on the LIVE Alpaca account after each scan "
+            "(requires --mode live and ALPACA_PAPER=false in .env). "
+            "⚠️  REAL MONEY — use with extreme caution."
+        ),
+    )
 
     args = parser.parse_args()
+
+    # Validate execution flag constraints
+    if args.live_execute and config.ALPACA_PAPER:
+        log.error(
+            "--live-execute requires ALPACA_PAPER=false in your .env. "
+            "Refusing to proceed: live flag set but account is still paper."
+        )
+        sys.exit(1)
+    if args.live_execute and args.mode != "live":
+        log.error("--live-execute requires --mode live.")
+        sys.exit(1)
+    if args.execute and args.mode != "live":
+        log.error("--execute requires --mode live.")
+        sys.exit(1)
+    if args.live_execute:
+        log.warning(
+            "⚠️  LIVE TRADING MODE — real money at risk. "
+            "All safety rules apply. Press Ctrl+C within 5 s to abort."
+        )
+        time.sleep(5)
 
     if args.mode in ("scan",):
         cmd_scan(args)

@@ -51,6 +51,13 @@ def generate_trade_plan(
     if account_size is None:
         account_size = config.ACCOUNT_SIZE
 
+    if not isinstance(signal, dict):
+        log.error(
+            f"{ticker}: generate_trade_plan expected a dict signal, "
+            f"got {type(signal).__name__} — returning error"
+        )
+        return {"error": f"Invalid signal type: expected dict, got {type(signal).__name__}"}
+
     # Use pre-fetched df or load from signal
     if df is None:
         df = signal.get("_df")
