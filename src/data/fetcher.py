@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import time as _time
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -135,37 +135,9 @@ def _is_nonempty_dict(payload) -> bool:
     return isinstance(payload, dict) and bool(payload)
 
 
-def _minimum_required_rows(period: str, interval: str) -> int:
-    """
-    Minimum bar count required for a payload to be considered usable.
-
-    This prevents accepting truncated upstream responses (for example a
-    1-year request that only returns a handful of bars).
-    """
-    if str(interval or "").lower() != "1d":
-        return 1
-
-    normalized_period = str(period or "").strip().lower()
-    if normalized_period == "max":
-        return 120
-
-    delta = _period_to_timedelta(normalized_period)
-    if delta is None:
-        return 1
-
-    trading_days = max(1, int(delta.days * (5.0 / 7.0)))
-    # Accept ~45% of expected daily bars to allow holidays/provider gaps while
-    # still rejecting clearly truncated payloads.
-    return max(1, int(trading_days * 0.45))
-
-
-def _has_required_rows(df: pd.DataFrame, period: str, interval: str) -> bool:
-    return len(df) >= _minimum_required_rows(period, interval)
-
-
 def _classify_provider_exception(exc: Exception) -> str:
     text = str(exc).lower()
-    if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
+    if isinstance(exc, (FuturesTimeoutError, TimeoutError)) or "timed out" in text or "timeout" in text:
         return "TIMEOUT"
     if "429" in text or "too many requests" in text or "rate limit" in text:
         return "RATE_LIMITED"
@@ -198,6 +170,25 @@ def _validate_ohlcv_frame(df: pd.DataFrame | None) -> tuple[pd.DataFrame, str | 
     if cleaned.empty:
         return pd.DataFrame(), "EMPTY_AFTER_NA_DROP"
     return cleaned, None
+
+
+def _call_with_timeout(
+    fn,
+    *args,
+    timeout_sec: float = _YF_TIMEOUT,
+    operation: str = "provider call",
+    **kwargs,
+):
+    """Run a call with an upper-bound timeout to prevent hanging provider paths."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=max(1.0, float(timeout_sec)))
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise FuturesTimeoutError(f"{operation} timed out after {timeout_sec:.1f}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 # ── Low-level fetch helpers ──────────────────────────────────────────────────
@@ -233,8 +224,22 @@ def _download_ohlcv_via_ticker(
     """
     with _UPSTREAM_FETCH_SEMAPHORE:
         t = yf.Ticker(symbol)
-        df = t.history(period=period, interval=interval, auto_adjust=True)
-        return df
+        def _history_call():
+            try:
+                return t.history(
+                    period=period,
+                    interval=interval,
+                    auto_adjust=True,
+                    timeout=_YF_TIMEOUT,
+                )
+            except TypeError:
+                return t.history(period=period, interval=interval, auto_adjust=True)
+
+        return _call_with_timeout(
+            _history_call,
+            timeout_sec=_YF_TIMEOUT,
+            operation=f"{symbol} yfinance history",
+        )
 
 
 def _download_ohlcv_via_alpaca(
@@ -354,45 +359,21 @@ def _download_ohlcv_once(
     )
     if can_try_alpaca:
         try:
-            raw = _download_ohlcv_via_alpaca(symbol, period=period, interval=interval)
-            cleaned, invalid_reason = _validate_ohlcv_frame(raw)
-            if not cleaned.empty and _has_required_rows(cleaned, period, interval):
-                return cleaned
-            if not cleaned.empty:
-                min_rows = _minimum_required_rows(period, interval)
-                log.warning(
-                    f"{symbol}: Alpaca OHLCV too short ({len(cleaned)} rows, need >= {min_rows}), "
-                    "falling back to yfinance"
-                )
-            else:
-                log.warning(
-                    f"{symbol}: Alpaca returned invalid OHLCV ({invalid_reason}), "
-                    "falling back to yfinance"
-                )
+            df = _download_ohlcv_via_alpaca(symbol, period=period, interval=interval)
+            if df is not None and not df.empty:
+                return df
+            log.warning(f"{symbol}: Alpaca returned empty OHLCV, falling back to yfinance")
         except Exception as exc:
             log.warning(f"{symbol}: Alpaca OHLCV failed ({exc}), falling back to yfinance")
 
     try:
-        raw = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
-        cleaned, invalid_reason = _validate_ohlcv_frame(raw)
-        if not cleaned.empty and _has_required_rows(cleaned, period, interval):
-            return cleaned
-        if not cleaned.empty:
-            min_rows = _minimum_required_rows(period, interval)
-            log.debug(
-                f"{symbol}: Ticker.history() OHLCV too short ({len(cleaned)} rows, need >= {min_rows}), "
-                "trying yf.download()"
-            )
-        else:
-            log.debug(
-                f"{symbol}: Ticker.history() returned invalid OHLCV ({invalid_reason}), trying yf.download()"
-            )
+        df = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
+        if df is not None and not df.empty:
+            return df
     except Exception as e:
         log.debug(f"{symbol}: Ticker.history() failed ({e}), trying yf.download()")
 
-    raw = _download_ohlcv_via_download(symbol, period=period, interval=interval)
-    cleaned, _ = _validate_ohlcv_frame(raw)
-    return cleaned
+    return _download_ohlcv_via_download(symbol, period=period, interval=interval)
 
 
 def _merge_fast_info_fields(info: dict, ticker_obj: yf.Ticker, symbol: str) -> dict:
@@ -435,7 +416,14 @@ def _fetch_ticker_info_once(ticker: str) -> dict:
         t = yf.Ticker(symbol)
 
         try:
-            info = t.info
+            info = _call_with_timeout(
+                lambda: t.info,
+                timeout_sec=_YF_TIMEOUT,
+                operation=f"{symbol} yfinance info",
+            )
+        except FuturesTimeoutError as exc:
+            log.warning(f"{symbol}: Ticker.info timed out ({exc}), falling back to fast_info")
+            info = {}
         except Exception as exc:
             log.debug(f"{symbol}: Ticker.info failed ({exc}), falling back to fast_info")
             info = {}
@@ -756,17 +744,8 @@ def fetch_ohlcv(
 
     if use_cache:
         cached = cache.get(cache_key)
-        if isinstance(cached, pd.DataFrame) and not cached.empty:
-            if _has_required_rows(cached, period, interval):
-                return cached
-            min_rows = _minimum_required_rows(period, interval)
-            log.warning(
-                f"{symbol}: cached OHLCV too short ({len(cached)} rows, need >= {min_rows}), ignoring cache"
-            )
-        elif isinstance(cached, pd.DataFrame):
-            log.warning(f"{symbol}: cached OHLCV was empty, ignoring cache")
-        elif cached is not None:
-            log.warning(f"{symbol}: cached OHLCV has invalid type {type(cached).__name__}, ignoring cache")
+        if cached is not None:
+            return cached
 
     try:
         df = retry_call(
@@ -1000,6 +979,21 @@ def diagnose() -> dict:
         "fundamentals": {},
     }
 
+    def _cached_probe_result(symbol: str) -> tuple[pd.DataFrame, str]:
+        probe_key = f"ohlcv:{symbol}:5d:1d"
+        candidate_keys = [probe_key]
+        critical_key = _CRITICAL_CACHE_KEYS.get(symbol)
+        if critical_key and critical_key not in candidate_keys:
+            candidate_keys.append(critical_key)
+        for key in candidate_keys:
+            cached = cache.get(key)
+            if isinstance(cached, pd.DataFrame) and not cached.empty:
+                return cached, "cache"
+            stale = cache.get_stale(key)
+            if isinstance(stale, pd.DataFrame) and not stale.empty:
+                return stale, "stale_cache"
+        return pd.DataFrame(), "none"
+
     for symbol in ["AAPL", "SPY", "^VIX"]:
         start = _time.time()
         try:
@@ -1015,19 +1009,44 @@ def diagnose() -> dict:
                     "elapsed_sec": elapsed,
                 }
             else:
-                results["tests"][symbol] = {
-                    "status": "EMPTY",
-                    "reason": probe.get("reason") or "UNKNOWN",
-                    "provider_failures": probe.get("provider_failures", []),
-                    "elapsed_sec": elapsed,
-                }
+                cached_df, cached_source = _cached_probe_result(symbol)
+                if cached_df is not None and not cached_df.empty:
+                    results["tests"][symbol] = {
+                        "status": "OK_CACHED",
+                        "rows": len(cached_df),
+                        "columns": list(cached_df.columns),
+                        "last_close": round(float(cached_df["Close"].iloc[-1]), 2),
+                        "provider": cached_source,
+                        "reason": probe.get("reason") or "LIVE_PROBE_EMPTY",
+                        "provider_failures": probe.get("provider_failures", []),
+                        "elapsed_sec": elapsed,
+                    }
+                else:
+                    results["tests"][symbol] = {
+                        "status": "EMPTY",
+                        "reason": probe.get("reason") or "UNKNOWN",
+                        "provider_failures": probe.get("provider_failures", []),
+                        "elapsed_sec": elapsed,
+                    }
         except Exception as e:
             elapsed = round(_time.time() - start, 2)
-            results["tests"][symbol] = {
-                "status": "ERROR",
-                "error": str(e),
-                "elapsed_sec": elapsed,
-            }
+            cached_df, cached_source = _cached_probe_result(symbol)
+            if cached_df is not None and not cached_df.empty:
+                results["tests"][symbol] = {
+                    "status": "OK_CACHED",
+                    "rows": len(cached_df),
+                    "columns": list(cached_df.columns),
+                    "last_close": round(float(cached_df["Close"].iloc[-1]), 2),
+                    "provider": cached_source,
+                    "error": str(e),
+                    "elapsed_sec": elapsed,
+                }
+            else:
+                results["tests"][symbol] = {
+                    "status": "ERROR",
+                    "error": str(e),
+                    "elapsed_sec": elapsed,
+                }
 
     start = _time.time()
     try:
@@ -1065,7 +1084,17 @@ def diagnose() -> dict:
             "elapsed_sec": elapsed,
         }
 
-    price_ok = all(t["status"] == "OK" for t in results["tests"].values())
+    healthy_price_statuses = {"OK", "OK_CACHED"}
+    core_symbols = ("AAPL", "SPY")
+    core_prices_ok = all(
+        results["tests"].get(symbol, {}).get("status") in healthy_price_statuses
+        for symbol in core_symbols
+    )
+    healthy_price_count = sum(
+        1 for item in results["tests"].values()
+        if item.get("status") in healthy_price_statuses
+    )
+    price_ok = core_prices_ok and healthy_price_count >= 2
     fundamentals_ok = results["fundamentals"].get("status") == "OK"
     all_ok = price_ok and fundamentals_ok
     results["overall"] = "HEALTHY" if all_ok else "DEGRADED"

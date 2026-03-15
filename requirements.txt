@@ -4,7 +4,7 @@
 
 yfinance>=0.2.54,<1.0
 pandas
-numpy
+numpy<2
 vaderSentiment
 newsapi-python
 praw

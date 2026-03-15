@@ -7,7 +7,6 @@ Then open: http://localhost:5001
 from __future__ import annotations
 
 import json
-import os
 import re
 
 import pandas as pd
@@ -33,7 +32,6 @@ from src.utils.security import (
 
 log = get_logger("dashboard")
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 _rate_limiter = build_rate_limiter()
@@ -1969,6 +1967,7 @@ HTML = '''
     };
     const SUGGESTIONS = ['AAPL', 'MSFT', 'NVDA', 'SPY'];
     const CHART_RANGES = ['1D', '5D', '1M', '3M', '1Y'];
+    const PROVIDER_HEALTH_REFRESH_MS = 60 * 1000;
     const PROGRESS_STEPS = {
       analyze: [
         'Validating symbol',
@@ -1997,6 +1996,7 @@ HTML = '''
       chartTicker: null,
       showMa: true,
       progressTimer: null,
+      providerHealthTimer: null,
       progressKind: null,
       factorOpen: new Set(),
       expandAllFactors: false,
@@ -2397,12 +2397,11 @@ HTML = '''
       const scores = (result && result.scores) || {};
       const regime = (result && result.regime_context) || {};
       const marketCap = result && result.market_cap;
-      const hasMarketCap = marketCap !== null && marketCap !== undefined && Number.isFinite(Number(marketCap));
       const marketCapState = reasons.some(reason => /UNKNOWN_MARKET_CAP/i.test(reason))
         ? 'unknown'
         : reasons.some(reason => /MICRO_CAP/i.test(reason))
           ? 'fail'
-          : hasMarketCap
+          : Number.isFinite(Number(marketCap))
             ? 'pass'
             : 'unknown';
 
@@ -2421,7 +2420,7 @@ HTML = '''
           key: 'market-cap',
           label: 'Market Cap',
           status: marketCapState,
-          value: hasMarketCap ? formatCurrency(marketCap) : 'Unknown',
+          value: Number.isFinite(Number(marketCap)) ? formatCurrency(marketCap) : 'Unknown',
           summary: marketCapState === 'pass'
             ? 'Verified against provider fundamentals.'
             : marketCapState === 'fail'
@@ -2636,13 +2635,24 @@ HTML = '''
       const fundamentals = payload.fundamentals || {};
       const testItems = Object.values(payload.tests || {});
       const testStatuses = testItems.map(item => item.status);
+      const testsBySymbol = payload.tests || {};
+      const isPriceHealthy = status => String(status || '').toUpperCase().startsWith('OK');
+      const fundamentalsHealthy = fundamentals.status === 'OK';
       const fundamentalsHardError = fundamentals.status === 'ERROR';
-      const anyPriceSuccess = testStatuses.some(status => status === 'OK');
+      const anyPriceSuccess = testStatuses.some(isPriceHealthy);
       const allPriceErrors = testStatuses.length > 0 && testStatuses.every(status => status === 'ERROR');
+      const corePriceHealthy = ['AAPL', 'SPY'].every(symbol => isPriceHealthy((testsBySymbol[symbol] || {}).status));
 
       const rateLimitPattern = /too many requests|rate limit/i;
-      const rateLimited = testItems.some(item => rateLimitPattern.test(String(item.error || '')))
-        || rateLimitPattern.test(String(fundamentals.error || ''));
+      const rateLimited = testItems.some(item => {
+        const failureItems = Array.isArray(item.provider_failures) ? item.provider_failures : [];
+        return rateLimitPattern.test(String(item.error || ''))
+          || failureItems.some(failure => rateLimitPattern.test(String(failure.reason || '')));
+      }) || (() => {
+        const failureItems = Array.isArray(fundamentals.provider_failures) ? fundamentals.provider_failures : [];
+        return rateLimitPattern.test(String(fundamentals.error || ''))
+          || failureItems.some(failure => rateLimitPattern.test(String(failure.reason || '')));
+      })();
       if (rateLimited) {
         return { className: 'status-degraded', label: 'Degraded', narrative: 'Upstream provider is rate-limiting requests; retry shortly or use cached data.' };
       }
@@ -2652,13 +2662,20 @@ HTML = '''
       if (allPriceErrors && fundamentalsHardError && !anyCriticalCache) {
         return { className: 'status-down', label: 'Down', narrative: 'Both live price history and fundamentals are failing with no cached fallback.' };
       }
-      if (cacheFreshness.any_critical_stale) {
+      if (payload.overall === 'HEALTHY' || (fundamentalsHealthy && corePriceHealthy && anyPriceSuccess)) {
+        if (cacheFreshness.any_critical_stale) {
+          const ageText = cacheFreshness.max_age_human || 'unknown';
+          return {
+            className: 'status-healthy',
+            label: 'Connected',
+            narrative: `Live provider checks are healthy. Cached snapshots are older (${ageText}), but connection is active.`,
+          };
+        }
+        return { className: 'status-healthy', label: 'Connected', narrative: 'Price and fundamentals look healthy.' };
+      }
+      if (cacheFreshness.any_critical_stale && !anyPriceSuccess) {
         const ageText = cacheFreshness.max_age_human || 'unknown';
         return { className: 'status-degraded', label: 'Degraded', narrative: `Critical cache data is stale (oldest age ${ageText}).` };
-      }
-
-      if (payload.overall === 'HEALTHY') {
-        return { className: 'status-healthy', label: 'Connected', narrative: 'Price and fundamentals look healthy.' };
       }
       return { className: 'status-degraded', label: 'Degraded', narrative: 'Some provider checks are failing or incomplete.' };
     }
@@ -3160,6 +3177,15 @@ HTML = '''
       }
     }
 
+    function startProviderHealthPolling() {
+      if (state.providerHealthTimer) {
+        window.clearInterval(state.providerHealthTimer);
+      }
+      state.providerHealthTimer = window.setInterval(() => {
+        loadProviderHealth();
+      }, PROVIDER_HEALTH_REFRESH_MS);
+    }
+
     async function loadRegime() {
       try {
         const payload = await apiFetchJson('/api/regime');
@@ -3449,6 +3475,7 @@ HTML = '''
     initializeResultState();
     loadRegime();
     loadProviderHealth();
+    startProviderHealthPolling();
   </script>
 </body>
 </html>

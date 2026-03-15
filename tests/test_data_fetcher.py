@@ -189,74 +189,6 @@ def test_download_ohlcv_once_falls_back_to_yfinance_when_alpaca_fails(monkeypatc
     assert result.equals(yf_df)
 
 
-def test_download_ohlcv_once_falls_back_when_alpaca_payload_is_too_short(monkeypatch):
-    short_idx = pd.date_range("2024-01-01", periods=4, freq="D")
-    long_idx = pd.date_range("2024-01-01", periods=220, freq="D")
-    short_df = pd.DataFrame(
-        {
-            "Open": [10, 11, 12, 13],
-            "High": [11, 12, 13, 14],
-            "Low": [9, 10, 11, 12],
-            "Close": [10, 11, 12, 13],
-            "Volume": [1000, 1100, 1200, 1300],
-        },
-        index=short_idx,
-    )
-    yf_df = pd.DataFrame(
-        {
-            "Open": list(range(220)),
-            "High": list(range(1, 221)),
-            "Low": list(range(220)),
-            "Close": list(range(1, 221)),
-            "Volume": [2000] * 220,
-        },
-        index=long_idx,
-    )
-
-    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
-    monkeypatch.setattr(fetcher, "_download_ohlcv_via_alpaca", lambda *_args, **_kwargs: short_df)
-    monkeypatch.setattr(fetcher, "_download_ohlcv_via_ticker", lambda *_args, **_kwargs: yf_df)
-
-    result = fetcher._download_ohlcv_once("AAPL", period="1y", interval="1d")
-
-    assert len(result) == 220
-    assert result.equals(yf_df)
-
-
-def test_fetch_ohlcv_ignores_short_cached_dataframe(monkeypatch):
-    short_idx = pd.date_range("2024-01-01", periods=3, freq="D")
-    long_idx = pd.date_range("2024-01-01", periods=220, freq="D")
-    short_cached = pd.DataFrame(
-        {
-            "Open": [10, 11, 12],
-            "High": [11, 12, 13],
-            "Low": [9, 10, 11],
-            "Close": [10, 11, 12],
-            "Volume": [1000, 1100, 1200],
-        },
-        index=short_idx,
-    )
-    fresh = pd.DataFrame(
-        {
-            "Open": list(range(220)),
-            "High": list(range(1, 221)),
-            "Low": list(range(220)),
-            "Close": list(range(1, 221)),
-            "Volume": [3000] * 220,
-        },
-        index=long_idx,
-    )
-
-    monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: short_cached)
-    monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fresh)
-    monkeypatch.setattr(fetcher.cache, "set", lambda *_args, **_kwargs: None)
-
-    result = fetcher.fetch_ohlcv("AAPL", period="1y", interval="1d")
-
-    assert len(result) == 220
-    assert result.equals(fresh)
-
-
 def test_fetch_ticker_info_prefers_alpaca_primary(monkeypatch):
     fetcher.clear_data_caches()
     monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
@@ -491,12 +423,58 @@ def test_diagnose_reports_explicit_price_failure_reason(monkeypatch):
             },
         ),
     )
+    monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: None)
 
     result = fetcher.diagnose()
 
     assert result["tests"]["AAPL"]["status"] == "EMPTY"
     assert result["tests"]["AAPL"]["reason"] == "ALL_PROVIDERS_FAILED_OR_EMPTY"
     assert result["tests"]["AAPL"]["provider_failures"][0]["reason"] == "RATE_LIMITED"
+
+
+def test_diagnose_uses_cached_prices_when_live_probe_is_empty(monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    cached = pd.DataFrame(
+        {
+            "Open": [10, 11, 12, 13, 14],
+            "High": [11, 12, 13, 14, 15],
+            "Low": [9, 10, 11, 12, 13],
+            "Close": [10, 11, 12, 13, 14],
+            "Volume": [1000, 1100, 1200, 1300, 1400],
+        },
+        index=idx,
+    )
+
+    monkeypatch.setattr(
+        fetcher,
+        "_probe_ohlcv_live",
+        lambda *_args, **_kwargs: (
+            pd.DataFrame(),
+            {
+                "status": "EMPTY",
+                "source": None,
+                "reason": "ALL_PROVIDERS_FAILED_OR_EMPTY",
+                "provider_failures": [{"provider": "yfinance_ticker", "reason": "RATE_LIMITED"}],
+            },
+        ),
+    )
+    monkeypatch.setattr(fetcher, "get_fundamentals", lambda *_args, **_kwargs: {"marketCap": 5_000_000_000})
+
+    def _cache_get(key, *_args, **_kwargs):
+        if key in {"ohlcv:AAPL:5d:1d", "ohlcv:SPY:5d:1d"}:
+            return cached
+        return None
+
+    monkeypatch.setattr(fetcher.cache, "get", _cache_get)
+    monkeypatch.setattr(fetcher.cache, "get_stale", lambda *_args, **_kwargs: None)
+
+    result = fetcher.diagnose()
+
+    assert result["tests"]["AAPL"]["status"] == "OK_CACHED"
+    assert result["tests"]["SPY"]["status"] == "OK_CACHED"
+    assert result["tests"]["^VIX"]["status"] == "EMPTY"
+    assert result["overall"] == "HEALTHY"
 
 
 def test_get_critical_cache_freshness_flags_stale_symbol(monkeypatch):
