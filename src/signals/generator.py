@@ -36,6 +36,34 @@ SIGNAL_MAP = [tuple(row) for row in config.SIGNAL_THRESHOLDS]
 WEIGHTS = config.SIGNAL_WEIGHTS
 
 
+def _is_default_news_sentiment(payload: dict) -> bool:
+    return (
+        isinstance(payload, dict)
+        and float(payload.get("sentiment_score_0_100", 0) or 0) == 50.0
+        and str(payload.get("signal", "")).upper() == "NEUTRAL"
+        and int(payload.get("article_count", 0) or 0) == 0
+    )
+
+
+def _is_default_social_sentiment(payload: dict) -> bool:
+    return (
+        isinstance(payload, dict)
+        and float(payload.get("sentiment_score_0_100", 0) or 0) == 50.0
+        and str(payload.get("signal", "")).upper() == "NEUTRAL"
+        and int(payload.get("mention_count", 0) or 0) == 0
+    )
+
+
+def _is_default_insider_sentiment(payload: dict) -> bool:
+    return (
+        isinstance(payload, dict)
+        and float(payload.get("insider_score", 0) or 0) == 50.0
+        and str(payload.get("signal", "")).upper() == "NEUTRAL"
+        and int(payload.get("buy_transactions", 0) or 0) == 0
+        and int(payload.get("sell_transactions", 0) or 0) == 0
+    )
+
+
 def _neutral_fundamental_score(ticker: str, fundamentals_raw: dict | None = None) -> dict:
     raw = fundamentals_raw if isinstance(fundamentals_raw, dict) else {}
     return {
@@ -149,15 +177,35 @@ def generate_signal(
         asset_class=(context.instrument.asset_class.value if context.instrument is not None else "equity"),
         enable_regime_weighting=config.FEATURE_ENABLE_REGIME_WEIGHTING,
     )
-    _weight_total = sum(w.get(k, 0) for k in ("technical", "volume", "sentiment", "fundamental", "macro"))
+    effective_weights = dict(w)
+    _weight_total = sum(
+        effective_weights.get(k, 0.0) for k in ("technical", "volume", "sentiment", "fundamental", "macro")
+    )
     if not (0.95 <= _weight_total <= 1.05):
         log.warning(f"{symbol}: signal weights sum to {_weight_total:.3f}, expected ~1.0 — check config")
+
+    sentiment_weight_redistributed = False
+
+    all_sentiment_default_neutral = (
+        _is_default_news_sentiment(news)
+        and _is_default_social_sentiment(social)
+        and _is_default_insider_sentiment(insider)
+    )
+    if all_sentiment_default_neutral and effective_weights.get("sentiment", 0.0) > 0.0:
+        effective_weights["sentiment"] = 0.0
+        total = sum(max(0.0, float(value)) for value in effective_weights.values())
+        if total > 0:
+            effective_weights = {
+                key: max(0.0, float(value)) / total
+                for key, value in effective_weights.items()
+            }
+            sentiment_weight_redistributed = True
     composite = (
-        technical_combined * w.get("technical", 0.35)
-        + volume_score["score"] * w.get("volume", 0.20)
-        + sentiment_score * w.get("sentiment", 0.20)
-        + fundamental["fundamental_score"] * w.get("fundamental", 0.15)
-        + macro_score_norm * w.get("macro", 0.10)
+        technical_combined * effective_weights.get("technical", 0.35)
+        + volume_score["score"] * effective_weights.get("volume", 0.20)
+        + sentiment_score * effective_weights.get("sentiment", 0.20)
+        + fundamental["fundamental_score"] * effective_weights.get("fundamental", 0.15)
+        + macro_score_norm * effective_weights.get("macro", 0.10)
     )
 
     # Regime multiplier — dampen risk in weak regimes, lighter impact in neutral.
@@ -182,6 +230,8 @@ def generate_signal(
         + [f"Piotroski F-Score: {fundamental['piotroski_f_score']}/9"]
         + [f"Macro: {macro_regime['regime']}"]
     )
+    if sentiment_weight_redistributed:
+        reasons.append("Sentiment unavailable — weight redistributed")
 
     return {
         "ticker": symbol,
@@ -209,6 +259,7 @@ def generate_signal(
         "_feature_cache_hit": feature_cache_hit,
         "_feature_cache_key": feature_bundle.get("feature_cache_key"),
         "_feature_version": feature_bundle.get("feature_version"),
+        "_weights": effective_weights,
     }
 
 

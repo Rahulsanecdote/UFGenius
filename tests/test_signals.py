@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.core.models import Instrument
+from src.signals import generator
+from src.signals.context import SignalContext
 from src.signals.filters import run_disqualification_filters
 from src.signals.trade_plan import generate_trade_plan
 
@@ -250,3 +253,58 @@ class TestTradePlan:
         """Tiny account ($10) should still yield at least 1 share, not 0."""
         plan = generate_trade_plan("TEST", mock_signal, account_size=10, df=sample_df)
         assert plan["position"]["shares"] >= 1
+
+
+def test_all_neutral_sentiment_redistributes_weight(monkeypatch, sample_df):
+    ctx = SignalContext(
+        ticker="TEST",
+        price_df=sample_df,
+        ticker_info={"longName": "Test Corp"},
+        fundamentals_raw={"market_cap": 10_000_000_000},
+        instrument=Instrument(symbol="TEST"),
+        provider="unit",
+    )
+    regime = {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "strategy": {"position_size_multiplier": 1.0}}
+
+    monkeypatch.setattr(
+        generator,
+        "compute_signal_features",
+        lambda **_kwargs: (
+            {
+                "trend_score": {"score": 75, "reasons": []},
+                "momentum_score": {"score": 65, "reasons": []},
+                "volume_score": {"score": 60, "reasons": []},
+                "technical_combined": 75,
+                "volatility_indicators": {},
+                "feature_cache_key": "k",
+                "feature_version": "v1",
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(generator, "calculate_fundamental_score", lambda *_args, **_kwargs: {"fundamental_score": 70, "piotroski_f_score": 6, "market_cap": 10_000_000_000})
+    monkeypatch.setattr(generator, "run_disqualification_filters", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(generator, "calculate_support_resistance", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        generator,
+        "resolve_signal_weights",
+        lambda *_args, **_kwargs: {
+            "technical": 0.35,
+            "volume": 0.20,
+            "sentiment": 0.20,
+            "fundamental": 0.15,
+            "macro": 0.10,
+        },
+    )
+    monkeypatch.setattr(generator, "analyze_news_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 50, "signal": "NEUTRAL", "article_count": 0})
+    monkeypatch.setattr(generator, "analyze_social_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 50, "signal": "NEUTRAL", "mention_count": 0})
+    monkeypatch.setattr(
+        generator,
+        "analyze_insider_activity",
+        lambda *_args, **_kwargs: {"insider_score": 50, "signal": "NEUTRAL", "buy_transactions": 0, "sell_transactions": 0, "flags": []},
+    )
+
+    result = generator.generate_signal("TEST", context=ctx, macro_regime=regime)
+
+    assert result["_weights"]["sentiment"] == 0.0
+    assert "Sentiment unavailable — weight redistributed" in result["reasons"]

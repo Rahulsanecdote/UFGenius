@@ -7,6 +7,18 @@ import pandas as pd
 from src.data import fetcher
 
 
+class _FakeSemaphore:
+    def __init__(self):
+        self.entered = 0
+
+    def __enter__(self):
+        self.entered += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 def test_fetch_ohlcv_uses_cache(monkeypatch):
     calls = {"n": 0}
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
@@ -177,6 +189,74 @@ def test_download_ohlcv_once_falls_back_to_yfinance_when_alpaca_fails(monkeypatc
     assert result.equals(yf_df)
 
 
+def test_download_ohlcv_once_falls_back_when_alpaca_payload_is_too_short(monkeypatch):
+    short_idx = pd.date_range("2024-01-01", periods=4, freq="D")
+    long_idx = pd.date_range("2024-01-01", periods=220, freq="D")
+    short_df = pd.DataFrame(
+        {
+            "Open": [10, 11, 12, 13],
+            "High": [11, 12, 13, 14],
+            "Low": [9, 10, 11, 12],
+            "Close": [10, 11, 12, 13],
+            "Volume": [1000, 1100, 1200, 1300],
+        },
+        index=short_idx,
+    )
+    yf_df = pd.DataFrame(
+        {
+            "Open": list(range(220)),
+            "High": list(range(1, 221)),
+            "Low": list(range(220)),
+            "Close": list(range(1, 221)),
+            "Volume": [2000] * 220,
+        },
+        index=long_idx,
+    )
+
+    monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
+    monkeypatch.setattr(fetcher, "_download_ohlcv_via_alpaca", lambda *_args, **_kwargs: short_df)
+    monkeypatch.setattr(fetcher, "_download_ohlcv_via_ticker", lambda *_args, **_kwargs: yf_df)
+
+    result = fetcher._download_ohlcv_once("AAPL", period="1y", interval="1d")
+
+    assert len(result) == 220
+    assert result.equals(yf_df)
+
+
+def test_fetch_ohlcv_ignores_short_cached_dataframe(monkeypatch):
+    short_idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    long_idx = pd.date_range("2024-01-01", periods=220, freq="D")
+    short_cached = pd.DataFrame(
+        {
+            "Open": [10, 11, 12],
+            "High": [11, 12, 13],
+            "Low": [9, 10, 11],
+            "Close": [10, 11, 12],
+            "Volume": [1000, 1100, 1200],
+        },
+        index=short_idx,
+    )
+    fresh = pd.DataFrame(
+        {
+            "Open": list(range(220)),
+            "High": list(range(1, 221)),
+            "Low": list(range(220)),
+            "Close": list(range(1, 221)),
+            "Volume": [3000] * 220,
+        },
+        index=long_idx,
+    )
+
+    monkeypatch.setattr(fetcher.cache, "get", lambda *_args, **_kwargs: short_cached)
+    monkeypatch.setattr(fetcher, "retry_call", lambda fn, *a, **kw: fresh)
+    monkeypatch.setattr(fetcher.cache, "set", lambda *_args, **_kwargs: None)
+
+    result = fetcher.fetch_ohlcv("AAPL", period="1y", interval="1d")
+
+    assert len(result) == 220
+    assert result.equals(fresh)
+
+
 def test_fetch_ticker_info_prefers_alpaca_primary(monkeypatch):
     fetcher.clear_data_caches()
     monkeypatch.setattr(fetcher, "_alpaca_credentials_configured", lambda: True)
@@ -214,6 +294,52 @@ def test_fetch_ticker_info_falls_back_to_yfinance_when_alpaca_fails(monkeypatch)
 
     assert result["marketCap"] == 1_500_000_000
     assert calls["n"] == 1
+
+
+def test_upstream_ohlcv_download_path_enters_global_provider_semaphore(monkeypatch):
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    sample = pd.DataFrame(
+        {
+            "Open": [1, 2, 3],
+            "High": [1, 2, 3],
+            "Low": [1, 2, 3],
+            "Close": [1, 2, 3],
+            "Volume": [10, 10, 10],
+        },
+        index=idx,
+    )
+    sem = _FakeSemaphore()
+    monkeypatch.setattr(fetcher, "_UPSTREAM_FETCH_SEMAPHORE", sem)
+    monkeypatch.setattr(fetcher.yf, "download", lambda **_kwargs: sample)
+
+    result = fetcher._download_ohlcv_via_download("AAPL", period="1y", interval="1d")
+
+    assert sem.entered == 1
+    assert result.equals(sample)
+
+
+def test_upstream_ticker_info_path_enters_global_provider_semaphore(monkeypatch):
+    class _FakeFastInfo:
+        def get(self, _key, default=None):
+            return default
+
+    class _FakeTicker:
+        @property
+        def info(self):
+            return {"longName": "Acme Corp", "marketCap": 1_000_000_000}
+
+        @property
+        def fast_info(self):
+            return _FakeFastInfo()
+
+    sem = _FakeSemaphore()
+    monkeypatch.setattr(fetcher, "_UPSTREAM_FETCH_SEMAPHORE", sem)
+    monkeypatch.setattr(fetcher.yf, "Ticker", lambda _symbol: _FakeTicker())
+
+    result = fetcher._fetch_ticker_info_once("AAPL")
+
+    assert sem.entered == 1
+    assert result["longName"] == "Acme Corp"
 
 
 def test_fetch_ticker_info_does_not_cache_empty_payload(monkeypatch):

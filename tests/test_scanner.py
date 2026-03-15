@@ -63,12 +63,17 @@ def test_generate_signal_uses_prefetched_dataframe(monkeypatch):
 
 
 def test_run_daily_scan_passes_prefetched_df(monkeypatch):
-    df = _sample_price_df(80)
+    df = _sample_price_df(260)
     captured = []
 
     monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: {"regime": "MILD_BULL", "regime_score": 25, "vix": 18, "strategy": {"position_size_multiplier": 0.8}})
     monkeypatch.setattr(daily_scan, "get_universe", lambda _name: ["AAA", "BBB"])
     monkeypatch.setattr(daily_scan, "technical_pre_filter", lambda _tickers: [("AAA", df), ("BBB", df)])
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_ohlcv",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("1y refetch should not run")),
+    )
 
     def _fake_generate_signal(ticker, macro_regime=None, price_df=None):
         captured.append((ticker, price_df is not None))
@@ -95,7 +100,52 @@ def test_run_daily_scan_passes_prefetched_df(monkeypatch):
 
     result = daily_scan.run_daily_scan(account_size=10_000, max_signals=2, pre_filter=True)
     assert result["total_scanned"] == 2
-    assert captured == [("AAA", True), ("BBB", True)]
+    assert sorted(captured) == [("AAA", True), ("BBB", True)]
+
+
+def test_run_daily_scan_refetches_1y_when_prefetched_df_is_short(monkeypatch):
+    short_df = _sample_price_df(80)
+    long_df = _sample_price_df(260)
+    captured_rows = []
+    fetch_calls = []
+
+    monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: {"regime": "MILD_BULL", "regime_score": 25, "vix": 18, "strategy": {"position_size_multiplier": 0.8}})
+    monkeypatch.setattr(daily_scan, "get_universe", lambda _name: ["AAA"])
+    monkeypatch.setattr(daily_scan, "technical_pre_filter", lambda _tickers: [("AAA", short_df)])
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_ohlcv",
+        lambda ticker, period="1y", interval="1d", **_kwargs: fetch_calls.append((ticker, period, interval)) or long_df,
+    )
+
+    def _fake_generate_signal(ticker, macro_regime=None, price_df=None):
+        captured_rows.append(len(price_df) if price_df is not None else 0)
+        return {
+            "signal": "BUY",
+            "score": 70,
+            "_df": price_df,
+            "reasons": ["ok"],
+            "current_price": float(price_df["Close"].iloc[-1]),
+            "support_resistance": {},
+            "volatility": {},
+        }
+
+    monkeypatch.setattr(daily_scan, "generate_signal", _fake_generate_signal)
+    monkeypatch.setattr(daily_scan, "generate_trade_plan", lambda ticker, signal, account_size=None, df=None: {
+        "ticker": ticker,
+        "signal": signal["signal"],
+        "composite_score": signal["score"],
+        "entry": {"price": 100},
+        "stop_loss": {"price": 95},
+        "targets": {"T1": {"price": 105}},
+        "position": {"shares": 1, "risk_dollars": 5, "risk_percent": 0.05},
+    })
+
+    result = daily_scan.run_daily_scan(account_size=10_000, max_signals=1, pre_filter=True)
+
+    assert result["total_scanned"] == 1
+    assert fetch_calls == [("AAA", "1y", "1d")]
+    assert captured_rows == [260]
 
 
 def test_scan_single_ticker_preserves_regime_context(monkeypatch):
@@ -203,6 +253,119 @@ def test_generate_signal_falls_back_to_neutral_fundamentals_on_scoring_error(mon
     assert result["market_cap"] == 10_000_000_000
 
 
+def test_generate_signal_redistributes_sentiment_weight_when_all_sources_default(monkeypatch):
+    df = _sample_price_df()
+    ctx = SignalContext(
+        ticker="TEST",
+        price_df=df,
+        ticker_info={"longName": "Test Corp"},
+        fundamentals_raw={"market_cap": 10_000_000_000},
+        instrument=Instrument(symbol="TEST"),
+        provider="unit",
+    )
+    regime = {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "strategy": {"position_size_multiplier": 1.0}}
+
+    monkeypatch.setattr(
+        generator,
+        "compute_signal_features",
+        lambda **_kwargs: (
+            {
+                "trend_score": {"score": 75, "reasons": []},
+                "momentum_score": {"score": 65, "reasons": []},
+                "volume_score": {"score": 60, "reasons": []},
+                "technical_combined": 75,
+                "volatility_indicators": {},
+                "feature_cache_key": "k",
+                "feature_version": "v1",
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(generator, "calculate_fundamental_score", lambda *_args, **_kwargs: {"fundamental_score": 70, "piotroski_f_score": 6, "market_cap": 10_000_000_000})
+    monkeypatch.setattr(generator, "run_disqualification_filters", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(generator, "calculate_support_resistance", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        generator,
+        "resolve_signal_weights",
+        lambda *_args, **_kwargs: {
+            "technical": 0.35,
+            "volume": 0.20,
+            "sentiment": 0.20,
+            "fundamental": 0.15,
+            "macro": 0.10,
+        },
+    )
+    monkeypatch.setattr(generator, "analyze_news_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 50, "signal": "NEUTRAL", "article_count": 0})
+    monkeypatch.setattr(generator, "analyze_social_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 50, "signal": "NEUTRAL", "mention_count": 0})
+    monkeypatch.setattr(
+        generator,
+        "analyze_insider_activity",
+        lambda *_args, **_kwargs: {"insider_score": 50, "signal": "NEUTRAL", "buy_transactions": 0, "sell_transactions": 0, "flags": []},
+    )
+
+    result = generator.generate_signal("TEST", context=ctx, macro_regime=regime)
+
+    assert result["_weights"]["sentiment"] == 0.0
+    assert "Sentiment unavailable — weight redistributed" in result["reasons"]
+    assert result["raw_composite"] > 63.7
+
+
+def test_generate_signal_keeps_sentiment_weight_when_any_source_is_non_default(monkeypatch):
+    df = _sample_price_df()
+    ctx = SignalContext(
+        ticker="TEST",
+        price_df=df,
+        ticker_info={"longName": "Test Corp"},
+        fundamentals_raw={"market_cap": 10_000_000_000},
+        instrument=Instrument(symbol="TEST"),
+        provider="unit",
+    )
+    regime = {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "strategy": {"position_size_multiplier": 1.0}}
+
+    monkeypatch.setattr(
+        generator,
+        "compute_signal_features",
+        lambda **_kwargs: (
+            {
+                "trend_score": {"score": 75, "reasons": []},
+                "momentum_score": {"score": 65, "reasons": []},
+                "volume_score": {"score": 60, "reasons": []},
+                "technical_combined": 75,
+                "volatility_indicators": {},
+                "feature_cache_key": "k",
+                "feature_version": "v1",
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(generator, "calculate_fundamental_score", lambda *_args, **_kwargs: {"fundamental_score": 70, "piotroski_f_score": 6, "market_cap": 10_000_000_000})
+    monkeypatch.setattr(generator, "run_disqualification_filters", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(generator, "calculate_support_resistance", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        generator,
+        "resolve_signal_weights",
+        lambda *_args, **_kwargs: {
+            "technical": 0.35,
+            "volume": 0.20,
+            "sentiment": 0.20,
+            "fundamental": 0.15,
+            "macro": 0.10,
+        },
+    )
+    monkeypatch.setattr(generator, "analyze_news_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 60, "signal": "BULLISH", "article_count": 1})
+    monkeypatch.setattr(generator, "analyze_social_sentiment", lambda *_args, **_kwargs: {"sentiment_score_0_100": 50, "signal": "NEUTRAL", "mention_count": 0})
+    monkeypatch.setattr(
+        generator,
+        "analyze_insider_activity",
+        lambda *_args, **_kwargs: {"insider_score": 50, "signal": "NEUTRAL", "buy_transactions": 0, "sell_transactions": 0, "flags": []},
+    )
+
+    result = generator.generate_signal("TEST", context=ctx, macro_regime=regime)
+
+    assert result["_weights"]["sentiment"] == 0.2
+    assert "Sentiment unavailable — weight redistributed" not in result["reasons"]
+
+
 def test_prefilter_ticker_uses_rvol_point8_threshold(monkeypatch):
     df = _sample_price_df(80)
     idx = pd.date_range("2024-01-01", periods=1, freq="D")
@@ -230,7 +393,7 @@ def test_prefilter_ticker_uses_rvol_point8_threshold(monkeypatch):
 
 
 def test_run_daily_scan_includes_pipeline_diagnostics(monkeypatch):
-    df = _sample_price_df(80)
+    df = _sample_price_df(260)
     regime = {"regime": "MILD_BULL", "regime_score": 25, "vix": 18, "strategy": {"position_size_multiplier": 0.8}}
 
     monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)
@@ -325,7 +488,7 @@ def test_run_daily_scan_no_prefilter_passes_all_tickers(monkeypatch):
 
 
 def test_run_daily_scan_zero_buy_pipeline_note_mentions_regime(monkeypatch):
-    df = _sample_price_df(80)
+    df = _sample_price_df(260)
     regime = {"regime": "NEUTRAL_CHOPPY", "regime_score": 0, "vix": 27.2, "strategy": {"position_size_multiplier": 0.5}}
 
     monkeypatch.setattr(daily_scan, "detect_market_regime", lambda: regime)

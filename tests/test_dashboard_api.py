@@ -71,6 +71,22 @@ def test_rate_limiting_enforced(client, monkeypatch):
     assert second.status_code == 429
 
 
+def test_clear_cache_requires_post(client):
+    response = client.get("/api/clear-cache")
+    assert response.status_code == 405
+
+
+def test_clear_cache_post_succeeds(client, monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(dashboard, "clear_data_caches", lambda: called.__setitem__("n", called["n"] + 1))
+
+    response = client.post("/api/clear-cache")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "ok"
+    assert called["n"] == 1
+
+
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
@@ -120,6 +136,8 @@ def test_index_embeds_dashboard_ui_token_when_remote_enabled(client, monkeypatch
     assert "Provider Health" in html
     assert "scanSpotlights" in html
     assert "scan.pipeline_note || scan.alert" in html
+    assert "function signalChipClass(signal, status)" in html
+    assert "if (normalized.includes('SELL')) return 'chip-error';" in html
     assert "[hidden] {" in html
     assert "display: none !important;" in html
 

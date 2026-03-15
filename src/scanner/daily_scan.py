@@ -30,6 +30,7 @@ log = get_logger(__name__)
 BUY_SIGNALS = {"STRONG_BUY", "BUY", "WEAK_BUY"}
 _PREFILTER_WORKERS = 8
 _SIGNAL_WORKERS = 4
+_ANALYSIS_MIN_BARS = 220
 
 
 def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame] | None:
@@ -101,7 +102,21 @@ def _analyze_ticker(
 ) -> dict | None:
     """Run full signal + trade plan for one ticker. Returns plan dict or None."""
     try:
-        signal = generate_signal(ticker, macro_regime=regime, price_df=prefetched_df)
+        analysis_df: pd.DataFrame | None = None
+        if prefetched_df is not None and not prefetched_df.empty:
+            analysis_df = prefetched_df
+
+        if analysis_df is None or len(analysis_df) < _ANALYSIS_MIN_BARS:
+            fetched_1y = fetch_ohlcv(ticker, period="1y", interval="1d")
+            if fetched_1y is not None and not fetched_1y.empty:
+                analysis_df = fetched_1y
+            elif analysis_df is not None and not analysis_df.empty:
+                log.debug(
+                    f"{ticker}: 1y fetch unavailable; falling back to prefetched frame "
+                    f"({len(analysis_df)} bars)"
+                )
+
+        signal = generate_signal(ticker, macro_regime=regime, price_df=analysis_df)
 
         signal_type = signal.get("signal", "UNKNOWN")
         score = float(signal.get("score", 0) or 0)

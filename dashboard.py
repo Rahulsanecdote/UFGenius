@@ -2369,6 +2369,16 @@ HTML = '''
       return 'chip-neutral';
     }
 
+    function signalChipClass(signal, status) {
+      const normalized = String(signal || '').toUpperCase();
+      if (normalized.includes('BUY')) return 'chip-success';
+      if (normalized.includes('SELL')) return 'chip-error';
+      if (normalized === 'HOLD') return 'chip-neutral';
+      if (normalized === 'FILTERED_OUT') return 'chip-warning';
+      if (normalized === 'ERROR') return 'chip-error';
+      return statusChipClass(status);
+    }
+
     function factorStatusFromScore(score) {
       const value = Number(score);
       if (!Number.isFinite(value)) return 'unknown';
@@ -2387,11 +2397,12 @@ HTML = '''
       const scores = (result && result.scores) || {};
       const regime = (result && result.regime_context) || {};
       const marketCap = result && result.market_cap;
+      const hasMarketCap = marketCap !== null && marketCap !== undefined && Number.isFinite(Number(marketCap));
       const marketCapState = reasons.some(reason => /UNKNOWN_MARKET_CAP/i.test(reason))
         ? 'unknown'
         : reasons.some(reason => /MICRO_CAP/i.test(reason))
           ? 'fail'
-          : Number.isFinite(Number(marketCap))
+          : hasMarketCap
             ? 'pass'
             : 'unknown';
 
@@ -2410,7 +2421,7 @@ HTML = '''
           key: 'market-cap',
           label: 'Market Cap',
           status: marketCapState,
-          value: Number.isFinite(Number(marketCap)) ? formatCurrency(marketCap) : 'Unknown',
+          value: hasMarketCap ? formatCurrency(marketCap) : 'Unknown',
           summary: marketCapState === 'pass'
             ? 'Verified against provider fundamentals.'
             : marketCapState === 'fail'
@@ -2528,7 +2539,7 @@ HTML = '''
     function renderResult(result) {
       state.currentResult = result;
       const presentation = resultPresentation(result);
-      $('resultBadge').className = `status-chip ${statusChipClass(presentation.status)}`;
+      $('resultBadge').className = `status-chip ${signalChipClass(result && result.signal, presentation.status)}`;
       $('resultBadge').textContent = presentation.badge;
       $('resultHeadline').textContent = presentation.headline;
       $('resultSummary').textContent = presentation.summary;
@@ -3248,7 +3259,7 @@ HTML = '''
 
     async function clearCacheAndRefresh() {
       try {
-        await apiFetchJson('/api/clear-cache');
+        await apiFetchJson('/api/clear-cache', { method: 'POST' });
         showToast('Cache cleared. Refreshing diagnostics.', 'success');
         await loadProviderHealth();
         if (state.currentResult && state.currentResult.ticker) {
@@ -3614,7 +3625,7 @@ def api_diagnose():
         return jsonify({"error": "Diagnosis failed"}), 500
 
 
-@app.route("/api/clear-cache")
+@app.route("/api/clear-cache", methods=["POST"])
 def api_clear_cache():
     """Clear all cached data to force fresh fetches."""
     try:

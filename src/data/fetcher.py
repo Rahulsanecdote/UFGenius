@@ -29,6 +29,7 @@ _BACKOFF = max(0.0, config.REQUEST_BACKOFF_SEC)
 _YF_TIMEOUT = max(1.0, config.YFINANCE_TIMEOUT_SEC)
 _BATCH_WORKERS = 8  # parallel threads for batch fetches
 _STALE_CACHE_THRESHOLD_SEC = 3_600
+_UPSTREAM_FETCH_SEMAPHORE = threading.BoundedSemaphore(max(1, config.PROVIDER_CONCURRENCY_LIMIT))
 
 _ALPACA_DATA_BASE_URL = config.env("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
 _ALPACA_BASE_URL = config.env("ALPACA_BASE_URL", "").strip().rstrip("/")
@@ -134,6 +135,34 @@ def _is_nonempty_dict(payload) -> bool:
     return isinstance(payload, dict) and bool(payload)
 
 
+def _minimum_required_rows(period: str, interval: str) -> int:
+    """
+    Minimum bar count required for a payload to be considered usable.
+
+    This prevents accepting truncated upstream responses (for example a
+    1-year request that only returns a handful of bars).
+    """
+    if str(interval or "").lower() != "1d":
+        return 1
+
+    normalized_period = str(period or "").strip().lower()
+    if normalized_period == "max":
+        return 120
+
+    delta = _period_to_timedelta(normalized_period)
+    if delta is None:
+        return 1
+
+    trading_days = max(1, int(delta.days * (5.0 / 7.0)))
+    # Accept ~45% of expected daily bars to allow holidays/provider gaps while
+    # still rejecting clearly truncated payloads.
+    return max(1, int(trading_days * 0.45))
+
+
+def _has_required_rows(df: pd.DataFrame, period: str, interval: str) -> bool:
+    return len(df) >= _minimum_required_rows(period, interval)
+
+
 def _classify_provider_exception(exc: Exception) -> str:
     text = str(exc).lower()
     if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
@@ -202,9 +231,10 @@ def _download_ohlcv_via_ticker(
     Use yf.Ticker().history() — more reliable across yfinance versions
     and avoids the MultiIndex quirks of yf.download().
     """
-    t = yf.Ticker(symbol)
-    df = t.history(period=period, interval=interval, auto_adjust=True)
-    return df
+    with _UPSTREAM_FETCH_SEMAPHORE:
+        t = yf.Ticker(symbol)
+        df = t.history(period=period, interval=interval, auto_adjust=True)
+        return df
 
 
 def _download_ohlcv_via_alpaca(
@@ -244,14 +274,15 @@ def _download_ohlcv_via_alpaca(
         "feed": _ALPACA_DATA_FEED,
     }
 
-    response = get_retry_session().get(
-        url,
-        headers=_alpaca_headers(),
-        params=params,
-        timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
-    )
-    response.raise_for_status()
-    payload = response.json()
+    with _UPSTREAM_FETCH_SEMAPHORE:
+        response = get_retry_session().get(
+            url,
+            headers=_alpaca_headers(),
+            params=params,
+            timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+        )
+        response.raise_for_status()
+        payload = response.json()
     bars = payload.get("bars") if isinstance(payload, dict) else None
     if not isinstance(bars, list) or not bars:
         return pd.DataFrame()
@@ -297,11 +328,12 @@ def _download_ohlcv_via_download(
         auto_adjust=True,
     )
     # timeout kwarg only supported in some yfinance versions
-    try:
-        df = yf.download(**kwargs, timeout=_YF_TIMEOUT)
-    except TypeError:
-        df = yf.download(**kwargs)
-    return df
+    with _UPSTREAM_FETCH_SEMAPHORE:
+        try:
+            df = yf.download(**kwargs, timeout=_YF_TIMEOUT)
+        except TypeError:
+            df = yf.download(**kwargs)
+        return df
 
 
 def _download_ohlcv_once(
@@ -322,21 +354,45 @@ def _download_ohlcv_once(
     )
     if can_try_alpaca:
         try:
-            df = _download_ohlcv_via_alpaca(symbol, period=period, interval=interval)
-            if df is not None and not df.empty:
-                return df
-            log.warning(f"{symbol}: Alpaca returned empty OHLCV, falling back to yfinance")
+            raw = _download_ohlcv_via_alpaca(symbol, period=period, interval=interval)
+            cleaned, invalid_reason = _validate_ohlcv_frame(raw)
+            if not cleaned.empty and _has_required_rows(cleaned, period, interval):
+                return cleaned
+            if not cleaned.empty:
+                min_rows = _minimum_required_rows(period, interval)
+                log.warning(
+                    f"{symbol}: Alpaca OHLCV too short ({len(cleaned)} rows, need >= {min_rows}), "
+                    "falling back to yfinance"
+                )
+            else:
+                log.warning(
+                    f"{symbol}: Alpaca returned invalid OHLCV ({invalid_reason}), "
+                    "falling back to yfinance"
+                )
         except Exception as exc:
             log.warning(f"{symbol}: Alpaca OHLCV failed ({exc}), falling back to yfinance")
 
     try:
-        df = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
-        if df is not None and not df.empty:
-            return df
+        raw = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
+        cleaned, invalid_reason = _validate_ohlcv_frame(raw)
+        if not cleaned.empty and _has_required_rows(cleaned, period, interval):
+            return cleaned
+        if not cleaned.empty:
+            min_rows = _minimum_required_rows(period, interval)
+            log.debug(
+                f"{symbol}: Ticker.history() OHLCV too short ({len(cleaned)} rows, need >= {min_rows}), "
+                "trying yf.download()"
+            )
+        else:
+            log.debug(
+                f"{symbol}: Ticker.history() returned invalid OHLCV ({invalid_reason}), trying yf.download()"
+            )
     except Exception as e:
         log.debug(f"{symbol}: Ticker.history() failed ({e}), trying yf.download()")
 
-    return _download_ohlcv_via_download(symbol, period=period, interval=interval)
+    raw = _download_ohlcv_via_download(symbol, period=period, interval=interval)
+    cleaned, _ = _validate_ohlcv_frame(raw)
+    return cleaned
 
 
 def _merge_fast_info_fields(info: dict, ticker_obj: yf.Ticker, symbol: str) -> dict:
@@ -375,20 +431,21 @@ def _merge_fast_info_fields(info: dict, ticker_obj: yf.Ticker, symbol: str) -> d
 
 def _fetch_ticker_info_once(ticker: str) -> dict:
     symbol = ticker.upper()
-    t = yf.Ticker(symbol)
+    with _UPSTREAM_FETCH_SEMAPHORE:
+        t = yf.Ticker(symbol)
 
-    try:
-        info = t.info
-    except Exception as exc:
-        log.debug(f"{symbol}: Ticker.info failed ({exc}), falling back to fast_info")
-        info = {}
+        try:
+            info = t.info
+        except Exception as exc:
+            log.debug(f"{symbol}: Ticker.info failed ({exc}), falling back to fast_info")
+            info = {}
 
-    if info is None:
-        info = {}
-    if not isinstance(info, dict):
-        info = {}
+        if info is None:
+            info = {}
+        if not isinstance(info, dict):
+            info = {}
 
-    return _merge_fast_info_fields(dict(info), t, symbol)
+        return _merge_fast_info_fields(dict(info), t, symbol)
 
 
 def _fetch_ticker_info_via_alpaca_once(ticker: str) -> dict:
@@ -398,61 +455,62 @@ def _fetch_ticker_info_via_alpaca_once(ticker: str) -> dict:
     if not _can_use_alpaca_symbol(symbol):
         raise ValueError("Alpaca does not support this symbol format")
 
-    session = get_retry_session()
-    asset_resp = session.get(
-        f"{_alpaca_trading_base_url()}/v2/assets/{symbol}",
-        headers=_alpaca_headers(),
-        timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
-    )
-    if asset_resp.status_code == 404:
-        return {}
-    asset_resp.raise_for_status()
-    asset = asset_resp.json()
-    if not isinstance(asset, dict):
-        return {}
-
-    info: dict = {
-        "symbol": symbol,
-        "longName": asset.get("name"),
-        "exchange": asset.get("exchange"),
-        "quoteType": "EQUITY",
-        "currency": "USD",
-        "tradable": asset.get("tradable"),
-        "marginable": asset.get("marginable"),
-        "shortable": asset.get("shortable"),
-        "fractionable": asset.get("fractionable"),
-        "status": asset.get("status"),
-    }
-
-    try:
-        snapshot_resp = session.get(
-            f"{_ALPACA_DATA_BASE_URL}/v2/stocks/snapshots",
+    with _UPSTREAM_FETCH_SEMAPHORE:
+        session = get_retry_session()
+        asset_resp = session.get(
+            f"{_alpaca_trading_base_url()}/v2/assets/{symbol}",
             headers=_alpaca_headers(),
-            params={"symbols": symbol, "feed": _ALPACA_DATA_FEED},
             timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
         )
-        if snapshot_resp.ok:
-            payload = snapshot_resp.json()
-            snapshots = payload.get("snapshots") if isinstance(payload, dict) else None
-            snapshot = snapshots.get(symbol) if isinstance(snapshots, dict) else None
-            if isinstance(snapshot, dict):
-                latest_trade = snapshot.get("latestTrade") if isinstance(snapshot.get("latestTrade"), dict) else {}
-                daily_bar = snapshot.get("dailyBar") if isinstance(snapshot.get("dailyBar"), dict) else {}
-                prev_daily = snapshot.get("prevDailyBar") if isinstance(snapshot.get("prevDailyBar"), dict) else {}
+        if asset_resp.status_code == 404:
+            return {}
+        asset_resp.raise_for_status()
+        asset = asset_resp.json()
+        if not isinstance(asset, dict):
+            return {}
 
-                current_price = _as_float(latest_trade.get("p")) or _as_float(daily_bar.get("c"))
-                previous_close = _as_float(prev_daily.get("c"))
-                daily_volume = _as_float(daily_bar.get("v"))
+        info: dict = {
+            "symbol": symbol,
+            "longName": asset.get("name"),
+            "exchange": asset.get("exchange"),
+            "quoteType": "EQUITY",
+            "currency": "USD",
+            "tradable": asset.get("tradable"),
+            "marginable": asset.get("marginable"),
+            "shortable": asset.get("shortable"),
+            "fractionable": asset.get("fractionable"),
+            "status": asset.get("status"),
+        }
 
-                if current_price is not None:
-                    info["currentPrice"] = current_price
-                    info["regularMarketPrice"] = current_price
-                if previous_close is not None:
-                    info["previousClose"] = previous_close
-                if daily_volume is not None:
-                    info["averageVolume"] = daily_volume
-    except Exception as exc:
-        log.debug(f"{symbol}: Alpaca snapshot enrichment failed ({exc})")
+        try:
+            snapshot_resp = session.get(
+                f"{_ALPACA_DATA_BASE_URL}/v2/stocks/snapshots",
+                headers=_alpaca_headers(),
+                params={"symbols": symbol, "feed": _ALPACA_DATA_FEED},
+                timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+            )
+            if snapshot_resp.ok:
+                payload = snapshot_resp.json()
+                snapshots = payload.get("snapshots") if isinstance(payload, dict) else None
+                snapshot = snapshots.get(symbol) if isinstance(snapshots, dict) else None
+                if isinstance(snapshot, dict):
+                    latest_trade = snapshot.get("latestTrade") if isinstance(snapshot.get("latestTrade"), dict) else {}
+                    daily_bar = snapshot.get("dailyBar") if isinstance(snapshot.get("dailyBar"), dict) else {}
+                    prev_daily = snapshot.get("prevDailyBar") if isinstance(snapshot.get("prevDailyBar"), dict) else {}
+
+                    current_price = _as_float(latest_trade.get("p")) or _as_float(daily_bar.get("c"))
+                    previous_close = _as_float(prev_daily.get("c"))
+                    daily_volume = _as_float(daily_bar.get("v"))
+
+                    if current_price is not None:
+                        info["currentPrice"] = current_price
+                        info["regularMarketPrice"] = current_price
+                    if previous_close is not None:
+                        info["previousClose"] = previous_close
+                    if daily_volume is not None:
+                        info["averageVolume"] = daily_volume
+        except Exception as exc:
+            log.debug(f"{symbol}: Alpaca snapshot enrichment failed ({exc})")
 
     return {k: v for k, v in info.items() if v is not None}
 
@@ -698,8 +756,17 @@ def fetch_ohlcv(
 
     if use_cache:
         cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if isinstance(cached, pd.DataFrame) and not cached.empty:
+            if _has_required_rows(cached, period, interval):
+                return cached
+            min_rows = _minimum_required_rows(period, interval)
+            log.warning(
+                f"{symbol}: cached OHLCV too short ({len(cached)} rows, need >= {min_rows}), ignoring cache"
+            )
+        elif isinstance(cached, pd.DataFrame):
+            log.warning(f"{symbol}: cached OHLCV was empty, ignoring cache")
+        elif cached is not None:
+            log.warning(f"{symbol}: cached OHLCV has invalid type {type(cached).__name__}, ignoring cache")
 
     try:
         df = retry_call(
