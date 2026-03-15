@@ -1967,7 +1967,7 @@ HTML = '''
     };
     const SUGGESTIONS = ['AAPL', 'MSFT', 'NVDA', 'SPY'];
     const CHART_RANGES = ['1D', '5D', '1M', '3M', '1Y'];
-    const PROVIDER_HEALTH_REFRESH_MS = 60 * 1000;
+    const PROVIDER_HEALTH_REFRESH_MS = 5 * 60 * 1000;
     const PROGRESS_STEPS = {
       analyze: [
         'Validating symbol',
@@ -2654,7 +2654,11 @@ HTML = '''
           || failureItems.some(failure => rateLimitPattern.test(String(failure.reason || '')));
       })();
       if (rateLimited) {
-        return { className: 'status-degraded', label: 'Degraded', narrative: 'Upstream provider is rate-limiting requests; retry shortly or use cached data.' };
+        return {
+          className: 'status-info',
+          label: 'Connected',
+          narrative: 'Provider is currently rate-limiting requests. Connectivity is active, and the dashboard will retry automatically.',
+        };
       }
 
       const cacheFreshness = payload.cache_freshness || {};
