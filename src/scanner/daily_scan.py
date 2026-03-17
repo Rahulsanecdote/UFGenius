@@ -38,7 +38,7 @@ def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[s
     try:
         df = df_cache.get(ticker)
         if df is None:
-            df = fetch_ohlcv(ticker, period="3mo")
+            df = fetch_ohlcv(ticker, period="1y")
         if df is None or df.empty or len(df) < 50:
             return None
 
@@ -70,11 +70,11 @@ def technical_pre_filter(tickers: list[str]) -> list[tuple[str, pd.DataFrame]]:
     Passes a ticker if ALL of:
     - RSI_14 between 35 and 72
     - RVOL >= 0.8
-    - Enough history (>50 bars)
+    - Enough history (>50 bars, fetched with 1y lookback for SMA compatibility)
     """
     log.info(f"Pre-filtering {len(tickers)} tickers in parallel ...")
 
-    df_cache = fetch_ohlcv_batch(tickers, period="3mo", max_workers=_PREFILTER_WORKERS)
+    df_cache = fetch_ohlcv_batch(tickers, period="1y", max_workers=_PREFILTER_WORKERS)
 
     passed: list[tuple[str, pd.DataFrame]] = []
     with ThreadPoolExecutor(max_workers=_PREFILTER_WORKERS) as executor:
