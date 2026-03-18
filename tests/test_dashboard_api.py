@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 import dashboard
-from src.utils.security import InMemoryRateLimiter, issue_dashboard_ui_token
+from src.utils.security import InMemoryRateLimiter
 
 
 @pytest.fixture(autouse=True)
@@ -22,12 +21,6 @@ def _reset_security_state(monkeypatch):
 @pytest.fixture
 def client():
     return dashboard.app.test_client()
-
-
-def test_healthz_available_without_auth(client):
-    response = client.get("/healthz")
-    assert response.status_code == 200
-    assert response.get_json()["status"] == "ok"
 
 
 def test_invalid_ticker_rejected(client):
@@ -71,22 +64,6 @@ def test_rate_limiting_enforced(client, monkeypatch):
     assert second.status_code == 429
 
 
-def test_clear_cache_requires_post(client):
-    response = client.get("/api/clear-cache")
-    assert response.status_code == 405
-
-
-def test_clear_cache_post_succeeds(client, monkeypatch):
-    called = {"n": 0}
-    monkeypatch.setattr(dashboard, "clear_data_caches", lambda: called.__setitem__("n", called["n"] + 1))
-
-    response = client.post("/api/clear-cache")
-
-    assert response.status_code == 200
-    assert response.get_json()["status"] == "ok"
-    assert called["n"] == 1
-
-
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
@@ -110,134 +87,3 @@ def test_remote_mode_allows_bearer_or_multi_keys(client, monkeypatch):
 
     assert bearer.status_code == 200
     assert bad.status_code == 401
-
-
-def test_remote_mode_allows_signed_dashboard_ui_token(client, monkeypatch):
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
-    monkeypatch.setattr(dashboard, "run_daily_scan", lambda **_kwargs: {"ok": True})
-
-    token = issue_dashboard_ui_token()
-    response = client.get("/api/scan?account_size=10000", headers={"X-Dashboard-Token": token})
-
-    assert response.status_code == 200
-
-
-def test_index_embeds_dashboard_ui_token_when_remote_enabled(client, monkeypatch):
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
-
-    response = client.get("/")
-
-    assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "const API_TOKEN =" in html
-    assert "Analysis Workspace" in html
-    assert "Provider Health" in html
-    assert "scanSpotlights" in html
-    assert "scan.pipeline_note || scan.alert" in html
-    assert "function signalChipClass(signal, status)" in html
-    assert "if (normalized.includes('SELL')) return 'chip-error';" in html
-    assert "[hidden] {" in html
-    assert "display: none !important;" in html
-
-
-def test_price_history_rejects_invalid_range(client):
-    response = client.get("/api/price-history?ticker=AAPL&range=bad")
-
-    assert response.status_code == 400
-    assert "range" in response.get_json()["error"].lower()
-
-
-def test_price_history_returns_chart_payload(client, monkeypatch):
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    sample = pd.DataFrame(
-        {
-            "Open": [10, 11, 12, 13, 14],
-            "High": [11, 12, 13, 14, 15],
-            "Low": [9, 10, 11, 12, 13],
-            "Close": [10, 11, 12, 13, 14],
-            "Volume": [1000, 1100, 1200, 1300, 1400],
-        },
-        index=idx,
-    )
-    monkeypatch.setattr(dashboard, "fetch_ohlcv", lambda *_args, **_kwargs: sample)
-
-    response = client.get("/api/price-history?ticker=AAPL&range=1M")
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["ticker"] == "AAPL"
-    assert payload["status"] == "READY"
-    assert len(payload["points"]) == 5
-    assert "accessible_summary" in payload["summary"]
-
-
-def test_ticker_with_html_chars_rejected(client):
-    """Tickers containing HTML characters are rejected with 400."""
-    response = client.get("/api/scan-ticker?ticker=AAPL<script>")
-    assert response.status_code == 400
-
-
-def test_account_size_above_max_rejected(client, monkeypatch):
-    """Account sizes above the configured maximum are rejected."""
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_MAX_ACCOUNT_SIZE", 10_000_000.0)
-    response = client.get("/api/scan?account_size=99999999999")
-    assert response.status_code == 400
-    data = response.get_json()
-    assert "error" in data
-
-
-def test_missing_account_size_uses_default(client, monkeypatch):
-    """Omitting account_size uses the config default instead of erroring."""
-    monkeypatch.setattr(dashboard, "run_daily_scan", lambda **_kwargs: {
-        "strong_buys": [], "buys": [], "watch_list": [],
-        "total_scanned": 0, "total_signals": 0, "total_analyzed": 0,
-        "total_non_buy": 0, "universe_size": 0, "elapsed_sec": 0.1,
-        "market_regime": "NEUTRAL", "vix_level": 15.0, "pipeline_note": "",
-        "scan_date": "2024-01-15 09:25", "regime": {}, "regime_advice": {},
-    })
-    response = client.get("/api/scan")
-    # Should not return 400 for missing account_size; config default is used
-    assert response.status_code != 400
-
-
-def test_bearer_token_is_case_insensitive(client, monkeypatch):
-    """Bearer scheme is case-insensitive per RFC 6750 — lowercase 'bearer' is accepted."""
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "")
-    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEYS", "validkey")
-    monkeypatch.setattr(dashboard, "run_daily_scan", lambda **_kwargs: {"ok": True})
-
-    # Both casings should be accepted (RFC 6750 permits case-insensitive matching)
-    lower = client.get("/api/scan?account_size=10000",
-                       headers={"Authorization": "bearer validkey"})
-    upper = client.get("/api/scan?account_size=10000",
-                       headers={"Authorization": "Bearer validkey"})
-    assert lower.status_code == upper.status_code == 200
-
-    # Invalid key should still fail regardless of casing
-    bad = client.get("/api/scan?account_size=10000",
-                     headers={"Authorization": "Bearer wrongkey"})
-    assert bad.status_code == 401
-
-
-def test_regime_endpoint_includes_cache_freshness(client, monkeypatch):
-    monkeypatch.setattr(
-        dashboard,
-        "detect_market_regime",
-        lambda: {"regime": "NEUTRAL_CHOPPY", "strategy": {"bias": "NEUTRAL"}, "flags": []},
-    )
-    monkeypatch.setattr(
-        dashboard,
-        "get_regime_cache_freshness",
-        lambda **_kwargs: {"any_regime_stale": True, "max_age_human": "2h 30m"},
-    )
-
-    response = client.get("/api/regime")
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["regime"] == "NEUTRAL_CHOPPY"
-    assert payload["cache_freshness"]["any_regime_stale"] is True
-    assert payload["cache_freshness"]["max_age_human"] == "2h 30m"

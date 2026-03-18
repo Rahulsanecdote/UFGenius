@@ -93,14 +93,50 @@ def filter_universe(
 
 
 def get_universe(universe: str = "SP500") -> List[str]:
-    """Return ticker universe by name."""
-    if universe == "SP500":
+    """
+    Return ticker universe by name.
+
+    Supports:
+      SP500       — S&P 500 tickers from Wikipedia
+      RUSSELL1000 — Russell 1000 (falls back to SP500)
+      WATCHLIST   — Custom watchlist from CUSTOM_WATCHLIST env var
+      CUSTOM      — Same as WATCHLIST
+    """
+    universe_upper = universe.upper()
+
+    if universe_upper in ("WATCHLIST", "CUSTOM"):
+        return get_custom_watchlist()
+    elif universe_upper == "SP500":
         return get_sp500_tickers()
-    elif universe == "RUSSELL1000":
+    elif universe_upper == "RUSSELL1000":
         return get_russell1000_tickers()
     else:
         log.warning(f"Unknown universe '{universe}', using SP500")
         return get_sp500_tickers()
+
+
+def get_custom_watchlist() -> List[str]:
+    """
+    Load custom watchlist from CUSTOM_WATCHLIST env var.
+    Format: comma-separated tickers, e.g. "SWMR,HCTI,BBRW,AAPL"
+    """
+    import os
+    raw = os.getenv("CUSTOM_WATCHLIST", "").strip()
+    if not raw:
+        log.warning("CUSTOM_WATCHLIST is empty — no tickers to scan")
+        return []
+
+    tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+    # Remove duplicates while preserving order
+    seen = set()
+    unique = []
+    for t in tickers:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+
+    log.info(f"Custom watchlist: {len(unique)} tickers: {', '.join(unique[:10])}")
+    return unique
 
 
 def _fallback_sp500() -> List[str]:

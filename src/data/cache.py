@@ -1,9 +1,7 @@
 """Disk-based caching with TTL, size limits, and LRU eviction for market data."""
 
 import hashlib
-import os
 import pickle
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -20,7 +18,8 @@ def _cache_path(key: str) -> Path:
     return _CACHE_DIR / f"{h}.pkl"
 
 
-def _read_entry(p: Path) -> Optional[dict]:
+def get(key: str) -> Optional[Any]:
+    p = _cache_path(key)
     if not p.exists():
         return None
     try:
@@ -29,94 +28,17 @@ def _read_entry(p: Path) -> Optional[dict]:
     except Exception:
         p.unlink(missing_ok=True)
         return None
-    if not isinstance(entry, dict) or "data" not in entry or "expires" not in entry:
-        p.unlink(missing_ok=True)
-        return None
-    return entry
-
-
-def get_metadata(key: str, allow_expired: bool = True) -> Optional[dict]:
-    """Return metadata for a cache key, including age and fetched timestamp."""
-    p = _cache_path(key)
-    entry = _read_entry(p)
-    if entry is None:
-        return None
-
-    now = time.time()
-    is_expired = now > entry["expires"]
-    if is_expired and not allow_expired:
-        p.unlink(missing_ok=True)
-        return None
-
-    fetched_at = entry.get("fetched_at")
-    if not isinstance(fetched_at, (int, float)):
-        try:
-            fetched_at = p.stat().st_mtime
-        except Exception:
-            fetched_at = now
-
-    fetched_at = float(fetched_at)
-    return {
-        "fetched_at": fetched_at,
-        "expires": float(entry["expires"]),
-        "age_sec": max(0.0, now - fetched_at),
-        "is_expired": is_expired,
-    }
-
-
-def get(key: str) -> Optional[Any]:
-    p = _cache_path(key)
-    entry = _read_entry(p)
-    if entry is None:
-        return None
     if time.time() > entry["expires"]:
         p.unlink(missing_ok=True)
         return None
     return entry["data"]
 
 
-def get_stale(key: str) -> Optional[Any]:
-    """Return cached data even if the entry is expired."""
-    p = _cache_path(key)
-    entry = _read_entry(p)
-    if entry is None:
-        return None
-    return entry["data"]
-
-
 def set(key: str, data: Any, ttl: int = DEFAULT_TTL) -> None:
     p = _cache_path(key)
-    now = time.time()
-    entry = {"data": data, "expires": now + ttl, "fetched_at": now}
-    _atomic_write_entry(p, entry)
+    with open(p, "wb") as f:
+        pickle.dump({"data": data, "expires": time.time() + ttl}, f)
     _enforce_size_limit()
-
-
-def _atomic_write_entry(path: Path, entry: dict) -> None:
-    """
-    Atomically persist cache entry to disk.
-
-    Write to a temp file in the same directory, fsync it, then replace target.
-    This prevents readers from observing partially written pickle payloads.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f"{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    try:
-        with os.fdopen(fd, "wb") as f:
-            pickle.dump(entry, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        # If replace succeeded the tmp path no longer exists.
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
 
 
 def evict_expired() -> int:

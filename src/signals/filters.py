@@ -7,12 +7,13 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# Hard stop thresholds (sourced from config so they can be tuned without code changes)
-MIN_PRICE         = max(0.0, config.SIGNAL_MIN_PRICE)   # Penny stock floor
-MIN_AVG_VOLUME    = config.FILTER_MIN_AVG_VOLUME        # Illiquidity floor (default 100k)
-MIN_MARKET_CAP    = config.FILTER_MIN_MARKET_CAP        # Nano-cap trap floor (default $100M)
-MAX_5DAY_GAIN_PCT = config.FILTER_MAX_5DAY_GAIN         # Chaser trap ceiling (default 50%)
-BANKRUPTCY_Z      = config.FILTER_BANKRUPTCY_Z          # Altman Z distress zone (default 1.0)
+# Hard stop thresholds — relaxed when ALLOW_PENNY_STOCKS is True
+_PENNY_MODE = config.ALLOW_PENNY_STOCKS
+MIN_PRICE          = max(0.0, config.SIGNAL_MIN_PRICE)
+MIN_AVG_VOLUME     = 10_000 if _PENNY_MODE else 100_000
+MIN_MARKET_CAP     = 0 if _PENNY_MODE else 100_000_000
+MAX_5DAY_GAIN_PCT  = 100.0 if _PENNY_MODE else 50.0
+BANKRUPTCY_Z       = 0.0 if _PENNY_MODE else 1.0
 
 
 def run_disqualification_filters(
@@ -27,7 +28,7 @@ def run_disqualification_filters(
 
     Checks:
     ✗ Altman Z-Score < 1.0           (bankruptcy risk)
-    ✗ Price < configured minimum      (penny stock, optional)
+    ✗ Price < $1.00                   (penny stock)
     ✗ Avg 20-day volume < 100K        (illiquid)
     ✗ Already up >50% in 5 days       (chaser trap)
     ✗ Market cap < $100M              (nano-cap)
@@ -40,8 +41,8 @@ def run_disqualification_filters(
 
     current_price = float(df["Close"].iloc[-1])
 
-    # Price floor (optional; disabled when penny stocks are explicitly allowed)
-    if not config.ALLOW_PENNY_STOCKS and current_price < MIN_PRICE:
+    # Price floor
+    if current_price < MIN_PRICE:
         reasons.append(f"PENNY_STOCK: Price ${current_price:.2f} < ${MIN_PRICE}")
 
     # Volume floor
@@ -71,8 +72,7 @@ def run_disqualification_filters(
         market_cap = None
 
     if market_cap is None:
-        # Provider/rate-limit gaps should not hard-fail otherwise valid large-cap names.
-        log.debug(f"{ticker}: market cap unavailable — skipping market cap filter")
+        reasons.append("UNKNOWN_MARKET_CAP: Unable to verify market cap")
     elif market_cap < MIN_MARKET_CAP:
         reasons.append(
             f"MICRO_CAP: Market cap ${market_cap:,.0f} < ${MIN_MARKET_CAP:,.0f}"

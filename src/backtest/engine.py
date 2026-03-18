@@ -55,9 +55,6 @@ def backtest_signal_system(
     if not tickers:
         return {"error": "No tickers supplied"}
 
-    if initial_capital <= 0:
-        return {"error": "initial_capital must be a positive number"}
-
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
     if end_ts < start_ts:
@@ -445,7 +442,7 @@ def _compute_metrics(
         "win_rate_pct": round(win_rate, 1),
         "avg_win": round(avg_win, 2),
         "avg_loss": round(avg_loss, 2),
-        "profit_factor": round(profit_factor, 2) if np.isfinite(profit_factor) else None,  # None = no losing trades
+        "profit_factor": round(profit_factor, 2) if np.isfinite(profit_factor) else float("inf"),
         "ev_per_trade": round(ev, 2),
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),

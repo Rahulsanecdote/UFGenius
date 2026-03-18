@@ -31,9 +31,9 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
                     continue
         return default
 
-    price      = _get("currentPrice", "regularMarketPrice", "previousClose", "lastPrice", "last_price", "previous_close")
-    market_cap = _get("marketCap", "market_cap")
-    shares     = _get("sharesOutstanding", "shares")
+    price      = _get("currentPrice", "regularMarketPrice", "previousClose")
+    market_cap = _get("marketCap")
+    shares     = _get("sharesOutstanding")
 
     liabilities = _get("totalLiab", "totalLiabilities", "totalDebt")
     total_equity = None

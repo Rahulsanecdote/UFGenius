@@ -318,6 +318,93 @@ def _download_ohlcv_via_alpaca(
     return df
 
 
+def _download_ohlcv_via_polygon(
+    symbol: str,
+    *,
+    period: str,
+    interval: str,
+) -> pd.DataFrame:
+    """
+    Fetch OHLCV from Polygon.io — supports OTC, penny stocks, and extended hours.
+    Free tier: 5 calls/min with end-of-day data (15-min delayed on free).
+    """
+    polygon_key = config.POLYGON_KEY
+    if not polygon_key:
+        raise RuntimeError("Polygon API key is not configured")
+
+    # Map period to date range
+    delta = _period_to_timedelta(period)
+    if delta is None:
+        delta = timedelta(days=365)
+
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - delta
+
+    # Map interval to Polygon multiplier/timespan
+    interval_lower = str(interval).lower()
+    polygon_intervals = {
+        "1d": ("1", "day"),
+        "1h": ("1", "hour"),
+        "5m": ("5", "minute"),
+        "15m": ("15", "minute"),
+        "30m": ("30", "minute"),
+        "1m": ("1", "minute"),
+    }
+    if interval_lower not in polygon_intervals:
+        raise ValueError(f"Unsupported Polygon interval: {interval}")
+
+    multiplier, timespan = polygon_intervals[interval_lower]
+
+    url = (
+        f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range"
+        f"/{multiplier}/{timespan}/{start_date}/{end_date}"
+    )
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "limit": 50000,
+        "apiKey": polygon_key,
+    }
+
+    response = get_retry_session().get(
+        url,
+        params=params,
+        timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    results = payload.get("results")
+    if not isinstance(results, list) or not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame.from_records(results)
+    if df.empty:
+        return pd.DataFrame()
+
+    # Polygon columns: t=timestamp(ms), o=open, h=high, l=low, c=close, v=volume
+    required = {"t", "o", "h", "l", "c", "v"}
+    if not required.issubset(set(df.columns)):
+        return pd.DataFrame()
+
+    df = df.rename(columns={
+        "o": "Open",
+        "h": "High",
+        "l": "Low",
+        "c": "Close",
+        "v": "Volume",
+    })
+
+    timestamps = pd.to_datetime(df["t"], unit="ms", utc=True, errors="coerce")
+    df.index = timestamps
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_convert(None)
+
+    return df
+
+
 def _download_ohlcv_via_download(
     symbol: str,
     *,
@@ -348,9 +435,10 @@ def _download_ohlcv_once(
     interval: str,
 ) -> pd.DataFrame:
     """
-    Try Alpaca first (if configured/supported), then yfinance:
-    Ticker.history() first, yf.download() fallback.
+    Provider cascade: Alpaca → Polygon → yfinance Ticker.history() → yf.download().
+    Polygon.io covers OTC and penny stocks that Alpaca does not support.
     """
+    # 1. Alpaca (primary for NYSE/NASDAQ listed equities)
     can_try_alpaca = (
         _alpaca_credentials_configured()
         and _can_use_alpaca_symbol(symbol)
@@ -362,10 +450,22 @@ def _download_ohlcv_once(
             df = _download_ohlcv_via_alpaca(symbol, period=period, interval=interval)
             if df is not None and not df.empty:
                 return df
-            log.warning(f"{symbol}: Alpaca returned empty OHLCV, falling back to yfinance")
+            log.warning(f"{symbol}: Alpaca returned empty OHLCV, falling back to Polygon")
         except Exception as exc:
-            log.warning(f"{symbol}: Alpaca OHLCV failed ({exc}), falling back to yfinance")
+            log.warning(f"{symbol}: Alpaca OHLCV failed ({exc}), falling back to Polygon")
 
+    # 2. Polygon.io (covers OTC, penny stocks, extended hours)
+    can_try_polygon = bool(config.POLYGON_KEY) and not str(symbol).startswith("^")
+    if can_try_polygon:
+        try:
+            df = _download_ohlcv_via_polygon(symbol, period=period, interval=interval)
+            if df is not None and not df.empty:
+                return df
+            log.warning(f"{symbol}: Polygon returned empty OHLCV, falling back to yfinance")
+        except Exception as exc:
+            log.warning(f"{symbol}: Polygon OHLCV failed ({exc}), falling back to yfinance")
+
+    # 3. yfinance Ticker.history() (fallback, blocked on cloud)
     try:
         df = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
         if df is not None and not df.empty:
@@ -373,6 +473,7 @@ def _download_ohlcv_once(
     except Exception as e:
         log.debug(f"{symbol}: Ticker.history() failed ({e}), trying yf.download()")
 
+    # 4. yf.download() (last resort)
     return _download_ohlcv_via_download(symbol, period=period, interval=interval)
 
 

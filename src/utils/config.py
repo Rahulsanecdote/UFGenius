@@ -43,26 +43,16 @@ def env(key: str, default: str = "") -> str:
 
 
 def env_int(key: str, default: int) -> int:
-    raw = env(key, "")
-    if not raw:
-        return default
     try:
-        return int(raw)
+        return int(env(key, str(default)))
     except (TypeError, ValueError):
-        import warnings
-        warnings.warn(f"Config: {key}={raw!r} is not a valid integer; using default {default}", stacklevel=2)
         return default
 
 
 def env_float(key: str, default: float) -> float:
-    raw = env(key, "")
-    if not raw:
-        return default
     try:
-        return float(raw)
+        return float(env(key, str(default)))
     except (TypeError, ValueError):
-        import warnings
-        warnings.warn(f"Config: {key}={raw!r} is not a valid float; using default {default}", stacklevel=2)
         return default
 
 
@@ -128,15 +118,6 @@ REQUEST_MAX_RETRIES: int = env_int("REQUEST_MAX_RETRIES", 3)
 REQUEST_BACKOFF_SEC: float = env_float("REQUEST_BACKOFF_SEC", 0.5)
 REQUEST_POOL_SIZE: int = env_int("REQUEST_POOL_SIZE", 20)
 YFINANCE_TIMEOUT_SEC: float = env_float("YFINANCE_TIMEOUT_SEC", 15.0)
-PROVIDER_CONCURRENCY_LIMIT: int = max(1, env_int("PROVIDER_CONCURRENCY_LIMIT", 4))
-
-# Signal filtering
-ALLOW_PENNY_STOCKS: bool = env_bool("ALLOW_PENNY_STOCKS", False)
-_signal_min_price_raw = env_float("SIGNAL_MIN_PRICE", 1.0)
-if _signal_min_price_raw < 0:
-    import warnings
-    warnings.warn(f"SIGNAL_MIN_PRICE={_signal_min_price_raw} is negative; clamping to 0.0", stacklevel=1)
-SIGNAL_MIN_PRICE: float = max(0.0, _signal_min_price_raw)
 
 # Dashboard hardening
 DASHBOARD_HOST: str = env("DASHBOARD_HOST", "127.0.0.1")
@@ -150,41 +131,11 @@ DASHBOARD_MIN_ACCOUNT_SIZE: float = env_float("DASHBOARD_MIN_ACCOUNT_SIZE", 100.
 DASHBOARD_RATE_LIMIT_BACKEND: str = env("DASHBOARD_RATE_LIMIT_BACKEND", "sqlite")
 DASHBOARD_RATE_LIMIT_DB_PATH: str = env("DASHBOARD_RATE_LIMIT_DB_PATH", "/tmp/ufgenius_rate_limit.sqlite3")
 DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)
-DASHBOARD_UI_TOKEN_TTL_SEC: int = env_int("DASHBOARD_UI_TOKEN_TTL_SEC", 3600)
 
-# Disqualification filter thresholds (overridable via env or config.yaml)
-FILTER_MIN_AVG_VOLUME: int   = int(get("filter_min_avg_volume", 100_000))
-FILTER_MIN_MARKET_CAP: float = float(get("filter_min_market_cap", 100_000_000))
-FILTER_MAX_5DAY_GAIN:  float = float(get("filter_max_5day_gain_pct", 50.0))
-FILTER_BANKRUPTCY_Z:   float = float(get("filter_bankruptcy_z", 1.0))
+# Penny stock mode
+ALLOW_PENNY_STOCKS: bool = env_bool("ALLOW_PENNY_STOCKS", False)
+SIGNAL_MIN_PRICE: float = env_float("SIGNAL_MIN_PRICE", 1.0)
+CUSTOM_WATCHLIST: str = env("CUSTOM_WATCHLIST", "")
 
-# Signal classification thresholds (score → signal name, confidence)
-SIGNAL_THRESHOLDS: list = get("signal_thresholds", [
-    [80, "STRONG_BUY",  "VERY_HIGH"],
-    [65, "BUY",         "HIGH"],
-    [50, "WEAK_BUY",    "MODERATE"],
-    [40, "HOLD",        "LOW"],
-    [25, "WEAK_SELL",   "MODERATE"],
-    [10, "SELL",        "HIGH"],
-    [0,  "STRONG_SELL", "VERY_HIGH"],
-])
-
-# Expected value parameters (historical backtested estimates)
-EV_WIN_RATE: float = float(get("ev_win_rate", 0.45))
-EV_AVG_RR:   float = float(get("ev_avg_rr", 2.5))
-
-# T1 resistance snap discount
-RESISTANCE_SNAP_DISCOUNT: float = env_float("RESISTANCE_SNAP_DISCOUNT", float(get("resistance_snap_discount", 0.995)))
-
-# Phase 3 feature store
-FEATURE_CACHE_TTL_SEC: int = env_int("FEATURE_CACHE_TTL_SEC", 300)
-FEATURE_CACHE_MAX_ENTRIES: int = env_int("FEATURE_CACHE_MAX_ENTRIES", 2000)
-FEATURE_CACHE_VERSION: str = env("FEATURE_CACHE_VERSION", "v1")
-FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTING", False)
-
-# Live order execution
-LIVE_POSITION_STORE_PATH: str = env(
-    "LIVE_POSITION_STORE_PATH",
-    str(Path(__file__).parent.parent.parent / "data" / "live_positions.json"),
-)
-MONITOR_INTERVAL_MIN: int = env_int("MONITOR_INTERVAL_MIN", 5)
+# Provider concurrency
+PROVIDER_CONCURRENCY_LIMIT: int = env_int("PROVIDER_CONCURRENCY_LIMIT", 10)

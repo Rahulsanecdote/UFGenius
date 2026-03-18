@@ -3727,6 +3727,66 @@ def api_scan():
         return _error_response("Internal server error", 500)
 
 
+@app.route("/api/scan-gaps")
+def api_scan_gaps():
+    """Scan watchlist for gap-up/gap-down openings."""
+    try:
+        from src.scanner.gap_scanner import scan_for_gaps
+        from src.data.universe import get_custom_watchlist, get_universe
+
+        source = request.args.get("universe", "WATCHLIST").upper()
+        min_gap = float(request.args.get("min_gap_pct", "5.0"))
+
+        if source == "WATCHLIST":
+            tickers = get_custom_watchlist()
+        else:
+            tickers = get_universe(source)[:50]  # Cap at 50 for rate limits
+
+        if not tickers:
+            return jsonify({"error": "No tickers configured. Set CUSTOM_WATCHLIST env var.", "gaps": []})
+
+        gaps = scan_for_gaps(tickers, min_gap_pct=min_gap)
+        return jsonify({
+            "scanned": len(tickers),
+            "gaps_found": len(gaps),
+            "min_gap_pct": min_gap,
+            "gaps": gaps,
+        })
+    except Exception:
+        log.exception("Gap scan error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/scan-breakouts")
+def api_scan_breakouts():
+    """Scan watchlist for high-volume breakouts."""
+    try:
+        from src.scanner.gap_scanner import scan_for_volume_breakouts
+        from src.data.universe import get_custom_watchlist, get_universe
+
+        source = request.args.get("universe", "WATCHLIST").upper()
+        min_vol = float(request.args.get("min_volume_ratio", "3.0"))
+
+        if source == "WATCHLIST":
+            tickers = get_custom_watchlist()
+        else:
+            tickers = get_universe(source)[:50]
+
+        if not tickers:
+            return jsonify({"error": "No tickers configured. Set CUSTOM_WATCHLIST env var.", "breakouts": []})
+
+        breakouts = scan_for_volume_breakouts(tickers, min_volume_ratio=min_vol)
+        return jsonify({
+            "scanned": len(tickers),
+            "breakouts_found": len(breakouts),
+            "min_volume_ratio": min_vol,
+            "breakouts": breakouts,
+        })
+    except Exception:
+        log.exception("Breakout scan error")
+        return _error_response("Internal server error", 500)
+
+
 def _clean(obj):
     """Recursively strip non-JSON-serialisable objects (DataFrames, Series)."""
     if isinstance(obj, dict):

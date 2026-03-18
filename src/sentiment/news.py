@@ -84,7 +84,6 @@ def analyze_news_sentiment(ticker: str, company_name: str = "") -> dict:
                 pub_dt    = datetime.strptime(published[:19], "%Y-%m-%dT%H:%M:%S")
                 age_hours = (datetime.utcnow() - pub_dt).total_seconds() / 3600
             except Exception:
-                log.debug(f"Unparseable publishedAt '{published}'; defaulting age_hours to 24")
                 age_hours = 24
             recency_weight = math.exp(-0.1 * age_hours)
 
