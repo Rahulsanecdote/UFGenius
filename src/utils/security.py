@@ -138,3 +138,27 @@ def build_rate_limiter():
         db_path=config.DASHBOARD_RATE_LIMIT_DB_PATH,
         limit_per_minute=config.DASHBOARD_RATE_LIMIT_PER_MIN,
     )
+
+
+def issue_dashboard_ui_token() -> str:
+    """
+    Issue a short-lived signed token for same-origin dashboard UI requests.
+
+    Used when DASHBOARD_ALLOW_REMOTE=true to allow the built-in browser
+    dashboard to authenticate without requiring the user to manually provide
+    an API key. The token is signed with SECRET_KEY and expires quickly.
+    """
+    import hmac
+    import hashlib
+    import base64
+    import json
+
+    secret = config.env("SECRET_KEY", "").encode()
+    if not secret:
+        return ""
+
+    payload = {"purpose": "dashboard_ui", "ts": int(time.time())}
+    payload_bytes = json.dumps(payload, separators=(",", ":")).encode()
+    signature = hmac.new(secret, payload_bytes, hashlib.sha256).digest()
+    token = base64.urlsafe_b64encode(payload_bytes + b"." + signature).decode()
+    return token
