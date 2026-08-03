@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -72,17 +73,25 @@ class LivePosition:
 
 def _allocate_exit_tranches(shares: int) -> tuple[int, int, int]:
     """
-    Allocate shares across three exit tranches: T1=30%, T2=40%, T3=remainder.
+    Allocate shares across three exit tranches: T1≈30%, T2≈40%, T3=remainder.
+
+    Each tranche is clamped to the shares still available, so the three tranches
+    ALWAYS sum to exactly `shares` and never over-allocate. For a 1-share
+    position this yields (1, 0, 0) — the old code returned (1, 1, 0), which sums
+    to 2 and caused the monitor to submit sell orders for more shares than were
+    held (overselling / accidental short).
 
     Args:
-        shares: Total shares in the position.
+        shares: Total shares in the position (>= 0).
 
     Returns:
-        (t1_shares, t2_shares, t3_shares) — always sum to `shares`.
+        (t1_shares, t2_shares, t3_shares) — always sums to `shares`.
     """
-    t1 = max(1, int(round(shares * 0.30)))
-    t2 = max(1, int(round(shares * 0.40)))
-    t3 = max(0, shares - t1 - t2)
+    if shares <= 0:
+        return (0, 0, 0)
+    t1 = min(shares, max(1, int(round(shares * 0.30))))
+    t2 = min(shares - t1, max(0, int(round(shares * 0.40))))
+    t3 = shares - t1 - t2
     return t1, t2, t3
 
 
@@ -94,48 +103,82 @@ class PositionTracker:
             config, "LIVE_POSITION_STORE_PATH", _DEFAULT_STORE_PATH
         )
         self._positions: dict[str, LivePosition] = {}
+        # Reentrant: mutators call save() while holding the lock, and the monitor
+        # thread mutates the same instance as the main thread (audit: tracker
+        # thread-safety). RLock lets a thread re-acquire without deadlocking.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ #
     # Persistence                                                          #
     # ------------------------------------------------------------------ #
 
     def load(self) -> None:
-        """Load positions from JSON.  Missing file → empty tracker (not an error)."""
-        path = Path(self._path)
-        if not path.exists():
-            log.debug(f"Position store not found at {self._path} — starting fresh")
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            self._positions = {
-                ticker: LivePosition(**entry) for ticker, entry in data.items()
-            }
-            log.info(
-                f"Loaded {len(self._positions)} position(s) from {self._path}"
-            )
-        except Exception as exc:
-            log.error(
-                f"Failed to load position store ({self._path}): {exc}", exc_info=True
-            )
-            self._positions = {}
+        """Load positions from JSON.  Missing file → empty tracker (not an error).
+
+        Each record is parsed independently so a single malformed/legacy entry
+        skips only itself instead of discarding every tracked position (which
+        would then be overwritten on the next save, silently abandoning live
+        broker positions and their stops). Stale closed records from previous
+        days are pruned to bound file growth, while today's closed records are
+        kept so ``trades_today`` stays accurate.
+        """
+        with self._lock:
+            path = Path(self._path)
+            if not path.exists():
+                log.debug(f"Position store not found at {self._path} — starting fresh")
+                return
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.error(
+                    f"Failed to read position store ({self._path}): {exc}", exc_info=True
+                )
+                self._positions = {}
+                return
+
+            positions: dict[str, LivePosition] = {}
+            skipped = 0
+            for ticker, entry in (data or {}).items():
+                try:
+                    positions[ticker] = LivePosition(**entry)
+                except Exception as exc:
+                    skipped += 1
+                    log.error(f"Skipping unreadable position record {ticker!r}: {exc}")
+            self._positions = positions
+            if skipped:
+                log.warning(f"Position store: skipped {skipped} unreadable record(s)")
+            self._prune_stale_closed()
+            log.info(f"Loaded {len(self._positions)} position(s) from {self._path}")
+
+    def _prune_stale_closed(self) -> None:
+        """Drop closed positions not opened today (bounds store growth)."""
+        today = date.today().isoformat()
+        stale = [
+            t
+            for t, p in self._positions.items()
+            if p.status == "closed" and p.trades_today_date != today
+        ]
+        for t in stale:
+            self._positions.pop(t, None)
 
     def save(self) -> None:
         """Atomically write all positions to JSON (write-tmp then rename)."""
-        path = Path(self._path)
-        os.makedirs(path.parent, exist_ok=True)
-        tmp = str(path) + ".tmp"
-        try:
-            payload = {
-                ticker: dataclasses.asdict(pos)
-                for ticker, pos in self._positions.items()
-            }
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
-            os.replace(tmp, str(path))
-        except Exception as exc:
-            log.error(f"Failed to save position store: {exc}", exc_info=True)
-            if os.path.exists(tmp):
-                os.remove(tmp)
+        with self._lock:
+            path = Path(self._path)
+            os.makedirs(path.parent, exist_ok=True)
+            tmp = str(path) + ".tmp"
+            try:
+                payload = {
+                    ticker: dataclasses.asdict(pos)
+                    for ticker, pos in self._positions.items()
+                }
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                os.replace(tmp, str(path))
+            except Exception as exc:
+                log.error(f"Failed to save position store: {exc}", exc_info=True)
+                if os.path.exists(tmp):
+                    os.remove(tmp)
 
     # ------------------------------------------------------------------ #
     # Mutations                                                            #
@@ -156,8 +199,9 @@ class PositionTracker:
             ValueError: If a position for this ticker is already being tracked.
         """
         ticker = plan["ticker"]
-        if ticker in self._positions:
-            raise ValueError(f"Position already tracked for {ticker}")
+        with self._lock:
+            if ticker in self._positions and self._positions[ticker].status != "closed":
+                raise ValueError(f"Position already tracked for {ticker}")
 
         position_info = plan.get("position", {})
         entry_price = float(plan["entry"]["price"])
@@ -194,8 +238,9 @@ class PositionTracker:
             status="pending_fill",
             trades_today_date=date.today().isoformat(),
         )
-        self._positions[ticker] = pos
-        self.save()
+        with self._lock:
+            self._positions[ticker] = pos
+            self.save()
         log.info(
             f"Position tracked: {ticker} | {shares_initial} shares"
             f" | entry={entry_price:.2f} stop={stop_price:.2f}"
@@ -209,21 +254,23 @@ class PositionTracker:
         self, ticker: str, fill_price: float, shares: int
     ) -> None:
         """Record actual fill price/qty and transition status to 'active'."""
-        pos = self._require(ticker)
-        pos.fill_price = fill_price
-        pos.shares_initial = shares
-        pos.shares_open = shares
-        # Recompute tranche sizes against the actual fill qty
-        pos.t1_shares, pos.t2_shares, pos.t3_shares = _allocate_exit_tranches(shares)
-        pos.status = "active"
-        self.save()
+        with self._lock:
+            pos = self._require(ticker)
+            pos.fill_price = fill_price
+            pos.shares_initial = shares
+            pos.shares_open = shares
+            # Recompute tranche sizes against the actual fill qty
+            pos.t1_shares, pos.t2_shares, pos.t3_shares = _allocate_exit_tranches(shares)
+            pos.status = "active"
+            self.save()
         log.info(f"{ticker}: entry filled @ ${fill_price:.2f} x{shares}")
 
     def mark_stop_placed(self, ticker: str, order_id: str) -> None:
         """Record the Alpaca order ID of the stop-loss order."""
-        pos = self._require(ticker)
-        pos.stop_order_id = order_id
-        self.save()
+        with self._lock:
+            pos = self._require(ticker)
+            pos.stop_order_id = order_id
+            self.save()
 
     def mark_target_placed(self, ticker: str, level: Literal["t1", "t2", "t3"], order_id: str) -> None:
         """
@@ -234,9 +281,10 @@ class PositionTracker:
             level:  One of "t1", "t2", "t3".
             order_id: Alpaca order ID.
         """
-        pos = self._require(ticker)
-        setattr(pos, f"{level}_order_id", order_id)
-        self.save()
+        with self._lock:
+            pos = self._require(ticker)
+            setattr(pos, f"{level}_order_id", order_id)
+            self.save()
 
     def mark_target_hit(self, ticker: str, level: Literal["t1", "t2", "t3"]) -> None:
         """
@@ -248,22 +296,25 @@ class PositionTracker:
             ticker: Ticker symbol.
             level:  One of "t1", "t2", "t3".
         """
-        pos = self._require(ticker)
-        sold = int(getattr(pos, f"{level}_shares"))
-        pos.shares_open = max(0, pos.shares_open - sold)
-        setattr(pos, f"{level}_hit", True)
-        self.save()
+        with self._lock:
+            pos = self._require(ticker)
+            sold = int(getattr(pos, f"{level}_shares"))
+            pos.shares_open = max(0, pos.shares_open - sold)
+            setattr(pos, f"{level}_hit", True)
+            remaining = pos.shares_open
+            self.save()
         log.info(
             f"{ticker}: {level.upper()} hit — {sold} shares sold,"
-            f" {pos.shares_open} remaining"
+            f" {remaining} remaining"
         )
 
     def mark_closed(self, ticker: str, reason: str) -> None:
         """Mark position as fully closed."""
-        pos = self._require(ticker)
-        pos.shares_open = 0
-        pos.status = "closed"
-        self.save()
+        with self._lock:
+            pos = self._require(ticker)
+            pos.shares_open = 0
+            pos.status = "closed"
+            self.save()
         log.info(f"{ticker}: position closed (reason={reason})")
 
     # ------------------------------------------------------------------ #
@@ -272,21 +323,37 @@ class PositionTracker:
 
     def get(self, ticker: str) -> Optional[LivePosition]:
         """Return position or None if not tracked."""
-        return self._positions.get(ticker)
+        with self._lock:
+            return self._positions.get(ticker)
 
     def get_open(self) -> dict[str, LivePosition]:
         """Return all positions with status != 'closed'."""
-        return {t: p for t, p in self._positions.items() if p.status != "closed"}
+        with self._lock:
+            return {t: p for t, p in self._positions.items() if p.status != "closed"}
+
+    def has_open(self, ticker: str) -> bool:
+        """True if an OPEN (pending_fill/active) position exists for `ticker`.
+
+        Closed records are ignored so a ticker can be re-entered after its prior
+        position has fully exited (the duplicate guard must not block forever).
+        """
+        with self._lock:
+            pos = self._positions.get(ticker)
+            return pos is not None and pos.status != "closed"
 
     def trades_today(self) -> int:
-        """Count positions that were opened today."""
+        """Count positions that were opened today (open or closed)."""
         today = date.today().isoformat()
-        return sum(1 for p in self._positions.values() if p.trades_today_date == today)
+        with self._lock:
+            return sum(
+                1 for p in self._positions.values() if p.trades_today_date == today
+            )
 
     def remove(self, ticker: str) -> None:
         """Permanently remove a position from the tracker."""
-        self._positions.pop(ticker, None)
-        self.save()
+        with self._lock:
+            self._positions.pop(ticker, None)
+            self.save()
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #

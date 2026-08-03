@@ -111,6 +111,10 @@ LIVE_POSITION_STORE_PATH: str = env(
     str(_ROOT / "data" / "live_positions.json"),
 )
 
+# Position-monitor poll interval in minutes (used by src/alpaca/executor.py).
+# Clamped to a positive floor at use; declared here so it is actually configurable.
+MONITOR_INTERVAL_MIN: int = env_int("MONITOR_INTERVAL_MIN", int(get("monitor_interval_min", 5)))
+
 # Backtest cost model (audit H5). Per-side commission and slippage as fractions
 # of notional (0.001 = 0.1%). Defaults are conservative retail estimates.
 BACKTEST_COMMISSION_PCT: float = env_float(
