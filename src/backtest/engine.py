@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.fetcher import fetch_ohlcv
+from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -22,6 +23,25 @@ TARGET_RR = [1.5, 2.5, 4.0]
 TARGET_EXIT_PCTS = [0.30, 0.40, 0.30]
 RISK_PER_TRADE = 0.01
 MAX_POSITION_PCT = 0.10
+
+# Cost model (audit H5): commission + slippage on every fill so reported
+# returns are net of frictions rather than optimistically gross.
+COMMISSION_PCT = config.BACKTEST_COMMISSION_PCT
+SLIPPAGE_PCT = config.BACKTEST_SLIPPAGE_PCT
+
+
+def _buy_fill(price: float) -> float:
+    """Effective buy price after adverse slippage."""
+    return price * (1 + SLIPPAGE_PCT)
+
+
+def _sell_fill(price: float) -> float:
+    """Effective sell price after adverse slippage."""
+    return price * (1 - SLIPPAGE_PCT)
+
+
+def _commission(notional: float) -> float:
+    return abs(notional) * COMMISSION_PCT
 
 
 @dataclass
@@ -40,6 +60,7 @@ class Position:
     t2_hit: bool = False
     last_price: float | None = None
     last_exit_reason: str | None = None
+    exit_fill_price: float | None = None
 
 
 def backtest_signal_system(
@@ -102,35 +123,40 @@ def backtest_signal_system(
                     break
                 frame = histories[ticker]
                 row = frame.loc[date]
-                entry_price = float(row["Close"])
+                signal_price = float(row["Close"])
                 atr = float(row["ATR_14"])
                 if not np.isfinite(atr) or atr <= 0:
                     continue
-                stop_price = entry_price - ATR_STOP_MULT * atr
+                # Geometry (stop/targets/sizing) uses the signal price; the fill
+                # includes slippage and the entry pays commission (audit H5).
+                stop_price = signal_price - ATR_STOP_MULT * atr
                 shares = _position_size(
                     cash=cash,
                     equity=equity_before_entries,
-                    entry_price=entry_price,
+                    entry_price=signal_price,
                     stop_price=stop_price,
                 )
                 if shares <= 0:
                     continue
-                position_cost = shares * entry_price
+                buy_fill = _buy_fill(signal_price)
+                entry_commission = _commission(shares * buy_fill)
+                position_cost = shares * buy_fill + entry_commission
                 if position_cost > cash:
                     continue
                 cash -= position_cost
-                risk = entry_price - stop_price
+                risk = signal_price - stop_price
                 open_positions[ticker] = Position(
                     ticker=ticker,
                     entry_date=date,
-                    entry_price=entry_price,
+                    entry_price=buy_fill,  # cost basis incl. slippage
                     shares_initial=shares,
                     shares_open=shares,
                     stop_price=stop_price,
-                    t1=entry_price + TARGET_RR[0] * risk,
-                    t2=entry_price + TARGET_RR[1] * risk,
-                    t3=entry_price + TARGET_RR[2] * risk,
-                    last_price=entry_price,
+                    t1=signal_price + TARGET_RR[0] * risk,
+                    t2=signal_price + TARGET_RR[1] * risk,
+                    t3=signal_price + TARGET_RR[2] * risk,
+                    realized_pnl=-entry_commission,  # commission booked at entry
+                    last_price=buy_fill,
                 )
                 available_slots -= 1
 
@@ -157,9 +183,11 @@ def backtest_signal_system(
         else:
             exit_px = float(frame["Close"].iloc[-1])
         qty = pos.shares_open
+        exit_fill = _sell_fill(exit_px)
         if qty > 0:
-            cash += qty * exit_px
-            pos.realized_pnl += (exit_px - pos.entry_price) * qty
+            commission = _commission(qty * exit_fill)
+            cash += qty * exit_fill - commission
+            pos.realized_pnl += (exit_fill - pos.entry_price) * qty - commission
             pos.shares_open = 0
             pos.last_exit_reason = "FORCE_CLOSE"
         closed_trades.append(
@@ -168,7 +196,7 @@ def backtest_signal_system(
                 "entry_date": pos.entry_date.strftime("%Y-%m-%d"),
                 "exit_date": force_close_date.strftime("%Y-%m-%d"),
                 "entry_price": round(pos.entry_price, 2),
-                "exit_price": round(exit_px, 2),
+                "exit_price": round(exit_fill, 2),
                 "shares": pos.shares_initial,
                 "pnl": round(pos.realized_pnl, 2),
                 "exit_reason": "FORCE_CLOSE",
@@ -246,45 +274,44 @@ def _apply_position_exits(
     closed_trades: list[dict[str, Any]],
     cash_ref: list[float],
 ) -> None:
-    # Stop-loss has priority with daily close data.
+    def _book_sell(qty: int, level: float, reason: str | None) -> None:
+        """Record a sell of `qty` shares at `level` (pre-slippage), net of costs."""
+        fill = _sell_fill(level)
+        commission = _commission(qty * fill)
+        cash_ref[0] += qty * fill - commission
+        pos.realized_pnl += (fill - pos.entry_price) * qty - commission
+        pos.shares_open -= qty
+        pos.exit_fill_price = fill
+        if reason and pos.shares_open == 0:
+            pos.last_exit_reason = reason
+
+    # Stop-loss has priority with daily close data. If the close gapped BELOW
+    # the stop, fill at the (worse) close, not the exact stop price (audit H5).
     if close_price <= pos.stop_price:
         qty = pos.shares_open
         if qty > 0:
-            cash_ref[0] += qty * pos.stop_price
-            pos.realized_pnl += (pos.stop_price - pos.entry_price) * qty
-            pos.shares_open = 0
-            pos.last_exit_reason = "STOP"
+            _book_sell(qty, min(close_price, pos.stop_price), "STOP")
     else:
         if (not pos.t1_hit) and close_price >= pos.t1 and pos.shares_open > 0:
             qty = _partial_qty(pos, TARGET_EXIT_PCTS[0])
             if qty > 0:
-                cash_ref[0] += qty * pos.t1
-                pos.realized_pnl += (pos.t1 - pos.entry_price) * qty
-                pos.shares_open -= qty
+                _book_sell(qty, pos.t1, "T1")
             pos.t1_hit = True
 
         if (not pos.t2_hit) and close_price >= pos.t2 and pos.shares_open > 0:
             qty = _partial_qty(pos, TARGET_EXIT_PCTS[1])
             if qty > 0:
-                cash_ref[0] += qty * pos.t2
-                pos.realized_pnl += (pos.t2 - pos.entry_price) * qty
-                pos.shares_open -= qty
+                _book_sell(qty, pos.t2, "T2")
             pos.t2_hit = True
 
         if close_price >= pos.t3 and pos.shares_open > 0:
-            qty = pos.shares_open
-            cash_ref[0] += qty * pos.t3
-            pos.realized_pnl += (pos.t3 - pos.entry_price) * qty
-            pos.shares_open = 0
-            pos.last_exit_reason = "T3"
+            _book_sell(pos.shares_open, pos.t3, "T3")
 
     if pos.shares_open == 0:
         exit_price = (
-            pos.stop_price
-            if pos.last_exit_reason == "STOP"
-            else pos.t3
-            if pos.last_exit_reason == "T3"
-            else close_price
+            pos.exit_fill_price
+            if pos.exit_fill_price is not None
+            else _sell_fill(close_price)
         )
         closed_trades.append(
             {
@@ -449,6 +476,21 @@ def _compute_metrics(
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),
         "final_capital": round(final_value, 2),
+        "cost_model": {
+            "commission_pct": COMMISSION_PCT,
+            "slippage_pct": SLIPPAGE_PCT,
+            "note": "Per-side commission + slippage applied to every fill; "
+                    "stops fill at min(close, stop) to reflect gap-through.",
+        },
+        # Known biases that inflate results — surfaced so they are not mistaken
+        # for edge (audit M11 / same-bar entry).
+        "bias_disclosures": [
+            "SURVIVORSHIP: the universe is the ticker list supplied at run time; "
+            "delisted/renamed names never appear, so returns are upward-biased. "
+            "Use a point-in-time constituent list for an unbiased test.",
+            "SAME_BAR_ENTRY: entries fill at the same daily close that generated "
+            "the signal; live fills would occur at or after the next open.",
+        ],
         "minimum_acceptance": _minimum_check(sharpe, win_rate, profit_factor, max_drawdown),
     }
 

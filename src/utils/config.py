@@ -111,6 +111,15 @@ LIVE_POSITION_STORE_PATH: str = env(
     str(_ROOT / "data" / "live_positions.json"),
 )
 
+# Backtest cost model (audit H5). Per-side commission and slippage as fractions
+# of notional (0.001 = 0.1%). Defaults are conservative retail estimates.
+BACKTEST_COMMISSION_PCT: float = env_float(
+    "BACKTEST_COMMISSION_PCT", float(get("commission_pct", 0.001))
+)
+BACKTEST_SLIPPAGE_PCT: float = env_float(
+    "BACKTEST_SLIPPAGE_PCT", float(get("slippage_pct", 0.001))
+)
+
 SIGNAL_WEIGHTS: dict = get("signal_weights", {
     "technical": 0.35,
     "volume": 0.20,

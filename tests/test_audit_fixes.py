@@ -116,3 +116,25 @@ def test_resolve_client_ip_uses_rightmost_validated(monkeypatch):
 
     req.headers["X-Forwarded-For"] = "1.1.1.1, not-an-ip"
     assert security.resolve_client_ip(req) == "9.9.9.9"  # garbage => socket peer
+
+
+# ── H5: backtest applies frictions and honors stop gap-through ──────────────
+def test_backtest_stop_gap_through_and_costs():
+    pytest.importorskip("yfinance")
+    from src.backtest import engine
+
+    entry_fill = engine._buy_fill(100.0)
+    pos = engine.Position(
+        ticker="X", entry_date=pd.Timestamp("2023-01-02"),
+        entry_price=entry_fill, shares_initial=100, shares_open=100,
+        stop_price=95.0, t1=105.0, t2=110.0, t3=120.0,
+        realized_pnl=-engine._commission(100 * entry_fill),
+    )
+    trades, cash = [], [0.0]
+    # Close gaps to 90, well below the 95 stop.
+    engine._apply_position_exits(pos, 90.0, pd.Timestamp("2023-01-03"), trades, cash)
+    t = trades[0]
+    assert t["exit_reason"] == "STOP"
+    assert t["exit_price"] < 95.0            # filled at the gap, not the stop
+    assert t["exit_price"] == pytest.approx(90.0 * (1 - engine.SLIPPAGE_PCT))
+    assert engine.COMMISSION_PCT > 0 and engine.SLIPPAGE_PCT > 0
