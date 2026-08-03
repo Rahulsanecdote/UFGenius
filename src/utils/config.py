@@ -70,6 +70,56 @@ ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])
 
+# Disqualification-filter thresholds (read from config.yaml `filter_*` keys).
+# Previously hardcoded in src/signals/filters.py (audit H4).
+FILTER_MIN_AVG_VOLUME: float = float(get("filter_min_avg_volume", 100_000))
+FILTER_MIN_MARKET_CAP: float = float(get("filter_min_market_cap", 100_000_000))
+FILTER_MAX_5DAY_GAIN_PCT: float = float(get("filter_max_5day_gain_pct", 50.0))
+FILTER_BANKRUPTCY_Z: float = float(get("filter_bankruptcy_z", 1.0))
+
+# Signal classification thresholds (score -> label, confidence).
+# Read by src/signals/generator.py. Restored alongside the module that
+# consumes it (was orphaned when generator.py was deleted).
+SIGNAL_THRESHOLDS: list = get("signal_thresholds", [
+    [80, "STRONG_BUY",  "VERY_HIGH"],
+    [65, "BUY",         "HIGH"],
+    [50, "WEAK_BUY",    "MODERATE"],
+    [40, "HOLD",        "LOW"],
+    [25, "WEAK_SELL",   "MODERATE"],
+    [10, "SELL",        "HIGH"],
+    [0,  "STRONG_SELL", "VERY_HIGH"],
+])
+
+# Expected-value parameters (historical backtested estimates).
+EV_WIN_RATE: float = float(get("ev_win_rate", 0.45))
+EV_AVG_RR:   float = float(get("ev_avg_rr", 2.5))
+
+# T1 resistance-snap discount.
+RESISTANCE_SNAP_DISCOUNT: float = env_float(
+    "RESISTANCE_SNAP_DISCOUNT", float(get("resistance_snap_discount", 0.995))
+)
+
+# Phase 3 feature store.
+FEATURE_CACHE_TTL_SEC: int = env_int("FEATURE_CACHE_TTL_SEC", 300)
+FEATURE_CACHE_MAX_ENTRIES: int = env_int("FEATURE_CACHE_MAX_ENTRIES", 2000)
+FEATURE_CACHE_VERSION: str = env("FEATURE_CACHE_VERSION", "v1")
+FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTING", False)
+
+# Live position store path (used by src/alpaca/position_tracker.py).
+LIVE_POSITION_STORE_PATH: str = env(
+    "LIVE_POSITION_STORE_PATH",
+    str(_ROOT / "data" / "live_positions.json"),
+)
+
+# Backtest cost model (audit H5). Per-side commission and slippage as fractions
+# of notional (0.001 = 0.1%). Defaults are conservative retail estimates.
+BACKTEST_COMMISSION_PCT: float = env_float(
+    "BACKTEST_COMMISSION_PCT", float(get("commission_pct", 0.001))
+)
+BACKTEST_SLIPPAGE_PCT: float = env_float(
+    "BACKTEST_SLIPPAGE_PCT", float(get("slippage_pct", 0.001))
+)
+
 SIGNAL_WEIGHTS: dict = get("signal_weights", {
     "technical": 0.35,
     "volume": 0.20,

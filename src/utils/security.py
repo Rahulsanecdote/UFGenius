@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import secrets
 import sqlite3
 import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import Optional
 
 from flask import Request
 
@@ -86,11 +88,33 @@ class SQLiteRateLimiter:
 
 
 def resolve_client_ip(request: Request) -> str:
+    """Resolve the client IP used for rate limiting.
+
+    Behind a single trusted proxy (e.g. Render), the platform appends the real
+    client IP to the RIGHT of X-Forwarded-For, while the leftmost entries are
+    client-supplied and spoofable. Using the leftmost entry (the old behavior)
+    let an attacker forge a fresh IP per request and fully bypass the limiter
+    (audit H2). Take the rightmost entry instead and validate it is an IP;
+    fall back to the socket peer otherwise.
+    """
     if config.DASHBOARD_TRUST_PROXY:
         xff = request.headers.get("X-Forwarded-For", "").strip()
         if xff:
-            return xff.split(",")[0].strip()
-    return request.remote_addr or "unknown"
+            candidate = xff.split(",")[-1].strip()
+            validated = _validate_ip(candidate)
+            if validated:
+                return validated
+    return _validate_ip(request.remote_addr) or "unknown"
+
+
+def _validate_ip(value: Optional[str]) -> Optional[str]:
+    """Return a normalized IP string if `value` parses as one, else None."""
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
 
 
 def _extract_supplied_token(request: Request) -> str:

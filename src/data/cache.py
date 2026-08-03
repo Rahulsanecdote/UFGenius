@@ -29,15 +29,74 @@ def get(key: str) -> Optional[Any]:
         p.unlink(missing_ok=True)
         return None
     if time.time() > entry["expires"]:
-        p.unlink(missing_ok=True)
+        # Fresh miss, but DO NOT delete: the stale-fallback path
+        # (get_stale / get_metadata) relies on expired entries surviving.
+        # Cleanup happens via evict_expired() and the size-limit sweep.
         return None
     return entry["data"]
 
 
+def get_stale(key: str) -> Optional[Any]:
+    """Return cached data ignoring expiry (for degraded/offline fallback).
+
+    Returns None only when the entry is absent or unreadable. Unlike get(),
+    this never deletes and never checks TTL — it is the last-resort source
+    when a live provider fetch fails.
+    """
+    p = _cache_path(key)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            entry = pickle.load(f)
+    except Exception:
+        return None
+    return entry.get("data")
+
+
+def get_metadata(key: str, allow_expired: bool = True) -> Optional[dict]:
+    """Return freshness metadata for a cache entry, or None if absent.
+
+    Keys: ``age_sec`` (seconds since the entry was written), ``expires``
+    (epoch), ``is_expired`` (bool). When ``allow_expired`` is False, an expired
+    entry is reported as absent (returns None).
+    """
+    p = _cache_path(key)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            entry = pickle.load(f)
+    except Exception:
+        return None
+    now = time.time()
+    expires = entry.get("expires", 0)
+    is_expired = now > expires
+    if is_expired and not allow_expired:
+        return None
+    return {
+        "age_sec": max(0.0, now - p.stat().st_mtime),
+        "expires": expires,
+        "is_expired": is_expired,
+    }
+
+
 def set(key: str, data: Any, ttl: int = DEFAULT_TTL) -> None:
     p = _cache_path(key)
-    with open(p, "wb") as f:
-        pickle.dump({"data": data, "expires": time.time() + ttl}, f)
+    # Atomic write: serialize to a temp file in the cache dir, then os.replace.
+    # Prevents a concurrent reader from loading a half-written pickle and
+    # unlinking a file another worker is mid-write.
+    import os
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir=str(_CACHE_DIR), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            pickle.dump({"data": data, "expires": time.time() + ttl}, f)
+        os.replace(tmp, p)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     _enforce_size_limit()
 
 

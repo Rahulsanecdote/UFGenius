@@ -31,9 +31,11 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
                     continue
         return default
 
-    price      = _get("currentPrice", "regularMarketPrice", "previousClose")
-    market_cap = _get("marketCap")
-    shares     = _get("sharesOutstanding")
+    # Accept both yfinance .info keys and fast_info-style aliases
+    # (last_price / market_cap / shares) so either payload shape works.
+    price      = _get("currentPrice", "regularMarketPrice", "previousClose", "last_price")
+    market_cap = _get("marketCap", "market_cap")
+    shares     = _get("sharesOutstanding", "shares")
 
     liabilities = _get("totalLiab", "totalLiabilities", "totalDebt")
     total_equity = None

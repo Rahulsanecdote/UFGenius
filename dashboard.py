@@ -44,8 +44,25 @@ _CHART_RANGES = {
     "1Y": {"period": "1y", "interval": "1d", "max_points": 260},
 }
 
-if config.DASHBOARD_ALLOW_REMOTE and not has_auth_config():
-    raise RuntimeError("DASHBOARD_ALLOW_REMOTE=true requires DASHBOARD_API_KEY or DASHBOARD_API_KEYS")
+def _is_remotely_exposed() -> bool:
+    """True when the server is reachable off-host.
+
+    Auth must be gated on actual network exposure, not on the
+    DASHBOARD_ALLOW_REMOTE flag alone: a PaaS/container that injects PORT makes
+    the app bind 0.0.0.0 (see _runtime_host) even with DASHBOARD_ALLOW_REMOTE
+    unset, which previously served the entire /api surface unauthenticated
+    (audit H1).
+    """
+    return bool(config.DASHBOARD_ALLOW_REMOTE or config.env("PORT"))
+
+
+# Fail closed: if the server will be network-exposed, an API key is mandatory.
+if _is_remotely_exposed() and not has_auth_config():
+    raise RuntimeError(
+        "Dashboard is network-exposed (DASHBOARD_ALLOW_REMOTE=true or PORT set) "
+        "but no DASHBOARD_API_KEY / DASHBOARD_API_KEYS is configured. Refusing to "
+        "start without authentication."
+    )
 
 HTML = '''
 <!DOCTYPE html>
@@ -3626,10 +3643,12 @@ def _api_security_guards():
     if not _rate_limiter.allow(client_key):
         return _error_response("Too many requests", 429)
 
-    if config.DASHBOARD_ALLOW_REMOTE:
+    # Enforce auth whenever the server is network-exposed — not only when the
+    # DASHBOARD_ALLOW_REMOTE flag is set (audit H1).
+    if _is_remotely_exposed():
         if not has_auth_config():
-            log.error("Remote dashboard enabled without configured dashboard API keys")
-            return _error_response("Remote mode misconfigured", 503)
+            log.error("Network-exposed dashboard without configured dashboard API keys")
+            return _error_response("Server misconfigured", 503)
         if not is_authorized_request(request):
             return _error_response("Unauthorized", 401)
     return None

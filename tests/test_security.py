@@ -21,7 +21,19 @@ def test_resolve_client_ip_respects_proxy_flag(monkeypatch):
     app = Flask(__name__)
     with app.test_request_context("/", headers={"X-Forwarded-For": "9.9.9.9, 8.8.8.8"}):
         monkeypatch.setattr(security.config, "DASHBOARD_TRUST_PROXY", True)
-        assert security.resolve_client_ip(request) == "9.9.9.9"
+        # Behind a single trusted proxy the RIGHTMOST entry is the hop the proxy
+        # appended (the real client); the leftmost is client-supplied/spoofable
+        # (audit H2). So the resolved key must be the rightmost, not "9.9.9.9".
+        assert security.resolve_client_ip(request) == "8.8.8.8"
         monkeypatch.setattr(security.config, "DASHBOARD_TRUST_PROXY", False)
         # In test context, remote_addr may be None -> fallback "unknown"
         assert security.resolve_client_ip(request) in {"unknown", request.remote_addr or "unknown"}
+
+
+def test_resolve_client_ip_rejects_spoofed_leftmost(monkeypatch):
+    app = Flask(__name__)
+    # A spoofed non-IP leftmost must not become the rate-limit key; the
+    # validated rightmost entry is used instead.
+    with app.test_request_context("/", headers={"X-Forwarded-For": "evil, 8.8.8.8"}):
+        monkeypatch.setattr(security.config, "DASHBOARD_TRUST_PROXY", True)
+        assert security.resolve_client_ip(request) == "8.8.8.8"
