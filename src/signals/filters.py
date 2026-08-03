@@ -7,13 +7,26 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# Hard stop thresholds — relaxed when ALLOW_PENNY_STOCKS is True
-_PENNY_MODE = config.ALLOW_PENNY_STOCKS
-MIN_PRICE          = max(0.0, config.SIGNAL_MIN_PRICE)
-MIN_AVG_VOLUME     = 10_000 if _PENNY_MODE else 100_000
-MIN_MARKET_CAP     = 0 if _PENNY_MODE else 100_000_000
-MAX_5DAY_GAIN_PCT  = 100.0 if _PENNY_MODE else 50.0
-BANKRUPTCY_Z       = 0.0 if _PENNY_MODE else 1.0
+# Module-level price floor (kept as an overridable attribute). Penny mode drops
+# the effective floor to 0 so sub-$1 names are allowed.
+MIN_PRICE = max(0.0, config.SIGNAL_MIN_PRICE)
+
+
+def _thresholds() -> dict:
+    """Resolve hard-stop thresholds from config at call time.
+
+    Sourced from config.yaml (`filter_*` keys), relaxed when
+    ALLOW_PENNY_STOCKS is set. Evaluated per-call (not frozen at import) so
+    config/env changes take effect and the values stay testable (audit H4).
+    """
+    penny = config.ALLOW_PENNY_STOCKS
+    return {
+        "min_price":         0.0 if penny else MIN_PRICE,
+        "min_avg_volume":    10_000 if penny else config.FILTER_MIN_AVG_VOLUME,
+        "min_market_cap":    0 if penny else config.FILTER_MIN_MARKET_CAP,
+        "max_5day_gain_pct": 100.0 if penny else config.FILTER_MAX_5DAY_GAIN_PCT,
+        "bankruptcy_z":      0.0 if penny else config.FILTER_BANKRUPTCY_Z,
+    }
 
 
 def run_disqualification_filters(
@@ -34,6 +47,7 @@ def run_disqualification_filters(
     ✗ Market cap < $100M              (nano-cap)
     """
     reasons = []
+    t = _thresholds()
 
     if df.empty:
         reasons.append("NO_DATA: Unable to fetch price data")
@@ -42,18 +56,18 @@ def run_disqualification_filters(
     current_price = float(df["Close"].iloc[-1])
 
     # Price floor
-    if current_price < MIN_PRICE:
-        reasons.append(f"PENNY_STOCK: Price ${current_price:.2f} < ${MIN_PRICE}")
+    if current_price < t["min_price"]:
+        reasons.append(f"PENNY_STOCK: Price ${current_price:.2f} < ${t['min_price']}")
 
     # Volume floor
     avg_vol_20 = df["Volume"].tail(20).mean()
-    if avg_vol_20 < MIN_AVG_VOLUME:
-        reasons.append(f"ILLIQUID: Avg vol {avg_vol_20:,.0f} < {MIN_AVG_VOLUME:,}")
+    if avg_vol_20 < t["min_avg_volume"]:
+        reasons.append(f"ILLIQUID: Avg vol {avg_vol_20:,.0f} < {t['min_avg_volume']:,.0f}")
 
     # Altman Z-Score bankruptcy risk
     z_score = fundamental_score.get("altman_z_score")
-    if z_score is not None and z_score < BANKRUPTCY_Z:
-        reasons.append(f"BANKRUPTCY_RISK: Z-Score {z_score:.2f} < {BANKRUPTCY_Z}")
+    if z_score is not None and z_score < t["bankruptcy_z"]:
+        reasons.append(f"BANKRUPTCY_RISK: Z-Score {z_score:.2f} < {t['bankruptcy_z']}")
 
     # Market cap from raw fundamentals is canonical source
     market_cap = None
@@ -73,9 +87,9 @@ def run_disqualification_filters(
 
     if market_cap is None:
         reasons.append("UNKNOWN_MARKET_CAP: Unable to verify market cap")
-    elif market_cap < MIN_MARKET_CAP:
+    elif market_cap < t["min_market_cap"]:
         reasons.append(
-            f"MICRO_CAP: Market cap ${market_cap:,.0f} < ${MIN_MARKET_CAP:,.0f}"
+            f"MICRO_CAP: Market cap ${market_cap:,.0f} < ${t['min_market_cap']:,.0f}"
         )
 
     # 5-day surge (chaser trap)
@@ -83,9 +97,9 @@ def run_disqualification_filters(
         price_5d_ago = float(df["Close"].iloc[-6])
         if price_5d_ago > 0:
             gain_5d = (current_price / price_5d_ago - 1) * 100
-            if gain_5d > MAX_5DAY_GAIN_PCT:
+            if gain_5d > t["max_5day_gain_pct"]:
                 reasons.append(
-                    f"CHASER_TRAP: Already up {gain_5d:.0f}% in 5 days (max {MAX_5DAY_GAIN_PCT}%)"
+                    f"CHASER_TRAP: Already up {gain_5d:.0f}% in 5 days (max {t['max_5day_gain_pct']}%)"
                 )
 
     return reasons

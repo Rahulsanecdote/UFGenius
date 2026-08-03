@@ -442,7 +442,9 @@ def _compute_metrics(
         "win_rate_pct": round(win_rate, 1),
         "avg_win": round(avg_win, 2),
         "avg_loss": round(avg_loss, 2),
-        "profit_factor": round(profit_factor, 2) if np.isfinite(profit_factor) else float("inf"),
+        # Use None (JSON null) rather than inf when there are no losing trades:
+        # json.dumps emits invalid `Infinity` otherwise (audit M8).
+        "profit_factor": round(profit_factor, 2) if np.isfinite(profit_factor) else None,
         "ev_per_trade": round(ev, 2),
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),

@@ -147,7 +147,12 @@ def _altman_z(fd: dict) -> float | None:
         re  = fd.get("retained_earnings") or 0
         ebit = fd.get("ebit") or 0
         mc  = fd.get("market_cap") or 0
-        tl  = fd.get("total_liabilities") or fd.get("total_debt") or 1
+        # Do NOT fall back to 1: a `market_cap / 1` term explodes the Z-Score to
+        # billions and flags every distressed company as "safe" (audit H6).
+        # Insufficient balance-sheet data => undefined Z-Score.
+        tl  = fd.get("total_liabilities") or fd.get("total_debt")
+        if not tl or tl <= 0:
+            return None
         rev = fd.get("revenue") or 0
 
         x1 = wc  / ta

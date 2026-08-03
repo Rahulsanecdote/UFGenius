@@ -8,6 +8,38 @@
 
 ---
 
+## Remediation status (2026-08-03)
+
+**Root cause found.** Most CRITICAL/HIGH findings traced to a single accident: commit
+`0f264d6` ("Add OTC penny stock support…") **deleted 27 files** — 9 core source
+modules and 18 test files — while only intending to add `gap_scanner.py`. That
+deletion is why the risk framework was "unenforced" (the `RiskGuard` that enforces
+it was deleted), why order execution "didn't exist", and why "no tests" existed for
+the money paths. The lost files were restored from `0f264d6^`.
+
+Fixed on this branch (`claude/repo-audit-qnd1x4`):
+
+| Finding | Resolution |
+|---|---|
+| C1 missing modules | Restored `generator.py`, `executor.py` (+`RiskGuard`), `orders.py`, `position_tracker.py`, `core/models.py`, and the whole `features/` package from history. Re-added the 5 config accessors they need (`SIGNAL_THRESHOLDS`, `EV_*`, `FEATURE_*`, `RESISTANCE_SNAP_DISCOUNT`, `LIVE_POSITION_STORE_PATH`). |
+| C2 safety unenforced | Resolved by restoring `executor.py`'s `RiskGuard` (enforces max positions, single-position cap, cash reserve, per-trade risk, daily trade limit, bear-market guard, duplicate-ticker). |
+| C3 sizing floor-to-1 | `trade_plan.py` no longer forces ≥1 share; returns a `skip` plan when a position can't fit inside `max_position_pct`. Guards `entry_price > 0`. |
+| C4 stale-cache crash | Implemented `cache.get_stale()` / `get_metadata()`; `get()` no longer deletes expired entries on read; `set()` is now an atomic temp-file+`os.replace` write. |
+| H1 exposed-without-auth | Auth is now gated on actual network exposure (`_is_remotely_exposed()`), and the app fails closed at startup if exposed without a key. |
+| H2 XFF spoofing | `resolve_client_ip` uses the rightmost (proxy-appended) entry and validates it as an IP. |
+| H3 execute guardrail | `--execute` now submits to the **paper** account (was a no-op); real orders require `--live-execute`; added `--dry-run` for preview. |
+| H4 hardcoded filters | `filters.py` reads thresholds from config at call time (penny mode respected). |
+| H6 Altman Z false-safe | `_altman_z` returns `None` when liabilities are unavailable instead of dividing by `1`. |
+| M5 pytest hits network | `pytest.ini` excludes `integration` by default. |
+| M8 profit_factor `inf` | Emits JSON `null` instead of `Infinity`. |
+| L2 telegram not escaped | Messages are HTML-escaped via a `_format_message` helper (+ 4096 truncation). |
+| Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **291 pass**, 3 network tests deselected by default. |
+
+The remaining MEDIUM/LOW items below (e.g. M11 survivorship bias, H5 backtest
+frictions, M2 CLAUDE.md rewrite) are documented but not yet addressed.
+
+---
+
 ## Severity summary
 
 | Sev | Count | Headlines |

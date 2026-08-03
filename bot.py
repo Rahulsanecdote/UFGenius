@@ -182,6 +182,7 @@ def _maybe_execute(args, scan_result: dict) -> None:
 
     --execute       → place orders on the Alpaca PAPER account (ALPACA_PAPER=true)
     --live-execute  → place orders on the LIVE Alpaca account  (ALPACA_PAPER=false)
+    --dry-run       → preview only; never submits an order (works with either)
 
     Only runs when --mode live is also set.
     """
@@ -192,8 +193,11 @@ def _maybe_execute(args, scan_result: dict) -> None:
     if args.mode != "live":
         return
 
-    dry_run = not live_execute  # --execute = dry_run against paper account preview;
-                                # --live-execute = real orders (paper or live per config)
+    # Preview is now an explicit opt-in. Previously --execute forced dry_run,
+    # so the ONLY path that actually submitted was --live-execute against the
+    # LIVE account — the opposite of a safety rail (audit H3). Now --execute
+    # submits to the paper account; --dry-run previews without submitting.
+    dry_run = getattr(args, "dry_run", False)
 
     from src.alpaca.executor import execute_trade_plan
     tracker = _get_tracker()
@@ -246,7 +250,8 @@ def cmd_backtest(args) -> None:
     print(f"  Calmar Ratio:      {result.get('calmar_ratio', 0):.2f}")
     print(f"  Total Trades:      {result.get('total_trades', 0)}")
     print(f"  Win Rate:          {result.get('win_rate_pct', 0):.1f}%")
-    print(f"  Profit Factor:     {result.get('profit_factor', 0):.2f}")
+    _pf = result.get("profit_factor")
+    print(f"  Profit Factor:     {_pf:.2f}" if _pf is not None else "  Profit Factor:     ∞ (no losing trades)")
     print(f"  EV / Trade:        ${result.get('ev_per_trade', 0):.2f}")
     print(f"  Final Capital:     ${result.get('final_capital', 0):,.2f}")
     print("\n  Acceptance Check:")
@@ -375,8 +380,26 @@ Examples:
             "⚠️  REAL MONEY — use with extreme caution."
         ),
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Preview orders only — never submit (use with --execute/--live-execute).",
+    )
 
     args = parser.parse_args()
+
+    if args.account_size is not None and args.account_size <= 0:
+        log.error("--account-size must be a positive number.")
+        sys.exit(1)
+
+    # --execute targets the PAPER account: refuse if the account is live.
+    if args.execute and not args.live_execute and not config.ALPACA_PAPER:
+        log.error(
+            "--execute submits to the Alpaca PAPER account but ALPACA_PAPER=false. "
+            "Set ALPACA_PAPER=true, or use --live-execute for real-money orders."
+        )
+        sys.exit(1)
 
     # Validate execution flag constraints
     if args.live_execute and config.ALPACA_PAPER:

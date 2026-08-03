@@ -80,6 +80,8 @@ def generate_trade_plan(
 
     # ── Entry ──────────────────────────────────────────────────────────────
     entry_price = round(current_price * 0.998, 2)  # Slight discount for limit order
+    if entry_price <= 0:
+        return {"error": f"Invalid entry price for {ticker} (<= 0)"}
 
     # ── Stop Loss ──────────────────────────────────────────────────────────
     multiplier = config.ATR_STOP_MULTIPLIER
@@ -115,8 +117,25 @@ def generate_trade_plan(
 
     risk_dollars     = account_size * risk_pct
     shares_by_risk   = risk_dollars / risk if risk > 0 else 0
-    shares_by_max    = (account_size * max_pos_pct) / entry_price
-    shares           = max(int(min(shares_by_risk, shares_by_max)), 1)
+    shares_by_max    = (account_size * max_pos_pct) / entry_price if entry_price > 0 else 0
+    # Never floor to 1: a forced share on an expensive stock / small account
+    # breaches max_position_pct (audit C3). Truncate to whole shares and flag
+    # "too small to trade" instead of silently oversizing.
+    shares           = int(min(shares_by_risk, shares_by_max))
+
+    if shares < 1:
+        return {
+            "ticker": ticker,
+            "signal": signal.get("signal", "UNKNOWN"),
+            "skip": True,
+            "reason": (
+                f"Position too small to trade within risk limits "
+                f"(entry ${entry_price:.2f}, max_position {max_pos_pct:.0%} of "
+                f"${account_size:,.0f} → <1 share). Increase account size or "
+                f"choose a lower-priced instrument."
+            ),
+            "disclaimer": "NOT FINANCIAL ADVICE. All trading involves risk of loss.",
+        }
 
     position_value  = round(shares * entry_price, 2)
     actual_risk     = round(shares * risk, 2)
