@@ -13,8 +13,10 @@ place risk-gated orders through Alpaca. It ships a Flask web dashboard and a CLI
 providers (Alpha Vantage / Polygon / Finnhub) for data, `alpaca-py` for the
 broker, pandas/NumPy for computation, VADER + PRAW + NewsAPI for sentiment,
 `fredapi` for macro. There is **no** React frontend, no FastAPI, and no
-database — the dashboard is a single self-contained HTML page rendered via
-`render_template_string`, and state is file/JSON based.
+application database — the dashboard is a single self-contained HTML page
+rendered via `render_template_string`, and state is file-/JSON-based. (A small
+SQLite file backs only the dashboard rate limiter; there is no relational
+data model.)
 
 ---
 
@@ -80,7 +82,8 @@ python bot.py --mode portfolio                  # read-only Alpaca portfolio
 Execution safety: `--execute` targets the **paper** account and refuses to run
 if `ALPACA_PAPER=false`; `--live-execute` is the only real-money path and
 refuses unless `ALPACA_PAPER=false`. Every order passes `RiskGuard`
-(`src/alpaca/executor.py`), which enforces the `config.yaml` `safety_rules`.
+(`src/alpaca/executor.py`), which enforces the subset of `config.yaml`
+`safety_rules` listed under Architecture & Conventions.
 
 ### Dashboard
 
@@ -116,10 +119,16 @@ pytest --cov=src       # coverage
   `SIGNAL_THRESHOLDS`) → `signals/filters` (hard disqualifiers) →
   `signals/trade_plan` (entry/stop/targets/sizing) → alerts / executor.
 - **Money paths are gated:** sizing never forces a share it can't afford
-  (returns a `skip` plan); `RiskGuard` blocks entries that breach `safety_rules`;
-  live trading needs an explicit flag + `ALPACA_PAPER=false`.
-- **All network fetches** go through `src/utils/http.py` (timeouts + bounded
+  (returns a `skip` plan); `RiskGuard` (`src/alpaca/executor.py`) blocks entries
+  that breach a **subset** of `safety_rules` — max positions, single-position
+  cap, cash reserve, per-trade risk, daily trade count, bear-market, and
+  duplicate-ticker. The loss-limit, cooldown, earnings-week, and
+  `stop_loss_required`/`paper_trade_days_required` rules are declared in config
+  but **not yet enforced**. Live trading needs an explicit flag + `ALPACA_PAPER=false`.
+- **Most network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry) and `src/data/cache.py` (TTL disk cache with a stale-fallback path).
+  Exception: `src/data/universe.py` still fetches constituent lists directly
+  (known gap, see below).
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
   fan-out for scans). Do not introduce `async def` without cause.
 
@@ -161,7 +170,9 @@ network-exposed (see Dashboard security above).
 `signal_weights` (technical/volume/sentiment/fundamental/macro), `signal_thresholds`
 (score→label), `atr_stop_multiplier`, `target_rr_ratios`/`target_exit_pcts`,
 `filter_*` (disqualifier thresholds), and `safety_rules` (max positions,
-loss/exposure limits, cooldowns) enforced by `RiskGuard`.
+loss/exposure limits, cooldowns) — `RiskGuard` enforces the position/exposure/
+trade-count/bear-market/duplicate subset; loss-limit, cooldown, earnings-week,
+and stop-required rules are not yet wired.
 
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env);

@@ -393,6 +393,12 @@ Examples:
         log.error("--account-size must be a positive number.")
         sys.exit(1)
 
+    # --execute (paper) and --live-execute (real money) are mutually exclusive —
+    # never let the paper flag silently ride along into a live-trading run.
+    if args.execute and args.live_execute:
+        log.error("--execute and --live-execute are mutually exclusive.")
+        sys.exit(1)
+
     # --execute targets the PAPER account: refuse if the account is live.
     if args.execute and not args.live_execute and not config.ALPACA_PAPER:
         log.error(
