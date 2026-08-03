@@ -88,12 +88,18 @@ class RiskGuard:
 
         equity = float(portfolio.get("total_equity", 0))
         buying_power = float(portfolio.get("buying_power", 0))
-        # Count in-flight tracker positions (pending_fill entries that have not
-        # shown up as broker positions yet) alongside broker positions, so a
-        # multi-plan scan cannot queue more entries than max_positions before
-        # any fills land (audit finding [2]).
+        # Count broker positions plus any OPEN tracker positions the broker does
+        # not yet report (pending_fill entries from this scan). max() would
+        # undercount disjoint sets — e.g. 4 broker-only + 1 tracked pending is 5,
+        # not 4 (audit finding [2] / executor:96).
         broker_count = int(portfolio.get("position_count", 0))
-        position_count = max(broker_count, len(tracker.get_open()))
+        broker_tickers = {
+            str(h.get("ticker", "")).upper()
+            for h in (portfolio.get("holdings") or [])
+        }
+        tracker_open = set(tracker.get_open().keys())
+        extra_pending = len(tracker_open - broker_tickers)
+        position_count = broker_count + extra_pending
         position_value = float(position_info.get("position_value", 0))
         risk_dollars = float(position_info.get("risk_dollars", 0))
 
@@ -465,23 +471,50 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
             except OrderError as exc:
                 log.warning(f"{ticker}: could not cancel stop after full exit: {exc}")
         tracker.mark_closed(ticker, "ALL_TARGETS")
-    elif any_target_hit and pos.stop_order_id:
+        return
+
+    if any_target_hit and pos.stop_order_id:
         # A tranche exited: cancel-replace the stop so its quantity matches the
         # remaining open shares instead of the original full size (finding [11]).
         _resize_stop(ticker, pos, tracker)
+
+    # Safety net every cycle: an active position must always have a live stop.
+    # Covers a failed initial stop placement AND a resize whose replacement leg
+    # failed (which would otherwise never retry — executor:481).
+    _ensure_stop(ticker, tracker)
 
 
 def _resize_stop(ticker: str, pos, tracker: PositionTracker) -> None:
     """Cancel-replace the protective stop to cover only the remaining shares."""
     try:
         cancel_order(pos.stop_order_id)
-        new_stop = place_stop_order(ticker, pos.shares_open, pos.stop_price)
-        tracker.mark_stop_placed(ticker, str(new_stop.id))
-        log.info(f"{ticker}: stop resized to {pos.shares_open} share(s)")
     except OrderError as exc:
-        log.error(
-            f"{ticker}: failed to resize stop to {pos.shares_open} share(s): {exc}"
-        )
+        # The old stop may still be live; keep its id and let the next cycle
+        # retry rather than blindly dropping protection.
+        log.error(f"{ticker}: could not cancel stop for resize: {exc}")
+        return
+    # Old stop is gone. Clear the id so protection reads as missing, then place
+    # the replacement; if that fails, _ensure_stop retries on later cycles.
+    tracker.mark_stop_placed(ticker, None)
+    _ensure_stop(ticker, tracker)
+
+
+def _ensure_stop(ticker: str, tracker: PositionTracker) -> None:
+    """Place a protective stop for the remaining shares if one is missing."""
+    pos = tracker.get(ticker)
+    if (
+        pos is None
+        or pos.status == "closed"
+        or pos.shares_open <= 0
+        or pos.stop_order_id
+    ):
+        return
+    try:
+        stop = place_stop_order(ticker, pos.shares_open, pos.stop_price)
+        tracker.mark_stop_placed(ticker, str(stop.id))
+        log.info(f"{ticker}: protective stop (re)placed for {pos.shares_open} share(s)")
+    except OrderError as exc:
+        log.error(f"{ticker}: failed to place protective stop: {exc}")
 
 
 def _is_filled(order_id: str, ticker: str, label: str) -> bool:

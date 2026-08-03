@@ -103,6 +103,11 @@ class PositionTracker:
             config, "LIVE_POSITION_STORE_PATH", _DEFAULT_STORE_PATH
         )
         self._positions: dict[str, LivePosition] = {}
+        # Per-day count of ENTRY events, keyed by YYYY-MM-DD. Counted separately
+        # from `_positions` because the position map is keyed by ticker: a
+        # same-day close-then-re-enter of one ticker is two entries but one
+        # record, so counting records would let it bypass max_trades_per_day.
+        self._daily_entries: dict[str, int] = {}
         # Reentrant: mutators call save() while holding the lock, and the monitor
         # thread mutates the same instance as the main thread (audit: tracker
         # thread-safety). RLock lets a thread re-acquire without deadlocking.
@@ -136,9 +141,29 @@ class PositionTracker:
                 self._positions = {}
                 return
 
+            # A valid-JSON-but-non-object store (e.g. a list) must fail safe, not
+            # raise on .items() outside the read handler and abort startup.
+            if not isinstance(data, dict):
+                log.error(
+                    f"Position store {self._path} is not a JSON object "
+                    f"({type(data).__name__}); starting empty"
+                )
+                self._positions = {}
+                return
+
+            # v2 wraps positions + daily entry counts; legacy is a flat
+            # ticker->record map. Detect v2 by the "positions" object.
+            if isinstance(data.get("positions"), dict):
+                raw_positions = data["positions"]
+                raw_daily = data.get("daily_entries")
+                self._daily_entries = dict(raw_daily) if isinstance(raw_daily, dict) else {}
+            else:
+                raw_positions = data
+                self._daily_entries = {}
+
             positions: dict[str, LivePosition] = {}
             skipped = 0
-            for ticker, entry in (data or {}).items():
+            for ticker, entry in raw_positions.items():
                 try:
                     positions[ticker] = LivePosition(**entry)
                 except Exception as exc:
@@ -148,6 +173,17 @@ class PositionTracker:
             if skipped:
                 log.warning(f"Position store: skipped {skipped} unreadable record(s)")
             self._prune_stale_closed()
+
+            # Backfill today's entry count from records (covers legacy stores and
+            # keeps the counter >= records opened today), and drop other days so
+            # the counter map stays bounded.
+            today = date.today().isoformat()
+            record_today = sum(
+                1 for p in self._positions.values() if p.trades_today_date == today
+            )
+            count_today = max(int(self._daily_entries.get(today, 0)), record_today)
+            self._daily_entries = {today: count_today} if count_today else {}
+
             log.info(f"Loaded {len(self._positions)} position(s) from {self._path}")
 
     def _prune_stale_closed(self) -> None:
@@ -169,8 +205,11 @@ class PositionTracker:
             tmp = str(path) + ".tmp"
             try:
                 payload = {
-                    ticker: dataclasses.asdict(pos)
-                    for ticker, pos in self._positions.items()
+                    "positions": {
+                        ticker: dataclasses.asdict(pos)
+                        for ticker, pos in self._positions.items()
+                    },
+                    "daily_entries": dict(self._daily_entries),
                 }
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
@@ -240,6 +279,10 @@ class PositionTracker:
         )
         with self._lock:
             self._positions[ticker] = pos
+            # Count this as a distinct entry EVENT (survives a same-day re-entry
+            # that replaces a closed record for the same ticker).
+            today = date.today().isoformat()
+            self._daily_entries[today] = self._daily_entries.get(today, 0) + 1
             self.save()
         log.info(
             f"Position tracked: {ticker} | {shares_initial} shares"
@@ -342,12 +385,11 @@ class PositionTracker:
             return pos is not None and pos.status != "closed"
 
     def trades_today(self) -> int:
-        """Count positions that were opened today (open or closed)."""
+        """Count ENTRY events made today (not records), so same-day re-entries
+        of a closed ticker still count toward max_trades_per_day."""
         today = date.today().isoformat()
         with self._lock:
-            return sum(
-                1 for p in self._positions.values() if p.trades_today_date == today
-            )
+            return int(self._daily_entries.get(today, 0))
 
     def remove(self, ticker: str) -> None:
         """Permanently remove a position from the tracker."""

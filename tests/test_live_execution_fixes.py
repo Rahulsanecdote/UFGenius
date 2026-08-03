@@ -174,7 +174,7 @@ def test_load_skips_unreadable_records(tmp_path):
     t.load()
     t.add_position(_plan(), "o1")
     raw = json.loads(open(p).read())
-    raw["BROKEN"] = {"ticker": "BROKEN", "unexpected": 1}  # invalid record
+    raw["positions"]["BROKEN"] = {"ticker": "BROKEN", "unexpected": 1}  # invalid
     open(p, "w").write(json.dumps(raw))
 
     t2 = PositionTracker(store_path=p)
@@ -190,12 +190,72 @@ def test_load_prunes_prior_day_closed_positions(tmp_path):
     t.add_position(_plan(), "o1")
     t.mark_closed("AAPL", "STOP")
     raw = json.loads(open(p).read())
-    raw["AAPL"]["trades_today_date"] = "2020-01-01"  # backdate
+    raw["positions"]["AAPL"]["trades_today_date"] = "2020-01-01"  # backdate
     open(p, "w").write(json.dumps(raw))
 
     t2 = PositionTracker(store_path=p)
     t2.load()
     assert t2.get("AAPL") is None  # stale closed record pruned
+
+
+# ── Same-day re-entry still counts toward max_trades_per_day ────────────────
+def test_reentry_does_not_bypass_daily_trade_limit(tracker):
+    tracker.add_position(_plan(), "e1")
+    tracker.mark_closed("AAPL", "STOP")
+    tracker.add_position(_plan(), "e2")  # same ticker, same day, re-entered
+    assert tracker.trades_today() == 2   # two entry events, not one record
+
+
+# ── Position cap: disjoint broker + pending sets are summed, not max'd ───────
+def test_riskguard_sums_disjoint_broker_and_pending(tracker):
+    # 4 broker-only positions + 1 tracked pending on a different ticker = 5 → cap.
+    tracker.add_position(_plan(ticker="PEND"), "p1")
+    portfolio = {
+        "total_equity": 50_000.0, "buying_power": 40_000.0,
+        "position_count": 4,
+        "holdings": [{"ticker": t} for t in ("AAA", "BBB", "CCC", "DDD")],
+    }
+    ok, reason = RiskGuard().check(_plan(ticker="NEW"), portfolio, tracker)
+    assert not ok and "Max open positions" in reason
+
+
+# ── Stop reconciliation: a failed replacement is retried next cycle ─────────
+def test_failed_stop_replacement_is_reconciled_next_cycle(tracker):
+    _add_active(tracker)
+
+    def gos(oid):
+        return MagicMock(status="filled" if oid == "t1-order-id" else "open")
+
+    # First cycle: cancel succeeds, replacement stop placement FAILS.
+    with patch("src.alpaca.executor.get_order", side_effect=gos):
+        with patch("src.alpaca.executor.cancel_order", return_value=True):
+            with patch("src.alpaca.executor.place_stop_order",
+                       side_effect=ex.OrderError("api down")):
+                _check_exits("AAPL", tracker.get("AAPL"), tracker)
+
+    pos = tracker.get("AAPL")
+    assert pos.t1_hit is True
+    assert pos.stop_order_id is None      # protection recorded as missing
+    assert pos.shares_open == 7
+
+    # Next cycle: no new target fill, but _ensure_stop re-places the stop.
+    with patch("src.alpaca.executor.get_order", return_value=MagicMock(status="open")):
+        with patch("src.alpaca.executor.place_stop_order",
+                   return_value=MagicMock(id="restored-stop")) as mock_stop:
+            _check_exits("AAPL", tracker.get("AAPL"), tracker)
+
+    pos = tracker.get("AAPL")
+    assert pos.stop_order_id == "restored-stop"
+    assert mock_stop.call_args[0][1] == 7
+
+
+# ── Non-object store fails safe instead of aborting startup ─────────────────
+def test_non_object_store_loads_empty(tmp_path):
+    p = tmp_path / "pos.json"
+    p.write_text("[1, 2, 3]")  # valid JSON, wrong shape
+    t = PositionTracker(store_path=str(p))
+    t.load()  # must not raise
+    assert t.get_open() == {}
 
 
 # ── Monitor interval is clamped to a positive floor ─────────────────────────
