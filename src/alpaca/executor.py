@@ -219,6 +219,15 @@ class RiskGuard:
                 return False, (
                     f"Earnings in {days:.0f}d and trade_earnings_week=False"
                 )
+            if days is None:
+                # Fail-open by design (blocking would reject every trade when the
+                # metadata provider carries no earnings dates — e.g. the Alpaca
+                # payload), but say so loudly instead of silently skipping the rule.
+                log.warning(
+                    f"[{ticker}] trade_earnings_week=False but earnings date is "
+                    "unknown for this ticker — rule NOT evaluated (metadata "
+                    "provider supplies no earnings timestamp)."
+                )
 
         # 15. Require a minimum paper-trading tenure before real-money trading.
         req_days = safety.get("paper_trade_days_required")
