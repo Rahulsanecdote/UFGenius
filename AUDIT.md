@@ -61,6 +61,15 @@ fetches constituent lists through `utils/http.py` (timeout + bounded retry),
 selecting the Wikipedia table by its `Symbol` header and locating the iShares
 CSV header row by content instead of `skiprows=9`.
 
+A membership-file BUILDER now ships as well
+(`python -m src.backtest.build_universe_history`): it reconstructs S&P 500
+point-in-time membership from Wikipedia's constituents + "selected changes"
+tables (newest-to-oldest replay; unknown starts floored at the earliest
+change date and documented as "member since at least"). The execution path
+also gained a best-effort earnings-date lookup so the earnings-week rule can
+actually evaluate for Alpaca-metadata plans (fail-open preserved), and the
+CLI now rejects non-positive --account-size values (L3 remainder).
+
 M1 (dead UI-token path) is fixed by REMOVAL, not by wiring it up: "/" is
 unauthenticated, so a server-issued signed token the API accepts would let
 any visitor mint credentials — an auth bypass. The browser UI now prompts
