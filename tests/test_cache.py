@@ -98,3 +98,19 @@ def test_concurrent_writes_with_forced_eviction_do_not_raise(tmp_path, monkeypat
             future.result()
 
     assert errors == []
+
+
+def test_eviction_trim_target_is_configurable(tmp_path, monkeypatch):
+    import src.utils.config as cfg
+
+    monkeypatch.setattr(cache, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(cache, "MAX_CACHE_SIZE_MB", 0.001)  # ~1 KB limit
+    monkeypatch.setattr(cfg, "CACHE_EVICTION_TARGET_RATIO", 1.0)
+
+    for i in range(6):
+        cache.set(f"cfg:{i}", {"pad": "x" * 400}, ttl=60)
+
+    # ratio=1.0 → trim stops as soon as size is under the limit itself,
+    # so at least one recent entry survives the sweep.
+    assert cache._cache_size_mb() <= 0.001
+    assert len(list(tmp_path.glob("*.pkl"))) >= 1

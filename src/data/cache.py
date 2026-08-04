@@ -161,10 +161,14 @@ def _enforce_size_limit() -> None:
         if _cache_size_mb() <= MAX_CACHE_SIZE_MB:
             return
 
-        # Second pass: remove oldest by mtime until under limit
+        # Second pass: remove oldest by mtime until under the trim target
+        # (a fraction of the limit, so we don't re-sweep on every write).
+        from src.utils import config
+
+        ratio = min(max(float(config.CACHE_EVICTION_TARGET_RATIO), 0.1), 1.0)
         files = sorted(_CACHE_DIR.glob("*.pkl"), key=_mtime_or_zero)
         for p in files:
-            if _cache_size_mb() <= MAX_CACHE_SIZE_MB * 0.8:  # trim to 80% to avoid thrash
+            if _cache_size_mb() <= MAX_CACHE_SIZE_MB * ratio:
                 break
             p.unlink(missing_ok=True)
 

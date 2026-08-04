@@ -181,3 +181,12 @@ def test_filter_universe_skips_on_fetch_error():
         result = filter_universe(["AAPL"], min_price=1.0, min_avg_volume=100_000)
 
     assert result == []  # errors silently skipped
+
+
+def test_fetch_user_agent_comes_from_config():
+    import src.utils.config as cfg
+
+    from src.data.universe import _UA_HEADERS
+
+    assert _UA_HEADERS["User-Agent"] == cfg.CONSTITUENT_FETCH_USER_AGENT
+    assert cfg.CONSTITUENT_FETCH_USER_AGENT  # non-empty default

@@ -14,7 +14,7 @@ log = get_logger(__name__)
 
 # Constituent-list fetches go through utils/http (timeout + bounded retry,
 # audit M10) — a slow Wikipedia/iShares response must not hang the scan.
-_UA_HEADERS = {"User-Agent": "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"}
+_UA_HEADERS = {"User-Agent": config.CONSTITUENT_FETCH_USER_AGENT}
 
 
 def get_sp500_tickers() -> List[str]:
