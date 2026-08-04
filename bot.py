@@ -24,6 +24,7 @@ import sys
 import time
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import schedule
 
@@ -293,6 +294,52 @@ def cmd_portfolio(args) -> None:
     print(f"{'='*60}\n")
 
 
+_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+_DEFAULT_SCHEDULE = {
+    "pre_market": "06:00",
+    "market_open": "09:25",
+    "post_market": "16:30",
+    "overnight": "21:00",
+}
+
+
+def _is_trading_day(now: datetime | None = None) -> bool:
+    """Weekend gate (audit L4): skip Sat/Sun instead of scanning a closed
+    market. The weekday is derived in America/New_York (the market timezone
+    the executor's monitor already anchors to) so a host in another timezone
+    doesn't misclassify the US trading date — e.g. a Monday pre-dawn run in
+    Tokyo is still Sunday in New York. US market holidays still slip through —
+    a proper trading calendar is a heavier dependency than this gate warrants
+    today. `now` may be passed for testing; otherwise the current market time
+    is used."""
+    if now is None:
+        try:
+            now = datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            now = datetime.now()  # fail-open to local time on tz errors
+    return now.weekday() < 5
+
+
+def _wire_schedule(sched: dict, run_fn) -> list[str]:
+    """Wire EVERY configured `schedule:` slot (audit M12) — previously only
+    four hardcoded slots were scheduled and intraday_1/intraday_2 were
+    silently dropped. Returns the wired "slot=HH:MM" entries."""
+    if not sched:
+        sched = dict(_DEFAULT_SCHEDULE)
+    wired: list[str] = []
+    for slot, time_str in sorted(sched.items(), key=lambda kv: str(kv[1])):
+        if not isinstance(time_str, str) or not _TIME_RE.match(time_str):
+            log.error(
+                f"Invalid schedule time {time_str!r} for '{slot}' "
+                "(expected HH:MM 24h); skipping"
+            )
+            continue
+        schedule.every().day.at(time_str).do(run_fn)
+        wired.append(f"{slot}={time_str}")
+    return wired
+
+
 def _schedule_scan(args) -> None:
     """Run scan on schedule."""
     sched = config.get("schedule", {})
@@ -304,22 +351,14 @@ def _schedule_scan(args) -> None:
         start_monitor_thread(tracker)
 
     def _run():
+        if not _is_trading_day():
+            log.info("Skipping scheduled scan: weekend (market closed)")
+            return
         log.info(f"Scheduled scan triggered at {datetime.now().strftime('%H:%M')}")
         cmd_scan(args)
 
-    _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
-    for time_str in [
-        sched.get("pre_market",  "06:00"),
-        sched.get("market_open", "09:25"),
-        sched.get("post_market", "16:30"),
-        sched.get("overnight",   "21:00"),
-    ]:
-        if not _TIME_RE.match(time_str):
-            log.error(f"Invalid schedule time '{time_str}' (expected HH:MM 24h); skipping")
-            continue
-        schedule.every().day.at(time_str).do(_run)
-
-    log.info(f"Scheduled scans at: {', '.join([sched.get(k, '') for k in ['pre_market','market_open','post_market','overnight']])}")
+    wired = _wire_schedule(sched, _run)
+    log.info(f"Scheduled scans (weekdays): {', '.join(wired) or 'none'}")
     log.info(f"Running in {'PAPER' if args.mode == 'paper' else 'LIVE'} mode. Press Ctrl+C to stop.")
 
     # Run immediately on startup
