@@ -24,6 +24,7 @@ import sys
 import time
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import schedule
 
@@ -303,10 +304,20 @@ _DEFAULT_SCHEDULE = {
 }
 
 
-def _is_trading_day(now: datetime) -> bool:
+def _is_trading_day(now: datetime | None = None) -> bool:
     """Weekend gate (audit L4): skip Sat/Sun instead of scanning a closed
-    market. US market holidays still slip through — a proper trading calendar
-    is a heavier dependency than this gate warrants today."""
+    market. The weekday is derived in America/New_York (the market timezone
+    the executor's monitor already anchors to) so a host in another timezone
+    doesn't misclassify the US trading date — e.g. a Monday pre-dawn run in
+    Tokyo is still Sunday in New York. US market holidays still slip through —
+    a proper trading calendar is a heavier dependency than this gate warrants
+    today. `now` may be passed for testing; otherwise the current market time
+    is used."""
+    if now is None:
+        try:
+            now = datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            now = datetime.now()  # fail-open to local time on tz errors
     return now.weekday() < 5
 
 
@@ -340,7 +351,7 @@ def _schedule_scan(args) -> None:
         start_monitor_thread(tracker)
 
     def _run():
-        if not _is_trading_day(datetime.now()):
+        if not _is_trading_day():
             log.info("Skipping scheduled scan: weekend (market closed)")
             return
         log.info(f"Scheduled scan triggered at {datetime.now().strftime('%H:%M')}")

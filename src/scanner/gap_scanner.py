@@ -56,8 +56,10 @@ def scan_for_gaps(
 
             gap_pct = ((today_open - prev_close) / prev_close) * 100
 
-            # Volume ratio vs 20-day average
-            avg_vol_20 = df["Volume"].tail(20).mean()
+            # Volume ratio vs the 20 bars *preceding* today — excluding the
+            # current bar so a volume spike doesn't dilute its own ratio
+            # (the ≥21-bar floor above guarantees these 20 prior bars exist).
+            avg_vol_20 = df["Volume"].iloc[-21:-1].mean()
             vol_ratio = today_volume / avg_vol_20 if avg_vol_20 > 0 else 0
 
             if abs(gap_pct) >= min_gap_pct:

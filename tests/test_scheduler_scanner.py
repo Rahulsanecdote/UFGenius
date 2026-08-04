@@ -96,3 +96,6 @@ def test_gap_scan_reports_with_enough_bars_and_wider_window(monkeypatch):
     assert len(results) == 1
     assert results[0]["direction"] == "UP"
     assert results[0]["gap_pct"] == 10.0
+    # baseline = 20 prior bars @ 1M (today's 5M spike excluded) → 5.0x, not the
+    # ~4.17x an inclusive tail(20) would report
+    assert results[0]["volume_ratio"] == 5.0
