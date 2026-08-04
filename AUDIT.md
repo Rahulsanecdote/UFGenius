@@ -43,6 +43,10 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | M12 intraday slots dropped | **Fixed in a follow-up:** the scheduler is driven from the `schedule:` config dict — every slot (incl. `intraday_1`/`intraday_2`) is wired; invalid times are skipped with an error log. |
 | L4 weekend scans | **Fixed in a follow-up:** scheduled scans skip Sat/Sun (`_is_trading_day`); US market holidays still slip through — a trading calendar remains out of scope. |
 | L8 thin "20-day" average | **Fixed in a follow-up:** the gap scanner fetches a 3-month window and requires ≥21 bars before computing its 20-day volume average. |
+| L1 diagnose info leak | **Fixed in a follow-up:** `/api/diagnose` serves a sanitized status (per-probe status/rows/elapsed + fundamentals status); interpreter/library versions, provider names, and raw error strings stay in the CLI (`python diagnose.py`). |
+| L6 sample std in BB/HV | **Fixed in a follow-up:** Bollinger Bands and HV_20 use population std (`ddof=0`), the canonical definition. |
+| L7 chikou future leak | **Fixed in a follow-up:** the `Close.shift(-26)` series was removed from trend indicators (unused in scoring; pure latent lookahead). |
+| L9 shared Session | **Fixed in a follow-up:** `get_retry_session` returns a per-thread `requests.Session` (thread-local) instead of one shared instance across the 8-worker pool. |
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
 Nothing from the audit's still-open list remains. Same-bar entry (M4) and

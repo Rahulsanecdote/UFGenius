@@ -3697,11 +3697,40 @@ def healthz():
     return jsonify({"status": "ok"}), 200
 
 
+def _sanitize_diagnose(full: dict) -> dict:
+    """Trim diagnostics to what the UI renders (audit L1).
+
+    Interpreter/library versions, provider names, provider-failure details,
+    and raw error strings stay in the CLI (`python diagnose.py`) — the HTTP
+    surface only reports per-probe health.
+    """
+    tests = {}
+    for symbol, probe in (full.get("tests") or {}).items():
+        tests[symbol] = {
+            "status": probe.get("status", "UNKNOWN"),
+            "rows": probe.get("rows", 0),
+            "elapsed_sec": probe.get("elapsed_sec"),
+        }
+    fund = full.get("fundamentals") or {}
+    ok = bool(tests) and all(str(t["status"]).startswith("OK") for t in tests.values())
+    out = {
+        "status": "ok" if ok else "degraded",
+        "tests": tests,
+        "fundamentals": {
+            "status": fund.get("status", "UNKNOWN"),
+            "market_cap": fund.get("market_cap"),
+        },
+    }
+    if "cache_freshness" in full:
+        out["cache_freshness"] = full["cache_freshness"]
+    return out
+
+
 @app.route("/api/diagnose")
 def api_diagnose():
     """Health check — test yfinance connectivity."""
     try:
-        return jsonify(diagnose())
+        return jsonify(_sanitize_diagnose(diagnose()))
     except Exception:
         log.exception("Diagnose endpoint error")
         return jsonify({"error": "Diagnosis failed"}), 500

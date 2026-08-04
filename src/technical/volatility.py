@@ -22,9 +22,10 @@ def calculate_volatility_indicators(df: pd.DataFrame) -> dict:
     for period in [7, 14, 21]:
         indicators[f"ATR_{period}"] = tr.ewm(com=period - 1, adjust=False).mean()
 
-    # Bollinger Bands (20-period, 2 std dev)
+    # Bollinger Bands (20-period, 2 std dev). Canonical bands use POPULATION
+    # std (ddof=0) — pandas defaults to sample std (audit L6).
     bb_mid = df["Close"].rolling(20).mean()
-    bb_std = df["Close"].rolling(20).std()
+    bb_std = df["Close"].rolling(20).std(ddof=0)
     indicators["BB_UPPER"] = bb_mid + 2 * bb_std
     indicators["BB_LOWER"] = bb_mid - 2 * bb_std
     indicators["BB_MID"]   = bb_mid
@@ -43,9 +44,9 @@ def calculate_volatility_indicators(df: pd.DataFrame) -> dict:
         (indicators["BB_LOWER"] > indicators["KC_LOWER"])
     )
 
-    # Historical Volatility (20-day annualized)
+    # Historical Volatility (20-day annualized, population std — audit L6)
     log_ret = np.log(df["Close"] / df["Close"].shift(1))
-    indicators["HV_20"] = log_ret.rolling(20).std() * np.sqrt(252) * 100
+    indicators["HV_20"] = log_ret.rolling(20).std(ddof=0) * np.sqrt(252) * 100
 
     return indicators
 

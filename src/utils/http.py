@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import threading
 import time
-from functools import lru_cache
 from typing import Any
 
 import requests
@@ -11,6 +11,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from src.utils import config
+
+# One Session per thread (audit L9): requests.Session is not documented as
+# thread-safe, and the scan pool drives 8 workers through this module at once.
+# Thread-local sessions keep connection pooling within each worker without
+# cross-thread races on shared cookie/adapter state.
+_thread_local = threading.local()
 
 
 def _retry_strategy() -> Retry:
@@ -26,16 +32,18 @@ def _retry_strategy() -> Retry:
     )
 
 
-@lru_cache(maxsize=1)
 def get_retry_session() -> requests.Session:
-    session = requests.Session()
-    adapter = HTTPAdapter(
-        max_retries=_retry_strategy(),
-        pool_connections=config.REQUEST_POOL_SIZE,
-        pool_maxsize=config.REQUEST_POOL_SIZE,
-    )
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = HTTPAdapter(
+            max_retries=_retry_strategy(),
+            pool_connections=config.REQUEST_POOL_SIZE,
+            pool_maxsize=config.REQUEST_POOL_SIZE,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _thread_local.session = session
     return session
 
 
