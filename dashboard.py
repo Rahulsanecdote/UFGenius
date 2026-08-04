@@ -2067,6 +2067,16 @@ HTML = '''
       if (authRecoveryTriggered) return;
       authRecoveryTriggered = true;
 
+      // Refuse to collect a key we would refuse to send (see apiFetch): over
+      // cleartext HTTP the only safe advice is to fix the transport.
+      if (!window.isSecureContext) {
+        const message = 'This dashboard is served over insecure HTTP — refusing to send an API key. Serve it over HTTPS.';
+        showToast(message, 'error', true);
+        announce(message);
+        authRecoveryTriggered = false;
+        return;
+      }
+
       // The stored key just failed — drop it so the retry starts clean.
       try { sessionStorage.removeItem(API_KEY_STORAGE_KEY); } catch (_e) {}
 
@@ -2087,7 +2097,10 @@ HTML = '''
 
     function apiFetch(url, options = {}) {
       const headers = new Headers(options.headers || {});
-      const apiKey = getStoredApiKey();
+      // Never transmit the API key over cleartext HTTP: a network attacker
+      // could capture and replay it. isSecureContext is true on HTTPS and on
+      // localhost, so local development is unaffected.
+      const apiKey = window.isSecureContext ? getStoredApiKey() : '';
       if (apiKey) headers.set('X-API-Key', apiKey);
       return fetch(url, { ...options, headers });
     }

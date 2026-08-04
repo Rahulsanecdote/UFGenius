@@ -138,3 +138,32 @@ def test_config_rejects_non_finite_ratio_values():
     assert cfg._finite_or(float("nan"), 0.8) == 0.8
     assert cfg._finite_or(float("inf"), 0.8) == 0.8
     assert cfg._finite_or(0.5, 0.8) == 0.5
+
+
+def test_env_non_finite_ratio_falls_back_at_config_load():
+    # End-to-end: the env->config assignment itself must apply the finite
+    # fallback (testing _finite_or alone would miss a regression there).
+    # Subprocess per value keeps this test free of import-reload side effects.
+    import os
+    import subprocess
+    import sys
+
+    for bad in ("nan", "inf", "-inf"):
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import src.utils.config as c; print(c.CACHE_EVICTION_TARGET_RATIO)"],
+            env={**os.environ, "CACHE_EVICTION_TARGET_RATIO": bad},
+            capture_output=True, text=True, check=True,
+        )
+        assert result.stdout.strip() == "0.8", f"env={bad!r}"
+
+
+def test_normalizer_is_single_source_of_truth(monkeypatch):
+    import src.utils.config as cfg
+
+    monkeypatch.setattr(cfg, "CACHE_EVICTION_TARGET_RATIO", float("nan"))
+    assert cfg.cache_eviction_target_ratio() == 0.8
+    monkeypatch.setattr(cfg, "CACHE_EVICTION_TARGET_RATIO", 5.0)
+    assert cfg.cache_eviction_target_ratio() == 1.0
+    monkeypatch.setattr(cfg, "CACHE_EVICTION_TARGET_RATIO", 0.01)
+    assert cfg.cache_eviction_target_ratio() == 0.1

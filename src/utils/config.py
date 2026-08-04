@@ -143,10 +143,25 @@ def _finite_or(value: float, default: float) -> float:
 
 # Cache eviction trims to this fraction of the size limit (avoids re-sweeping
 # on every write right at the threshold). Effective range is [0.1, 1.0]:
-# out-of-range values are clamped at use, non-finite values fall back to 0.8.
+# out-of-range values are clamped, non-finite values fall back to 0.8.
+_CACHE_EVICTION_DEFAULT = 0.8
+_CACHE_EVICTION_BOUNDS = (0.1, 1.0)
 CACHE_EVICTION_TARGET_RATIO: float = _finite_or(
-    env_float("CACHE_EVICTION_TARGET_RATIO", 0.8), 0.8
+    env_float("CACHE_EVICTION_TARGET_RATIO", _CACHE_EVICTION_DEFAULT),
+    _CACHE_EVICTION_DEFAULT,
 )
+
+
+def cache_eviction_target_ratio() -> float:
+    """The normalized eviction trim ratio: finite, clamped to [0.1, 1.0].
+
+    Single home for the fallback and bounds so the env docs, config value,
+    and sweep behavior cannot drift apart (consumed by src/data/cache.py).
+    Reads the module attribute at call time so tests can monkeypatch it.
+    """
+    lo, hi = _CACHE_EVICTION_BOUNDS
+    ratio = _finite_or(float(CACHE_EVICTION_TARGET_RATIO), _CACHE_EVICTION_DEFAULT)
+    return min(max(ratio, lo), hi)
 
 # User-Agent sent with constituent-list fetches (Wikipedia / iShares).
 # `or` fallback: an empty env value (e.g. a copied .env.example line) must not
