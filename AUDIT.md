@@ -60,9 +60,10 @@ path (`src/alpaca/executor.py`, `position_tracker.py`) surfaced by review:
 | Monitor interval could busy-loop at 0/negative | Interval clamped to a ≥60s floor; `MONITOR_INTERVAL_MIN` exposed in config. |
 
 Tests: **308 pass** (adds `test_live_execution_fixes.py`), 3 network tests
-deselected by default. Still not implemented (separate risk features, not bugs):
-the RiskGuard rules noted under C2 (loss limits, cooldown, earnings-week,
-stop-required, paper-trading-days).
+deselected by default. The RiskGuard rules that were still pending at this
+point (loss limits, cooldown, earnings-week, stop-required, paper-trading-days)
+were implemented in a subsequent PR — the C2 row above is the authoritative
+status: **resolved**.
 
 ---
 

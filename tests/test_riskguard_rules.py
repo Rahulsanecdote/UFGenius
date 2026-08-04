@@ -165,33 +165,73 @@ def _add_active(t):
     t.mark_target_placed("AAPL", "t3", "t3-order-id")
 
 
-def test_stop_exit_books_realized_loss(tracker):
+def test_stop_exit_books_realized_loss_at_actual_fill(tracker):
     _add_active(tracker)
 
     def gos(oid):
-        return MagicMock(status="filled" if oid == "stop-order-id" else "open")
+        if oid == "stop-order-id":
+            # Stop gapped through: actual avg fill is WORSE than the 186.35
+            # trigger — P&L must book at the real fill, not the level.
+            return MagicMock(status="filled", filled_avg_price="186.00")
+        return MagicMock(status="open")
 
     with patch("src.alpaca.executor.get_order", side_effect=gos):
         with patch("src.alpaca.executor.cancel_order", return_value=True):
             _check_exits("AAPL", tracker.get("AAPL"), tracker)
 
-    # (186.35 - 189.50) * 10 shares = -31.50
+    # (186.00 actual fill - 189.50 basis) * 10 shares = -35.00
     since = datetime.utcnow() - timedelta(hours=1)
-    assert tracker.realized_pnl_since(since) == pytest.approx(-31.5)
+    assert tracker.realized_pnl_since(since) == pytest.approx(-35.0)
     assert tracker.last_loss_time() is not None
 
 
-def test_target_exit_books_realized_gain(tracker):
+def test_target_exit_books_gain_with_level_fallback(tracker):
     _add_active(tracker)
 
     def gos(oid):
-        return MagicMock(status="filled" if oid == "t1-order-id" else "open")
+        if oid == "t1-order-id":
+            # No avg fill reported → booking falls back to the target level.
+            return MagicMock(status="filled", filled_avg_price=None)
+        return MagicMock(status="open")
 
     with patch("src.alpaca.executor.get_order", side_effect=gos):
         with patch("src.alpaca.executor.cancel_order", return_value=True):
             with patch("src.alpaca.executor.place_stop_order", return_value=MagicMock(id="s2")):
                 _check_exits("AAPL", tracker.get("AAPL"), tracker)
 
-    # (191.69 - 189.50) * 3 shares (t1 tranche) = +6.57
+    # (191.69 t1 level - 189.50 basis) * 3 shares (t1 tranche) = +6.57
     since = datetime.utcnow() - timedelta(hours=1)
     assert tracker.realized_pnl_since(since) == pytest.approx(6.57)
+
+
+def test_record_realized_rejects_non_finite(tracker):
+    tracker.record_realized("A", float("nan"))
+    tracker.record_realized("A", float("inf"))
+    tracker.record_realized("A", -25.0)
+    since = datetime.utcnow() - timedelta(hours=1)
+    # Only the finite value is booked; NaN/inf would poison the sums that
+    # drive the loss-limit kill switches.
+    assert tracker.realized_pnl_since(since) == pytest.approx(-25.0)
+
+
+def test_stop_loss_required_rejects_garbage_price(tracker, monkeypatch):
+    monkeypatch.setattr(cfg, "SAFETY", {"stop_loss_required": True})
+    for bad in ("abc", float("nan"), 0, -5):
+        plan = _plan()
+        plan["stop_loss"] = {"price": bad}
+        ok, reason = RiskGuard().check(plan, _portfolio(), tracker)
+        assert not ok and "stop_loss_required" in reason, f"price={bad!r}"
+
+
+def test_earnings_window_is_configurable(tracker, monkeypatch):
+    monkeypatch.setattr(
+        cfg, "SAFETY",
+        {"trade_earnings_week": False, "earnings_week_window_days": 3},
+    )
+    plan = _plan()
+    plan["days_to_earnings"] = 5  # outside the narrowed 3-day window
+    ok, reason = RiskGuard().check(plan, _portfolio(), tracker)
+    assert ok, reason
+    plan["days_to_earnings"] = 2  # inside it
+    ok, reason = RiskGuard().check(plan, _portfolio(), tracker)
+    assert not ok and "Earnings" in reason

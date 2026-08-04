@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import threading
 from dataclasses import dataclass
@@ -113,6 +114,10 @@ def _coerce_realized(raw) -> list[dict]:
         try:
             pnl = float(item.get("pnl"))
         except (TypeError, ValueError):
+            continue
+        # Non-finite P&L would poison every realized_pnl_since() sum (NaN/inf
+        # propagate), silently disabling the loss-limit kill switches.
+        if not math.isfinite(pnl):
             continue
         if isinstance(ts, str):
             clean.append({"ts": ts, "ticker": str(item.get("ticker", "")), "pnl": pnl})
@@ -412,15 +417,24 @@ class PositionTracker:
             setattr(pos, f"{level}_order_id", order_id)
             self.save()
 
-    def mark_target_hit(self, ticker: str, level: Literal["t1", "t2", "t3"]) -> None:
+    def mark_target_hit(
+        self,
+        ticker: str,
+        level: Literal["t1", "t2", "t3"],
+        realized_pnl: Optional[float] = None,
+    ) -> None:
         """
         Record that a target exit was filled.
 
-        Reduces shares_open by the tranche size and sets the hit flag.
+        Reduces shares_open by the tranche size and sets the hit flag. When
+        ``realized_pnl`` is given, the ledger entry is appended in the SAME
+        critical section and persisted by one atomic save, so a crash can't
+        leave the position mutated but the P&L unbooked (or vice versa).
 
         Args:
             ticker: Ticker symbol.
             level:  One of "t1", "t2", "t3".
+            realized_pnl: Realized P&L of the exiting tranche, if known.
         """
         with self._lock:
             pos = self._require(ticker)
@@ -428,18 +442,23 @@ class PositionTracker:
             pos.shares_open = max(0, pos.shares_open - sold)
             setattr(pos, f"{level}_hit", True)
             remaining = pos.shares_open
+            self._append_realized_locked(ticker, realized_pnl)
             self.save()
         log.info(
             f"{ticker}: {level.upper()} hit — {sold} shares sold,"
             f" {remaining} remaining"
         )
 
-    def mark_closed(self, ticker: str, reason: str) -> None:
-        """Mark position as fully closed."""
+    def mark_closed(
+        self, ticker: str, reason: str, realized_pnl: Optional[float] = None
+    ) -> None:
+        """Mark position as fully closed, optionally booking realized P&L
+        atomically with the state change (single save)."""
         with self._lock:
             pos = self._require(ticker)
             pos.shares_open = 0
             pos.status = "closed"
+            self._append_realized_locked(ticker, realized_pnl)
             self.save()
         log.info(f"{ticker}: position closed (reason={reason})")
 
@@ -447,11 +466,34 @@ class PositionTracker:
         self, ticker: str, pnl: float, now: Optional[datetime] = None
     ) -> None:
         """Append a realized-P&L event (positive = gain, negative = loss)."""
-        ts = (now or datetime.utcnow()).isoformat()
         with self._lock:
-            self._realized.append({"ts": ts, "ticker": ticker, "pnl": float(pnl)})
+            if not self._append_realized_locked(ticker, pnl, now=now):
+                return
             self.save()
         log.info(f"{ticker}: realized P&L {pnl:+.2f}")
+
+    def _append_realized_locked(
+        self,
+        ticker: str,
+        pnl: Optional[float],
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Append a ledger entry (caller holds the lock). Rejects non-finite
+        values — NaN/inf would poison every realized_pnl_since() sum and
+        silently disable the loss-limit kill switches. Returns True if added."""
+        if pnl is None:
+            return False
+        try:
+            value = float(pnl)
+        except (TypeError, ValueError):
+            log.warning(f"{ticker}: dropping unreadable realized P&L {pnl!r}")
+            return False
+        if not math.isfinite(value):
+            log.warning(f"{ticker}: dropping non-finite realized P&L {value!r}")
+            return False
+        ts = (now or datetime.utcnow()).isoformat()
+        self._realized.append({"ts": ts, "ticker": ticker, "pnl": value})
+        return True
 
     # ------------------------------------------------------------------ #
     # Queries                                                              #

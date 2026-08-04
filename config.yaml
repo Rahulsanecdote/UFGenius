@@ -16,6 +16,7 @@ safety_rules:
   stop_loss_required: true
   trade_in_bear_market: false
   trade_earnings_week: false
+  earnings_week_window_days: 7   # block window (days before earnings) when trade_earnings_week is false
   cooldown_after_loss_hours: 24
   paper_trade_days_required: 30  # enforced by RiskGuard on the live path (ALPACA_PAPER=false)
 
