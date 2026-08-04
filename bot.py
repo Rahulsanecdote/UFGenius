@@ -369,6 +369,18 @@ def _schedule_scan(args) -> None:
         time.sleep(30)
 
 
+def _positive_account_size(value: str) -> float:
+    """argparse type for --account-size: a negative/zero/NaN size silently
+    poisoned position sizing downstream (audit L3) — reject it at the CLI."""
+    try:
+        size = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
+    if not (size > 0) or size != size or size == float("inf"):
+        raise argparse.ArgumentTypeError("account size must be a positive, finite number")
+    return size
+
+
 def main() -> None:
     print(DISCLAIMER)
 
@@ -396,7 +408,10 @@ Examples:
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
-    parser.add_argument("--account-size", type=float, help="Portfolio size in USD")
+    parser.add_argument(
+        "--account-size", type=_positive_account_size,
+        help="Portfolio size in USD (positive number)",
+    )
     parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000"], help="Ticker universe")
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")

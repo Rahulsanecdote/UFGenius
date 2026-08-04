@@ -115,3 +115,16 @@ def test_sessions_differ_across_threads():
     t.join()
 
     assert other and other[0] is not main_session
+
+
+# ── L3 (remainder): CLI rejects non-positive account sizes ───────────────────
+
+def test_cli_account_size_rejects_bad_values():
+    import argparse
+
+    import bot
+
+    for bad in ("-5000", "0", "nan", "inf", "abc"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            bot._positive_account_size(bad)
+    assert bot._positive_account_size("25000") == 25000.0
