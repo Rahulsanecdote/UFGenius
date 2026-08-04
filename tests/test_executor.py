@@ -15,6 +15,15 @@ from src.alpaca.executor import (
 from src.alpaca.position_tracker import PositionTracker
 
 
+@pytest.fixture(autouse=True)
+def _offline_earnings_lookup(monkeypatch):
+    # config.yaml defaults trade_earnings_week: false, so RiskGuard now runs a
+    # best-effort earnings lookup for plans without days_to_earnings — stub it
+    # so these unit tests stay offline (the lookup has its own tests).
+    import src.alpaca.executor as _executor
+    monkeypatch.setattr(_executor, "_lookup_days_to_earnings", lambda _t: None)
+
+
 # ─── Fixtures ────────────────────────────────────────────────────────────── #
 
 

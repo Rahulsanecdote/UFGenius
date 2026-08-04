@@ -100,6 +100,10 @@ def test_earnings_week_blocks_when_earnings_imminent(tracker, monkeypatch):
 
 def test_earnings_week_allows_when_unknown_or_far(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"trade_earnings_week": False})
+    # days=None now triggers a best-effort provider lookup — stub it so this
+    # unit test stays offline (the lookup has its own tests).
+    import src.alpaca.executor as executor
+    monkeypatch.setattr(executor, "_lookup_days_to_earnings", lambda _t: None)
     for days in (None, 20):
         plan = _plan()
         plan["days_to_earnings"] = days

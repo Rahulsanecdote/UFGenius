@@ -45,6 +45,24 @@ log = get_logger(__name__)
 _EXECUTABLE_SIGNALS = frozenset({"BUY", "STRONG_BUY"})
 
 
+def _lookup_days_to_earnings(ticker: str):
+    """Best-effort earnings-date lookup for plans that arrived without one.
+
+    Plans built on the execution path from Alpaca metadata carry no earnings
+    timestamps, so the earnings-week rule could never evaluate for them and
+    always failed open. Ask the yfinance-backed provider (cached) before
+    giving up; any failure preserves the documented fail-open behavior.
+    """
+    try:
+        from src.data.fetcher import fetch_ticker_info
+        from src.signals.trade_plan import _days_to_earnings
+
+        return _days_to_earnings(fetch_ticker_info(ticker))
+    except Exception as exc:
+        log.debug(f"[{ticker}] earnings-date lookup failed: {exc}")
+        return None
+
+
 # ─── Risk Guard ───────────────────────────────────────────────────────────── #
 
 
@@ -206,11 +224,13 @@ class RiskGuard:
                         f"In post-loss cooldown ({elapsed_h:.1f}h of {cooldown_h}h)"
                     )
 
-        # 14. Earnings-week block. Best effort: enforced only when the plan
-        #     carries days_to_earnings (plumbed from ticker_info); if the earnings
-        #     date is unknown the trade is allowed rather than blocked blindly.
+        # 14. Earnings-week block. Enforced when the plan carries
+        #     days_to_earnings; plans built from Alpaca metadata never do, so a
+        #     best-effort provider lookup fills the gap before failing open.
         if not bool(safety.get("trade_earnings_week", True)):
             days = plan.get("days_to_earnings")
+            if days is None:
+                days = _lookup_days_to_earnings(ticker)
             try:
                 window = float(safety.get("earnings_week_window_days", 7))
             except (TypeError, ValueError):
@@ -220,13 +240,13 @@ class RiskGuard:
                     f"Earnings in {days:.0f}d and trade_earnings_week=False"
                 )
             if days is None:
-                # Fail-open by design (blocking would reject every trade when the
-                # metadata provider carries no earnings dates — e.g. the Alpaca
-                # payload), but say so loudly instead of silently skipping the rule.
+                # Fail-open by design (blocking on unknown would reject every
+                # trade whenever no provider can supply an earnings date), but
+                # say so loudly instead of silently skipping the rule.
                 log.warning(
                     f"[{ticker}] trade_earnings_week=False but earnings date is "
-                    "unknown for this ticker — rule NOT evaluated (metadata "
-                    "provider supplies no earnings timestamp)."
+                    "unknown for this ticker — rule NOT evaluated (no provider "
+                    "supplied an earnings timestamp)."
                 )
 
         # 15. Require a minimum paper-trading tenure before real-money trading.

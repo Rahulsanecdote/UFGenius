@@ -51,6 +51,13 @@ def tracker(tmp_path):
     return t
 
 
+@pytest.fixture(autouse=True)
+def _offline_earnings_lookup(monkeypatch):
+    # Keep RiskGuard's best-effort earnings lookup offline in unit tests
+    # (it has dedicated tests in test_earnings_lookup.py).
+    monkeypatch.setattr(ex, "_lookup_days_to_earnings", lambda _t: None)
+
+
 # ── Tranche allocation never over-allocates ─────────────────────────────────
 def test_tranches_always_sum_to_shares():
     for s in range(0, 51):
