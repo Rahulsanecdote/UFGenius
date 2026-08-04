@@ -41,3 +41,76 @@ def test_cache_get_with_concurrent_writes_does_not_raise(tmp_path, monkeypatch):
             future.result()
 
     assert errors == []
+
+
+# ── eviction races (audit M9) ────────────────────────────────────────────────
+
+class _FakeDir:
+    """Stands in for _CACHE_DIR with a fixed glob() result, so we can hand the
+    sweep paths that no longer exist — the race another worker's eviction
+    creates between glob() and stat()."""
+
+    def __init__(self, paths):
+        self._paths = list(paths)
+
+    def glob(self, _pattern):
+        return list(self._paths)
+
+
+def test_cache_size_tolerates_files_vanishing_mid_sweep(tmp_path, monkeypatch):
+    ghost = tmp_path / "ghost.pkl"  # never created
+    monkeypatch.setattr(cache, "_CACHE_DIR", _FakeDir([ghost]))
+    assert cache._cache_size_mb() == 0.0  # must not raise FileNotFoundError
+
+
+def test_enforce_size_limit_survives_vanished_files(tmp_path, monkeypatch):
+    real = tmp_path / "real.pkl"
+    real.write_bytes(b"x" * 4096)
+    ghost = tmp_path / "ghost.pkl"
+    monkeypatch.setattr(cache, "_CACHE_DIR", _FakeDir([real, ghost]))
+    monkeypatch.setattr(cache, "MAX_CACHE_SIZE_MB", 0.000001)  # force the sweep
+
+    cache._enforce_size_limit()  # must not raise on the ghost
+
+    assert not real.exists()  # over-limit real file was evicted
+
+
+def test_concurrent_writes_with_forced_eviction_do_not_raise(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "_CACHE_DIR", tmp_path)
+    # A tiny limit makes every set() run the full eviction sweep, so 4 workers
+    # constantly evict each other's files — the audit-M9 scenario.
+    monkeypatch.setattr(cache, "MAX_CACHE_SIZE_MB", 0.001)
+
+    errors: list[Exception] = []
+
+    def _worker(worker_id: int):
+        for idx in range(50):
+            try:
+                cache.set(f"evict:{worker_id}:{idx}", {"n": idx, "pad": "y" * 2000}, ttl=60)
+                cache.get(f"evict:{worker_id}:{idx}")
+                cache.evict_expired()
+            except Exception as exc:
+                errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(_worker, i) for i in range(4)]
+        for future in as_completed(futures):
+            future.result()
+
+    assert errors == []
+
+
+def test_eviction_trim_target_is_configurable(tmp_path, monkeypatch):
+    import src.utils.config as cfg
+
+    monkeypatch.setattr(cache, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(cache, "MAX_CACHE_SIZE_MB", 0.001)  # ~1 KB limit
+    monkeypatch.setattr(cfg, "CACHE_EVICTION_TARGET_RATIO", 1.0)
+
+    for i in range(6):
+        cache.set(f"cfg:{i}", {"pad": "x" * 400}, ttl=60)
+
+    # ratio=1.0 → trim stops as soon as size is under the limit itself,
+    # so at least one recent entry survives the sweep.
+    assert cache._cache_size_mb() <= 0.001
+    assert len(list(tmp_path.glob("*.pkl"))) >= 1

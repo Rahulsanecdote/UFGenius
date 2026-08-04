@@ -127,10 +127,11 @@ pytest --cov=src       # coverage
   `paper_trade_days_required` (live only). Realized-loss limits and the cooldown
   read a realized-P&L ledger the monitor writes at each exit. Live trading needs
   an explicit flag + `ALPACA_PAPER=false`.
-- **Most network fetches** go through `src/utils/http.py` (timeouts + bounded
-  retry) and `src/data/cache.py` (TTL disk cache with a stale-fallback path).
-  Exception: `src/data/universe.py` still fetches constituent lists directly
-  (known gap, see below).
+- **All network fetches** go through `src/utils/http.py` (timeouts + bounded
+  retry), including the constituent-list fetches in `src/data/universe.py`
+  (tables/headers are located by content, not position). `src/data/cache.py`
+  is a TTL disk cache with atomic writes, a lock-guarded eviction sweep, and
+  a stale-fallback path.
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
   fan-out for scans). Do not introduce `async def` without cause.
 

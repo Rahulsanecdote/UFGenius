@@ -134,6 +134,18 @@ BACKTEST_SLIPPAGE_PCT: float = env_float(
     "BACKTEST_SLIPPAGE_PCT", float(get("slippage_pct", 0.001))
 )
 
+# Cache eviction trims to this fraction of the size limit (avoids re-sweeping
+# on every write right at the threshold). Clamped to (0, 1] at use.
+CACHE_EVICTION_TARGET_RATIO: float = env_float("CACHE_EVICTION_TARGET_RATIO", 0.8)
+
+# User-Agent sent with constituent-list fetches (Wikipedia / iShares).
+# `or` fallback: an empty env value (e.g. a copied .env.example line) must not
+# strip the UA — some hosts reject requests without one.
+CONSTITUENT_FETCH_USER_AGENT: str = (
+    env("CONSTITUENT_FETCH_USER_AGENT", "").strip()
+    or "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"
+)
+
 # Optional point-in-time universe membership file (audit M11). When set, the
 # backtest only takes entries in tickers that were members of the universe on
 # the entry date, correcting survivorship bias in the run-time ticker list.
