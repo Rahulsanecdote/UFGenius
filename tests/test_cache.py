@@ -114,3 +114,27 @@ def test_eviction_trim_target_is_configurable(tmp_path, monkeypatch):
     # so at least one recent entry survives the sweep.
     assert cache._cache_size_mb() <= 0.001
     assert len(list(tmp_path.glob("*.pkl"))) >= 1
+
+
+def test_nan_eviction_ratio_does_not_wipe_the_cache(tmp_path, monkeypatch):
+    # NaN survives min/max clamping (every comparison is False); without the
+    # finite guard the trim loop's stop condition never fires and EVERY file
+    # is deleted on each sweep.
+    import src.utils.config as cfg
+
+    monkeypatch.setattr(cache, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(cache, "MAX_CACHE_SIZE_MB", 0.001)
+    monkeypatch.setattr(cfg, "CACHE_EVICTION_TARGET_RATIO", float("nan"))
+
+    for i in range(6):
+        cache.set(f"nan:{i}", {"pad": "x" * 400}, ttl=60)
+
+    assert len(list(tmp_path.glob("*.pkl"))) >= 1
+
+
+def test_config_rejects_non_finite_ratio_values():
+    import src.utils.config as cfg
+
+    assert cfg._finite_or(float("nan"), 0.8) == 0.8
+    assert cfg._finite_or(float("inf"), 0.8) == 0.8
+    assert cfg._finite_or(0.5, 0.8) == 0.5

@@ -1,5 +1,6 @@
 """Configuration loader — reads config.yaml and .env."""
 
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -134,9 +135,18 @@ BACKTEST_SLIPPAGE_PCT: float = env_float(
     "BACKTEST_SLIPPAGE_PCT", float(get("slippage_pct", 0.001))
 )
 
+def _finite_or(value: float, default: float) -> float:
+    """Reject NaN/inf from env parsing — a NaN would sail through min/max
+    clamps (every comparison is False) and break the consumer's guard."""
+    return value if math.isfinite(value) else default
+
+
 # Cache eviction trims to this fraction of the size limit (avoids re-sweeping
-# on every write right at the threshold). Clamped to (0, 1] at use.
-CACHE_EVICTION_TARGET_RATIO: float = env_float("CACHE_EVICTION_TARGET_RATIO", 0.8)
+# on every write right at the threshold). Effective range is [0.1, 1.0]:
+# out-of-range values are clamped at use, non-finite values fall back to 0.8.
+CACHE_EVICTION_TARGET_RATIO: float = _finite_or(
+    env_float("CACHE_EVICTION_TARGET_RATIO", 0.8), 0.8
+)
 
 # User-Agent sent with constituent-list fetches (Wikipedia / iShares).
 # `or` fallback: an empty env value (e.g. a copied .env.example line) must not
