@@ -39,10 +39,10 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | M2 CLAUDE.md wrong project | Rewritten to match the real Flask signal-bot (routes, CLI, data flow, config). |
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
-Still open (documented above, not yet coded): M1 dead UI-token path and open
-CORS. Same-bar entry (M4) and survivorship gating (M11) are fixed — see the
-table above; no point-in-time membership *dataset* ships with the repo, so
-M11's fix activates only when the user supplies one.
+Nothing from the audit's still-open list remains. Same-bar entry (M4) and
+survivorship gating (M11) are fixed — see the table above; no point-in-time
+membership *dataset* ships with the repo, so M11's fix activates only when
+the user supplies one.
 
 M9 and M10 are fixed in a follow-up: the cache's post-write size sweep is
 lock-guarded and tolerates files vanishing mid-sweep (concurrent workers
@@ -50,6 +50,15 @@ evicting each other's files no longer crash `set()`), and `universe.py` now
 fetches constituent lists through `utils/http.py` (timeout + bounded retry),
 selecting the Wikipedia table by its `Symbol` header and locating the iShares
 CSV header row by content instead of `skiprows=9`.
+
+M1 (dead UI-token path) is fixed by REMOVAL, not by wiring it up: "/" is
+unauthenticated, so a server-issued signed token the API accepts would let
+any visitor mint credentials — an auth bypass. The browser UI now prompts
+for the ordinary dashboard API key on the first 401 (kept in sessionStorage,
+sent as `X-API-Key`). The "open CORS" note was stale: no CORS headers were
+ever emitted, and this stays deliberate (same-origin API); responses now also
+carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and
+`Cache-Control: no-store` on `/api/*`.
 
 ### Follow-up round — live-execution hardening
 

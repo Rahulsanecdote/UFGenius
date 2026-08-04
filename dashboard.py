@@ -26,7 +26,6 @@ from src.utils.security import (
     build_rate_limiter,
     has_auth_config,
     is_authorized_request,
-    issue_dashboard_ui_token,
     resolve_client_ip,
 )
 
@@ -1974,7 +1973,22 @@ HTML = '''
 
   <script>
     const $ = id => document.getElementById(id);
-    const API_TOKEN = {{ ui_token | tojson }};
+    // Auth (audit M1): the old server-issued dashboard token header was dead code —
+    // and wiring it up would let any visitor of this unauthenticated page mint
+    // API credentials. The UI now uses the ordinary dashboard API key: prompted
+    // for on the first 401, kept in sessionStorage, sent as X-API-Key.
+    const API_KEY_STORAGE_KEY = 'ufgenius.apiKey';
+    function getStoredApiKey() {
+      try { return sessionStorage.getItem(API_KEY_STORAGE_KEY) || ''; } catch (_e) { return ''; }
+    }
+    function promptForApiKey() {
+      const entered = window.prompt('This dashboard requires an API key (X-API-Key). Enter it to continue:');
+      if (entered && entered.trim()) {
+        try { sessionStorage.setItem(API_KEY_STORAGE_KEY, entered.trim()); } catch (_e) {}
+        return true;
+      }
+      return false;
+    }
     const AUTH_RECOVERY_STORAGE_KEY = 'ufgenius.authRecoveryTs';
     const AUTH_RECOVERY_COOLDOWN_MS = 15000;
     let authRecoveryTriggered = false;
@@ -2072,7 +2086,13 @@ HTML = '''
       }
 
       sessionStorage.setItem(AUTH_RECOVERY_STORAGE_KEY, String(Date.now()));
-      const message = 'Authorization expired. Refreshing dashboard session...';
+      if (!promptForApiKey()) {
+        const message = errorMessage || 'Authorization required. Provide the dashboard API key.';
+        showToast(message, 'error', true);
+        announce(message);
+        return;
+      }
+      const message = 'API key saved. Refreshing dashboard session...';
       showToast(message, 'warning', true);
       announce(message);
       window.setTimeout(() => {
@@ -2082,7 +2102,8 @@ HTML = '''
 
     function apiFetch(url, options = {}) {
       const headers = new Headers(options.headers || {});
-      if (API_TOKEN) headers.set('X-Dashboard-Token', API_TOKEN);
+      const apiKey = getStoredApiKey();
+      if (apiKey) headers.set('X-API-Key', apiKey);
       return fetch(url, { ...options, headers });
     }
 
@@ -3654,10 +3675,22 @@ def _api_security_guards():
     return None
 
 
+@app.after_request
+def _security_headers(response):
+    # Deliberately NO CORS headers anywhere: the API is same-origin only, so
+    # browsers block cross-origin reads by default. Adding Access-Control-*
+    # would widen the surface — don't, without revisiting auth.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if request.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 @app.route("/")
 def index():
-    ui_token = issue_dashboard_ui_token() if config.DASHBOARD_ALLOW_REMOTE else ""
-    return render_template_string(HTML, ui_token=ui_token)
+    return render_template_string(HTML)
 
 
 @app.route("/healthz")

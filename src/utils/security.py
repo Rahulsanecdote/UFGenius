@@ -164,25 +164,8 @@ def build_rate_limiter():
     )
 
 
-def issue_dashboard_ui_token() -> str:
-    """
-    Issue a short-lived signed token for same-origin dashboard UI requests.
-
-    Used when DASHBOARD_ALLOW_REMOTE=true to allow the built-in browser
-    dashboard to authenticate without requiring the user to manually provide
-    an API key. The token is signed with SECRET_KEY and expires quickly.
-    """
-    import hmac
-    import hashlib
-    import base64
-    import json
-
-    secret = config.env("SECRET_KEY", "").encode()
-    if not secret:
-        return ""
-
-    payload = {"purpose": "dashboard_ui", "ts": int(time.time())}
-    payload_bytes = json.dumps(payload, separators=(",", ":")).encode()
-    signature = hmac.new(secret, payload_bytes, hashlib.sha256).digest()
-    token = base64.urlsafe_b64encode(payload_bytes + b"." + signature).decode()
-    return token
+# NOTE (audit M1): the old issue_dashboard_ui_token() machinery was removed
+# rather than wired up. The UI page ("/") is unauthenticated, so handing every
+# visitor a signed token the API accepts would have turned the dead code into
+# an auth BYPASS. The browser UI authenticates with the ordinary API key
+# instead (X-API-Key, prompted for and kept in sessionStorage).
