@@ -151,6 +151,68 @@ class TestNextOpenEntry:
         result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-03", initial_capital=10_000)
         assert result["trades"] == []
 
+    def test_entry_day_close_can_stop_out_same_day(self, monkeypatch):
+        dates = pd.date_range("2024-01-01", periods=3, freq="D")
+        frame = pd.DataFrame(
+            {
+                "Open": [100.0, 100.0, 100.0],
+                "Close": [100.5, 95.0, 96.0],
+                "ATR_14": [2.0] * 3,
+                "entry_signal": [True, False, False],
+            },
+            index=dates,
+        )
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_a, **_k: frame)
+
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-03", initial_capital=10_000)
+        trades = result["trades"]
+        assert len(trades) == 1
+        t = trades[0]
+        # Fill at day-2's open (100 → stop 96); day-2's close (95) is through
+        # the stop, so the exit must book on the ENTRY day, not a bar later.
+        assert t["entry_date"] == "2024-01-02"
+        assert t["exit_date"] == "2024-01-02"
+        assert t["exit_reason"] == "STOP"
+
+    def test_slot_freed_at_close_not_reusable_at_same_days_open(self, monkeypatch):
+        dates = pd.date_range("2024-01-01", periods=4, freq="D")
+        frames = {
+            "AAA": pd.DataFrame(
+                {
+                    "Open": [100.0, 100.0, 100.0, 100.0],
+                    "Close": [100.0, 100.0, 200.0, 200.0],
+                    "ATR_14": [2.0] * 4,
+                    "entry_signal": [True, False, False, False],
+                },
+                index=dates,
+            ),
+            "BBB": pd.DataFrame(
+                {
+                    "Open": [50.0, 50.0, 50.0, 50.0],
+                    "Close": [50.0, 50.0, 50.0, 50.0],
+                    "ATR_14": [1.0] * 4,
+                    "entry_signal": [False, True, False, False],
+                },
+                index=dates,
+            ),
+        }
+        monkeypatch.setattr(
+            engine, "_prepare_ticker_history", lambda t, *_a, **_k: frames[t]
+        )
+
+        result = backtest_signal_system(
+            ["AAA", "BBB"],
+            "2024-01-01",
+            "2024-01-04",
+            initial_capital=10_000,
+            max_concurrent_positions=1,
+        )
+        tickers_traded = {t["ticker"] for t in result["trades"]}
+        # AAA's slot is released at day-3's CLOSE (targets hit); BBB's only
+        # fill chance was day-3's OPEN, when the slot was still occupied —
+        # it must not trade. Exits settle after entries within a day.
+        assert tickers_traded == {"AAA"}
+
     def test_bias_disclosures_no_longer_claim_same_bar_entry(self, monkeypatch):
         frame = self._frame_with_open()
         monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_a, **_k: frame)

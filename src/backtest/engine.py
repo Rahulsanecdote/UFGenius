@@ -115,22 +115,15 @@ def backtest_signal_system(
     max_open_positions_seen = 0
 
     for date in calendar:
-        # 1) Manage open positions first (exits/partials), so we can reuse released cash.
-        for ticker, pos in list(open_positions.items()):
-            frame = histories[ticker]
-            if date not in frame.index:
-                continue
-            close_price = float(frame.loc[date, "Close"])
-            pos.last_price = close_price
-            cash_ref = [cash]
-            _apply_position_exits(pos, close_price, date, closed_trades, cash_ref=cash_ref)
-            cash = cash_ref[0]
-            if pos.shares_open <= 0:
-                open_positions.pop(ticker, None)
-
-        # 2) New entries while respecting max concurrent positions.
+        # 1) New entries at this bar's OPEN — processed BEFORE today's
+        #    close-based exits, so an entry can only use cash and position
+        #    slots that were free at the open. Exit proceeds and slots
+        #    released at today's close must not retroactively fund a fill
+        #    that happened hours earlier.
         available_slots = max(0, max_concurrent_positions - len(open_positions))
         if available_slots > 0:
+            # Positions are still marked at the prior close — the last price
+            # known at the open.
             equity_before_entries = cash + _open_positions_market_value(open_positions)
             entry_candidates = _entry_candidates_for_date(histories, open_positions, date)
             for ticker in entry_candidates:
@@ -189,6 +182,22 @@ def backtest_signal_system(
                 available_slots -= 1
 
         max_open_positions_seen = max(max_open_positions_seen, len(open_positions))
+
+        # 2) Manage open positions at this bar's CLOSE (exits/partials) —
+        #    including positions filled at this morning's open, whose stop or
+        #    targets today's close may already have crossed.
+        for ticker, pos in list(open_positions.items()):
+            frame = histories[ticker]
+            if date not in frame.index:
+                continue
+            close_price = float(frame.loc[date, "Close"])
+            pos.last_price = close_price
+            cash_ref = [cash]
+            _apply_position_exits(pos, close_price, date, closed_trades, cash_ref=cash_ref)
+            cash = cash_ref[0]
+            if pos.shares_open <= 0:
+                open_positions.pop(ticker, None)
+
         portfolio_value, unrealized = _portfolio_value(cash, open_positions)
         equity_curve.append(
             {
