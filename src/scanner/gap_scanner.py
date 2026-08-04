@@ -39,8 +39,11 @@ def scan_for_gaps(
 
     for ticker in tickers:
         try:
-            df = fetch_ohlcv(ticker, period="1mo", interval="1d")
-            if df is None or df.empty or len(df) < 5:
+            # 3mo window so the ≥21-bar floor is reliably satisfiable — a
+            # "20-day" volume average computed from as few as 5 bars badly
+            # misstates the ratio the gap filter keys on (audit L8).
+            df = fetch_ohlcv(ticker, period="3mo", interval="1d")
+            if df is None or df.empty or len(df) < 21:
                 continue
 
             prev_close = float(df["Close"].iloc[-2])

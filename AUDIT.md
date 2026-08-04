@@ -40,6 +40,9 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | M3 SELL/HOLD got a long plan | **Fixed in a follow-up:** the planner is explicitly long-only — non-BUY signals return a skip plan instead of a bullish entry/stop/target setup. |
 | M4 target config unvalidated | **Fixed in a follow-up:** `target_rr_ratios`/`target_exit_pcts` are validated at use (equal length, pcts sum to 100) with loud config errors; the T1 resistance snap is guarded for short lists; target labels are generated per entry. |
 | M7 Piotroski divided by 9 | **Fixed in a follow-up:** the composite normalizes by criteria that were actually measurable (F3/F7 need prior-period data the fetcher can't supply), so missing data no longer underscores every ticker. |
+| M12 intraday slots dropped | **Fixed in a follow-up:** the scheduler is driven from the `schedule:` config dict — every slot (incl. `intraday_1`/`intraday_2`) is wired; invalid times are skipped with an error log. |
+| L4 weekend scans | **Fixed in a follow-up:** scheduled scans skip Sat/Sun (`_is_trading_day`); US market holidays still slip through — a trading calendar remains out of scope. |
+| L8 thin "20-day" average | **Fixed in a follow-up:** the gap scanner fetches a 3-month window and requires ≥21 bars before computing its 20-day volume average. |
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
 Nothing from the audit's still-open list remains. Same-bar entry (M4) and
