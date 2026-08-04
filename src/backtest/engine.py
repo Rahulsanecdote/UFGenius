@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.backtest.universe_history import UniverseHistory, load_universe_history
 from src.data.fetcher import fetch_ohlcv
 from src.utils import config
 from src.utils.logger import get_logger
@@ -69,12 +70,20 @@ def backtest_signal_system(
     end_date: str,
     initial_capital: float = 10_000,
     max_concurrent_positions: int = 3,
+    universe_history: UniverseHistory | None = None,
 ) -> dict:
     """
     Simulate strategy over a date range with true entry/exit timestamps and daily MTM equity.
+
+    When a point-in-time universe history is available (passed in, or loaded
+    from `universe_history_path` / BACKTEST_UNIVERSE_HISTORY_PATH), entries are
+    only taken in tickers that were members on the entry date (audit M11).
     """
     if not tickers:
         return {"error": "No tickers supplied"}
+
+    if universe_history is None:
+        universe_history = load_universe_history(config.BACKTEST_UNIVERSE_HISTORY_PATH)
 
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
@@ -125,7 +134,9 @@ def backtest_signal_system(
             # Positions are still marked at the prior close — the last price
             # known at the open.
             equity_before_entries = cash + _open_positions_market_value(open_positions)
-            entry_candidates = _entry_candidates_for_date(histories, open_positions, date)
+            entry_candidates = _entry_candidates_for_date(
+                histories, open_positions, date, universe_history
+            )
             for ticker in entry_candidates:
                 if available_slots <= 0:
                     break
@@ -269,6 +280,7 @@ def backtest_signal_system(
         initial_capital=float(initial_capital),
         equity_curve=equity_curve,
         trades=closed_trades,
+        point_in_time_universe=universe_history is not None,
     )
     metrics["tickers_tested"] = len(histories)
     metrics["max_open_positions"] = max_open_positions_seen
@@ -281,12 +293,17 @@ def _entry_candidates_for_date(
     histories: dict[str, pd.DataFrame],
     open_positions: dict[str, Position],
     date: pd.Timestamp,
+    universe_history: UniverseHistory | None = None,
 ) -> list[str]:
     candidates: list[str] = []
     for ticker, frame in histories.items():
         if ticker in open_positions:
             continue
         if date not in frame.index:
+            continue
+        # Point-in-time gate (M11): no entries in tickers that were not
+        # members of the universe on the fill date.
+        if universe_history is not None and not universe_history.is_member(ticker, date):
             continue
         # enter_flag = prior bar's entry_signal → this bar fills at the open.
         if bool(frame.loc[date, "enter_flag"]):
@@ -452,6 +469,7 @@ def _compute_metrics(
     initial_capital: float,
     equity_curve: list[dict[str, Any]],
     trades: list[dict[str, Any]],
+    point_in_time_universe: bool = False,
 ) -> dict:
     if not equity_curve:
         return {"error": "No equity curve data"}
@@ -525,13 +543,22 @@ def _compute_metrics(
                     "entries fill at the NEXT bar's open after a signal; "
                     "stops fill at min(close, stop) to reflect gap-through.",
         },
+        "point_in_time_universe": point_in_time_universe,
         # Known biases that inflate results — surfaced so they are not mistaken
         # for edge (audit M11). Same-bar entry (M4) is fixed: fills now occur at
         # the next bar's open, using the signal bar's ATR for stop geometry.
         "bias_disclosures": [
-            "SURVIVORSHIP: the universe is the ticker list supplied at run time; "
-            "delisted/renamed names never appear, so returns are upward-biased. "
-            "Use a point-in-time constituent list for an unbiased test.",
+            (
+                "SURVIVORSHIP (mitigated): entries are gated by the point-in-time "
+                "membership file, but price history for delisted names still "
+                "depends on the data provider — names it cannot serve are absent, "
+                "so a residual upward bias can remain."
+                if point_in_time_universe
+                else "SURVIVORSHIP: the universe is the ticker list supplied at "
+                "run time; delisted/renamed names never appear, so returns are "
+                "upward-biased. Supply a point-in-time membership file "
+                "(universe_history_path) for an unbiased test."
+            ),
             "DAILY_GRANULARITY: exits are evaluated on daily closes only; "
             "intraday stop/target sequencing within a bar is approximated.",
         ],
