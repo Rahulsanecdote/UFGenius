@@ -43,33 +43,51 @@ def _info_with_earnings_in(days: int) -> dict:
 
 def test_lookup_fills_missing_earnings_and_blocks(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"trade_earnings_week": False})
-    with patch("src.data.fetcher.fetch_ticker_info", return_value=_info_with_earnings_in(3)):
+    with patch("src.data.fetcher.fetch_ticker_info_yfinance", return_value=_info_with_earnings_in(3)):
         ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert not ok and "Earnings" in reason
 
 
 def test_lookup_far_earnings_allows(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"trade_earnings_week": False})
-    with patch("src.data.fetcher.fetch_ticker_info", return_value=_info_with_earnings_in(30)):
+    with patch("src.data.fetcher.fetch_ticker_info_yfinance", return_value=_info_with_earnings_in(30)):
         ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert ok, reason
 
 
 def test_lookup_failure_preserves_fail_open(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"trade_earnings_week": False})
-    with patch("src.data.fetcher.fetch_ticker_info", side_effect=Exception("provider down")):
+    with patch("src.data.fetcher.fetch_ticker_info_yfinance", side_effect=Exception("provider down")):
         ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert ok, reason  # unknown stays fail-open, never a hard block
 
 
 def test_plan_supplied_days_skip_the_lookup(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"trade_earnings_week": False})
-    with patch("src.data.fetcher.fetch_ticker_info") as mock_fetch:
+    with patch("src.data.fetcher.fetch_ticker_info_yfinance") as mock_fetch:
         ok, reason = RiskGuard().check(_plan(days_to_earnings=20), _portfolio(), tracker)
     assert ok, reason
     mock_fetch.assert_not_called()  # no network when the plan already knows
 
 
 def test_lookup_helper_returns_none_on_garbage():
-    with patch("src.data.fetcher.fetch_ticker_info", return_value={"earningsTimestamp": "junk"}):
+    with patch("src.data.fetcher.fetch_ticker_info_yfinance", return_value={"earningsTimestamp": "junk"}):
         assert _lookup_days_to_earnings("AAPL") is None
+
+
+def test_lookup_bypasses_alpaca_primary(tracker, monkeypatch):
+    # Regression: the generic fetch_ticker_info short-circuits to Alpaca asset
+    # metadata (no earnings fields) on the live path, so the lookup must consult
+    # yfinance directly. If it ever fell back to the Alpaca-primary fetch, that
+    # imminent-earnings block would be missed.
+    monkeypatch.setattr(cfg, "SAFETY", {"trade_earnings_week": False})
+    with patch(
+        "src.data.fetcher.fetch_ticker_info_yfinance",
+        return_value=_info_with_earnings_in(2),
+    ), patch(
+        "src.data.fetcher.fetch_ticker_info",
+        return_value={"symbol": "AAPL", "longName": "Apple"},  # Alpaca-style, no earnings
+    ) as generic:
+        ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
+    assert not ok and "Earnings" in reason
+    generic.assert_not_called()  # never lean on the Alpaca-primary path for earnings

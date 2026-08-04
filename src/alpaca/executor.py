@@ -50,14 +50,17 @@ def _lookup_days_to_earnings(ticker: str):
 
     Plans built on the execution path from Alpaca metadata carry no earnings
     timestamps, so the earnings-week rule could never evaluate for them and
-    always failed open. Ask the yfinance-backed provider (cached) before
-    giving up; any failure preserves the documented fail-open behavior.
+    always failed open. Ask yfinance directly (cached) before giving up — the
+    generic ``fetch_ticker_info`` short-circuits to Alpaca asset metadata,
+    which has no earnings fields, so it would return ``None`` on the very live
+    Alpaca path this lookup exists for. Any failure preserves the documented
+    fail-open behavior.
     """
     try:
-        from src.data.fetcher import fetch_ticker_info
+        from src.data.fetcher import fetch_ticker_info_yfinance
         from src.signals.trade_plan import _days_to_earnings
 
-        return _days_to_earnings(fetch_ticker_info(ticker))
+        return _days_to_earnings(fetch_ticker_info_yfinance(ticker))
     except Exception as exc:
         log.debug(f"[{ticker}] earnings-date lookup failed: {exc}")
         return None

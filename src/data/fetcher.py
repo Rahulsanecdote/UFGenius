@@ -954,6 +954,35 @@ def fetch_ticker_info(ticker: str) -> dict:
     return {}
 
 
+def fetch_ticker_info_yfinance(ticker: str) -> dict:
+    """Fetch ticker info from yfinance only, bypassing the Alpaca primary.
+
+    ``fetch_ticker_info`` returns as soon as Alpaca yields a non-empty asset
+    payload, and that payload carries no ``earningsTimestamp*`` fields. Callers
+    that specifically need yfinance-only metadata (earnings dates, richer
+    fundamentals) must skip the Alpaca short-circuit, or they get ``None`` on
+    the live Alpaca execution path. Cached under a distinct ``info:yf:`` key so
+    it never collides with the Alpaca-primary payload. Returns ``{}`` on any
+    failure — callers treat that as "unknown".
+    """
+    symbol = ticker.upper()
+    cache_key = f"info:yf:{symbol}"
+    cached = cache.get(cache_key)
+    if _is_nonempty_dict(cached):
+        return cached
+    try:
+        info = retry_call(
+            _fetch_ticker_info_once, symbol, retries=_MAX_RETRIES, backoff=_BACKOFF
+        )
+    except Exception as exc:
+        log.debug(f"{symbol}: yfinance ticker info failed ({exc})")
+        return {}
+    if _is_nonempty_dict(info):
+        cache.set(cache_key, info, ttl=3_600 * 6)
+        return info
+    return {}
+
+
 def get_fundamentals(ticker: str) -> dict:
     """
     Fetch fundamentals payload from the provider in a defensive way.
