@@ -1,16 +1,20 @@
 """Universe definition — S&P 500, Russell 1000, and filtering."""
 
+import io
 import time
 from typing import List, Optional
 
 import pandas as pd
-import requests
 
 from src.data import cache, fetcher
-from src.utils import config
+from src.utils import config, http
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+# Constituent-list fetches go through utils/http (timeout + bounded retry,
+# audit M10) — a slow Wikipedia/iShares response must not hang the scan.
+_UA_HEADERS = {"User-Agent": "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"}
 
 
 def get_sp500_tickers() -> List[str]:
@@ -21,16 +25,35 @@ def get_sp500_tickers() -> List[str]:
 
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
-        tickers = tables[0]["Symbol"].tolist()
+        html = http.get_text(url, headers=_UA_HEADERS)
+        tables = pd.read_html(io.StringIO(html))
+        # Select the constituents table by header content, not position —
+        # Wikipedia reorders/injects tables often enough to break tables[0].
+        symbol_tables = [t for t in tables if "Symbol" in t.columns]
+        if not symbol_tables:
+            raise ValueError("no table with a 'Symbol' column found on the page")
+        tickers = symbol_tables[0]["Symbol"].dropna().astype(str).tolist()
         # Clean up tickers (replace . with - for yfinance)
-        tickers = [t.replace(".", "-") for t in tickers]
+        tickers = [t.strip().replace(".", "-") for t in tickers if t.strip()]
         cache.set("universe:sp500", tickers)
         log.info(f"Loaded {len(tickers)} S&P 500 tickers")
         return tickers
     except Exception as e:
         log.error(f"Failed to fetch S&P 500 list: {e}")
         return _fallback_sp500()
+
+
+def _locate_csv_header(text: str, required_field: str) -> int:
+    """Return the line index of the CSV header row containing required_field.
+
+    iShares holdings files carry a preamble of variable length before the
+    real header — a fixed skiprows breaks whenever they add a line.
+    """
+    for idx, line in enumerate(text.splitlines()):
+        fields = [f.strip().strip('"') for f in line.split(",")]
+        if required_field in fields:
+            return idx
+    raise ValueError(f"no CSV header row containing {required_field!r} found")
 
 
 def get_russell1000_tickers() -> List[str]:
@@ -44,7 +67,9 @@ def get_russell1000_tickers() -> List[str]:
             "https://www.ishares.com/us/products/239707/ISHARES-RUSSELL-1000-ETF/"
             "1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
         )
-        df = pd.read_csv(url, skiprows=9)
+        text = http.get_text(url, headers=_UA_HEADERS)
+        header_idx = _locate_csv_header(text, "Ticker")
+        df = pd.read_csv(io.StringIO(text), skiprows=header_idx)
         tickers = df["Ticker"].dropna().tolist()
         tickers = [str(t).strip() for t in tickers if str(t).strip() and str(t) != "nan"]
         cache.set("universe:russell1000", tickers)

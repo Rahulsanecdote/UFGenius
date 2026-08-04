@@ -62,11 +62,84 @@ def test_sp500_tickers_uses_cache_when_available():
 
 def test_sp500_tickers_falls_back_on_fetch_failure():
     with patch("src.data.universe.cache.get", return_value=None):
-        with patch("src.data.universe.pd.read_html", side_effect=Exception("network")):
+        with patch("src.data.universe.http.get_text", side_effect=Exception("network")):
             from src.data.universe import get_sp500_tickers
             result = get_sp500_tickers()
     assert isinstance(result, list)
     assert len(result) > 0  # fallback list
+
+
+# ── hardened constituent fetches (audit M10) ─────────────────────────────────
+
+_SP500_HTML = """
+<html><body>
+<table>
+  <tr><th>Rank</th><th>Notes</th></tr>
+  <tr><td>1</td><td>not the constituents table</td></tr>
+</table>
+<table>
+  <tr><th>Symbol</th><th>Security</th></tr>
+  <tr><td>AAPL</td><td>Apple</td></tr>
+  <tr><td>BRK.B</td><td>Berkshire Hathaway</td></tr>
+</table>
+</body></html>
+"""
+
+
+def test_sp500_selects_table_by_symbol_header_not_position():
+    from src.data.universe import get_sp500_tickers
+
+    with patch("src.data.universe.cache.get", return_value=None), \
+         patch("src.data.universe.cache.set"), \
+         patch("src.data.universe.http.get_text", return_value=_SP500_HTML) as mock_get:
+        result = get_sp500_tickers()
+
+    mock_get.assert_called_once()  # fetch goes through utils/http (timeout+retry)
+    assert result == ["AAPL", "BRK-B"]  # dot mapped to dash for yfinance
+
+
+_IWB_CSV = "\n".join(
+    [
+        "iShares Russell 1000 ETF",
+        "Fund Holdings as of,\"Aug 01, 2026\"",
+        "Inception Date,\"May 15, 2000\"",
+        "",  # preamble length varies — header is NOT at a fixed row
+        "Ticker,Name,Sector,Asset Class",
+        "AAPL,APPLE INC,Information Technology,Equity",
+        "MSFT,MICROSOFT CORP,Information Technology,Equity",
+        ",,,",
+    ]
+)
+
+
+def test_russell1000_locates_header_row_by_content():
+    from src.data.universe import get_russell1000_tickers
+
+    with patch("src.data.universe.cache.get", return_value=None), \
+         patch("src.data.universe.cache.set"), \
+         patch("src.data.universe.http.get_text", return_value=_IWB_CSV):
+        result = get_russell1000_tickers()
+
+    assert result == ["AAPL", "MSFT"]
+
+
+def test_russell1000_falls_back_to_sp500_when_header_missing():
+    from src.data.universe import get_russell1000_tickers
+
+    with patch("src.data.universe.cache.get", return_value=None), \
+         patch("src.data.universe.http.get_text", return_value="no,header,here"), \
+         patch("src.data.universe.get_sp500_tickers", return_value=["AAPL"]) as mock_sp:
+        result = get_russell1000_tickers()
+
+    mock_sp.assert_called_once()
+    assert result == ["AAPL"]
+
+
+def test_locate_csv_header_handles_quoted_fields():
+    from src.data.universe import _locate_csv_header
+
+    text = 'preamble\n"Ticker","Name"\nAAPL,Apple'
+    assert _locate_csv_header(text, "Ticker") == 1
 
 
 # ── filter_universe ───────────────────────────────────────────────────────────

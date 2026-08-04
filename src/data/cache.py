@@ -2,6 +2,7 @@
 
 import hashlib
 import pickle
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -11,6 +12,11 @@ _CACHE_DIR.mkdir(exist_ok=True)
 
 DEFAULT_TTL = 86_400        # 24 hours
 MAX_CACHE_SIZE_MB = 500     # Evict oldest entries when cache exceeds this
+
+# The size sweep runs after every set() and the scan pool calls set() from
+# 8 workers at once (audit M9): serialize eviction so concurrent sweeps don't
+# fight over the same files.
+_EVICTION_LOCK = threading.Lock()
 
 
 def _cache_path(key: str) -> Path:
@@ -74,8 +80,12 @@ def get_metadata(key: str, allow_expired: bool = True) -> Optional[dict]:
     is_expired = now > expires
     if is_expired and not allow_expired:
         return None
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return None  # evicted between load and stat — report absent
     return {
-        "age_sec": max(0.0, now - p.stat().st_mtime),
+        "age_sec": max(0.0, now - mtime),
         "expires": expires,
         "is_expired": is_expired,
     }
@@ -118,7 +128,22 @@ def evict_expired() -> int:
 
 
 def _cache_size_mb() -> float:
-    return sum(p.stat().st_size for p in _CACHE_DIR.glob("*.pkl")) / 1_048_576
+    # A file can vanish between glob() and stat() when another worker evicts
+    # it (audit M9) — skip it instead of blowing up the set() that swept.
+    total = 0
+    for p in _CACHE_DIR.glob("*.pkl"):
+        try:
+            total += p.stat().st_size
+        except OSError:
+            continue
+    return total / 1_048_576
+
+
+def _mtime_or_zero(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0  # vanished mid-sweep — sorts first, unlink is a no-op
 
 
 def _enforce_size_limit() -> None:
@@ -126,17 +151,22 @@ def _enforce_size_limit() -> None:
     if _cache_size_mb() <= MAX_CACHE_SIZE_MB:
         return
 
-    # First pass: remove expired
-    evict_expired()
-    if _cache_size_mb() <= MAX_CACHE_SIZE_MB:
-        return
+    with _EVICTION_LOCK:
+        # Re-check under the lock — a concurrent sweep may have already trimmed.
+        if _cache_size_mb() <= MAX_CACHE_SIZE_MB:
+            return
 
-    # Second pass: remove oldest by mtime until under limit
-    files = sorted(_CACHE_DIR.glob("*.pkl"), key=lambda p: p.stat().st_mtime)
-    for p in files:
-        if _cache_size_mb() <= MAX_CACHE_SIZE_MB * 0.8:  # trim to 80% to avoid thrash
-            break
-        p.unlink(missing_ok=True)
+        # First pass: remove expired
+        evict_expired()
+        if _cache_size_mb() <= MAX_CACHE_SIZE_MB:
+            return
+
+        # Second pass: remove oldest by mtime until under limit
+        files = sorted(_CACHE_DIR.glob("*.pkl"), key=_mtime_or_zero)
+        for p in files:
+            if _cache_size_mb() <= MAX_CACHE_SIZE_MB * 0.8:  # trim to 80% to avoid thrash
+                break
+            p.unlink(missing_ok=True)
 
 
 def clear_all() -> None:
