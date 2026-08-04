@@ -53,7 +53,7 @@ def test_mismatched_target_lists_fail_loudly(monkeypatch):
     monkeypatch.setattr(cfg, "TARGET_RR_RATIOS", [1.5, 2.5])
     monkeypatch.setattr(cfg, "TARGET_EXIT_PCTS", [30, 40, 30])
     plan = generate_trade_plan("AAPL", _signal(), account_size=50_000, df=_df())
-    assert "equal-length" in plan["error"]
+    assert "exactly 3" in plan["error"]
 
 
 def test_exit_pcts_must_sum_to_100(monkeypatch):
@@ -63,15 +63,17 @@ def test_exit_pcts_must_sum_to_100(monkeypatch):
     assert "sum to 100" in plan["error"]
 
 
-def test_single_target_config_no_longer_crashes(monkeypatch):
-    # The resistance snap indexed raw_targets[1] unconditionally — a 1-entry
-    # config raised IndexError before validation existed.
-    monkeypatch.setattr(cfg, "TARGET_RR_RATIOS", [2.0])
-    monkeypatch.setattr(cfg, "TARGET_EXIT_PCTS", [100])
-    plan = generate_trade_plan("AAPL", _signal(), account_size=50_000, df=_df())
-    assert "error" not in plan
-    assert list(plan["targets"].keys()) == ["T1"]
-    assert plan["targets"]["T1"]["exit_pct"] == 100
+def test_non_three_target_configs_rejected_loudly(monkeypatch):
+    # Exactly 3 targets are supported end-to-end: PositionTracker/executor
+    # allocate fixed T1/T2/T3 tranches and default MISSING targets to the
+    # entry price — a 1-target config would sell ~70% at breakeven. Before
+    # validation this crashed (IndexError at the resistance snap); now it is
+    # a loud config error, never a fabricated breakeven exit.
+    for ratios, pcts in ([([2.0]), ([100])], [([1.5, 2.5, 4.0, 6.0]), ([25, 25, 25, 25])]):
+        monkeypatch.setattr(cfg, "TARGET_RR_RATIOS", ratios)
+        monkeypatch.setattr(cfg, "TARGET_EXIT_PCTS", pcts)
+        plan = generate_trade_plan("AAPL", _signal(), account_size=50_000, df=_df())
+        assert "exactly 3" in plan["error"], f"{ratios}/{pcts}"
 
 
 # ── M7: Piotroski normalized by measurable criteria ─────────────────────────
@@ -107,3 +109,25 @@ def test_composite_normalizes_by_measurable_not_nine():
 
 def test_composite_handles_zero_measurable():
     assert _composite(0, None, {}, {}, 0) == 0  # no division crash
+
+
+def test_declining_roa_is_a_measured_failure_not_unavailable():
+    # Prior-period data IS present and ROA declined: F3 must be False (a
+    # failed criterion that counts in the denominator), not None — otherwise
+    # a measured failure inflates the Piotroski component (6/7 vs 6/8).
+    fd = _fundamentals()
+    fd["net_income_prev"] = 200          # prior ROA 200/900 > current 100/1000
+    fd["total_assets_prev"] = 900
+    score, detail = _piotroski(fd)
+    assert detail["F3_roa_improving"] is False
+    measurable = sum(1 for v in detail.values() if v is not None)
+    assert measurable == 8  # only F7 remains unmeasurable
+
+
+def test_improving_roa_still_scores():
+    fd = _fundamentals()
+    fd["net_income_prev"] = 50           # prior ROA 50/1000 < current 100/1000
+    fd["total_assets_prev"] = 1000
+    score, detail = _piotroski(fd)
+    assert detail["F3_roa_improving"] is True
+    assert score == 8  # the 7 baseline passes + F3

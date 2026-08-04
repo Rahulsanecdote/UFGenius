@@ -111,15 +111,18 @@ def generate_trade_plan(
     rr_ratios  = list(config.TARGET_RR_RATIOS)   # [1.5, 2.5, 4.0]
     exit_pcts  = list(config.TARGET_EXIT_PCTS)   # [30, 40, 30]
 
-    # Fail loudly on inconsistent target config (audit M4): a silent zip()
-    # truncation drops targets, and exit pcts that don't sum to 100 leave
-    # positions that never fully exit.
-    if not rr_ratios or len(rr_ratios) != len(exit_pcts):
+    # Fail loudly on inconsistent target config (audit M4). Exactly three
+    # targets are supported END-TO-END: PositionTracker/executor allocate
+    # fixed T1/T2/T3 tranches (missing targets would be fabricated at the
+    # entry price) and the backtest models three exits. A loud config error
+    # beats a silent zip() truncation or a breakeven "target".
+    if len(rr_ratios) != 3 or len(exit_pcts) != 3:
         return {
             "error": (
-                f"Config error: target_rr_ratios ({len(rr_ratios)} entries) and "
-                f"target_exit_pcts ({len(exit_pcts)} entries) must be equal-length, "
-                "non-empty lists."
+                f"Config error: target_rr_ratios and target_exit_pcts must each "
+                f"have exactly 3 entries (got {len(rr_ratios)} and "
+                f"{len(exit_pcts)}); the execution tracker and backtest support "
+                "exactly T1/T2/T3 today."
             )
         }
     if abs(sum(exit_pcts) - 100.0) > 1e-6:

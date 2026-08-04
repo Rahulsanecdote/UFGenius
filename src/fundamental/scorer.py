@@ -75,11 +75,15 @@ def _piotroski(fd: dict) -> tuple:
     else:
         detail["F2_ocf_positive"] = False
 
-    # F3: ROA improving YoY (skip if prior-year data unavailable)
+    # F3: ROA improving YoY. None ONLY when prior-period data is unavailable —
+    # a measured decline is a FAILED criterion (False), not an unmeasurable
+    # one, and must count against the measurable-criteria denominator.
     roa_prev = _safe_div(fd.get("net_income_prev"), fd.get("total_assets_prev"))
-    if roa is not None and roa_prev is not None and roa > roa_prev:
-        score += 1
-        detail["F3_roa_improving"] = True
+    if roa is not None and roa_prev is not None:
+        improving = roa > roa_prev
+        if improving:
+            score += 1
+        detail["F3_roa_improving"] = improving
     else:
         detail["F3_roa_improving"] = None  # Data unavailable
 
