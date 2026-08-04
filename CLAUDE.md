@@ -201,9 +201,11 @@ are then gated by membership on the entry date.
 
 - Backtest survivorship bias is corrected only when a point-in-time membership
   file is supplied (`universe_history_path`); without one it remains and is
-  disclosed in results. Even with the file, price history for delisted names
-  depends on the data provider (yfinance drops many). No bundled membership
-  dataset yet — contributing one is an open area.
+  disclosed in results. Build one with
+  `python -m src.backtest.build_universe_history` (reconstructs S&P 500
+  membership from Wikipedia's constituents + changes tables; early history is
+  floored at the oldest change date). Even with the file, price history for
+  delisted names depends on the data provider (yfinance drops many).
 - No auth layer beyond the dashboard API key; the CLI/broker path trusts local env.
   (The dashboard deliberately emits NO CORS headers — the API is same-origin
   only; the browser UI prompts for the API key and sends it as `X-API-Key`.)
