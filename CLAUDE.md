@@ -204,6 +204,7 @@ are then gated by membership on the entry date.
   disclosed in results. Even with the file, price history for delisted names
   depends on the data provider (yfinance drops many). No bundled membership
   dataset yet — contributing one is an open area.
-- CORS is open on the dashboard; restrict before any shared deployment.
 - No auth layer beyond the dashboard API key; the CLI/broker path trusts local env.
+  (The dashboard deliberately emits NO CORS headers — the API is same-origin
+  only; the browser UI prompts for the API key and sends it as `X-API-Key`.)
 - Alembic/DB not used — there is no relational database in this project.

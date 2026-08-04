@@ -163,9 +163,16 @@ def _enforce_size_limit() -> None:
 
         # Second pass: remove oldest by mtime until under the trim target
         # (a fraction of the limit, so we don't re-sweep on every write).
+        # Defense-in-depth NaN guard: NaN survives min/max clamping (every
+        # comparison is False) and would make this loop delete EVERY file.
+        import math
+
         from src.utils import config
 
-        ratio = min(max(float(config.CACHE_EVICTION_TARGET_RATIO), 0.1), 1.0)
+        ratio = float(config.CACHE_EVICTION_TARGET_RATIO)
+        if not math.isfinite(ratio):
+            ratio = 0.8
+        ratio = min(max(ratio, 0.1), 1.0)
         files = sorted(_CACHE_DIR.glob("*.pkl"), key=_mtime_or_zero)
         for p in files:
             if _cache_size_mb() <= MAX_CACHE_SIZE_MB * ratio:

@@ -87,3 +87,40 @@ def test_remote_mode_allows_bearer_or_multi_keys(client, monkeypatch):
 
     assert bearer.status_code == 200
     assert bad.status_code == 401
+
+
+# ── dead UI-token path removed (audit M1) + security headers ─────────────────
+
+def test_ui_token_machinery_is_gone():
+    # Wiring the token up would have let any visitor of the unauthenticated
+    # "/" page mint API credentials — the machinery must stay deleted.
+    import src.utils.security as security
+
+    assert not hasattr(security, "issue_dashboard_ui_token")
+    assert "X-Dashboard-Token" not in dashboard.HTML
+    assert "ui_token" not in dashboard.HTML
+
+
+def test_ui_authenticates_with_plain_api_key():
+    assert "X-API-Key" in dashboard.HTML  # browser sends the ordinary key
+    assert "sessionStorage" in dashboard.HTML
+
+
+def test_index_renders_without_token_template_var(client):
+    response = client.get("/")
+    assert response.status_code == 200
+
+
+def test_security_headers_present_and_no_cors(client):
+    response = client.get("/healthz")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "same-origin"
+    # Same-origin only: no CORS grants anywhere.
+    assert "Access-Control-Allow-Origin" not in response.headers
+
+
+def test_api_responses_are_not_cached(client):
+    response = client.get("/api/scan-ticker?ticker=BAD$$$")  # any /api/* response
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "Access-Control-Allow-Origin" not in response.headers
