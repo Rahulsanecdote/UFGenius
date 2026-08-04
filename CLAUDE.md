@@ -178,9 +178,10 @@ realized-loss limits, post-loss cooldown, earnings-week (best-effort), and
 paper-trading-tenure (live only).
 
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
-(config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env);
-backtest results include `cost_model` and `bias_disclosures` (survivorship /
-same-bar-entry) so reported returns are read with the right caveats.
+(config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env).
+Entries fill at the **next bar's open** after a signal (no same-bar lookahead);
+results include `cost_model` and `bias_disclosures` (survivorship / daily
+granularity) so reported returns are read with the right caveats.
 
 ---
 
@@ -193,9 +194,9 @@ same-bar-entry) so reported returns are read with the right caveats.
 
 ## Known Gaps / Contribution Areas
 
-- Backtest still enters on the same bar the signal fires (mild lookahead) and
-  uses a run-time universe (survivorship bias) — both disclosed in results, not
-  yet corrected with next-open fills / point-in-time constituents.
+- Backtest uses a run-time universe (survivorship bias) — disclosed in results,
+  not yet corrected with point-in-time constituents. (Same-bar entry is fixed:
+  fills occur at the next bar's open.)
 - CORS is open on the dashboard; restrict before any shared deployment.
 - No auth layer beyond the dashboard API key; the CLI/broker path trusts local env.
 - Alembic/DB not used — there is no relational database in this project.

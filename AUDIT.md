@@ -34,13 +34,14 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | M8 profit_factor `inf` | Emits JSON `null` instead of `Infinity`. |
 | L2 telegram not escaped | Messages are HTML-escaped via a `_format_message` helper (+ 4096 truncation). |
 | H5 backtest optimism | Commission + slippage applied to every fill; stops fill at `min(close, stop)` (gap-through); costs configurable via `commission_pct`/`slippage_pct`. |
-| M11 survivorship bias | Backtest results carry explicit `cost_model` + `bias_disclosures` (survivorship + same-bar-entry) so returns aren't mistaken for edge. A true fix needs point-in-time constituents (not yet done). |
+| M11 survivorship bias | Backtest results carry explicit `cost_model` + `bias_disclosures` so returns aren't mistaken for edge. A true fix needs point-in-time constituents (not yet done). |
+| M4 same-bar entry | **Fixed in a follow-up:** entries now fill at the NEXT bar's open after a signal (stop geometry from the signal bar's ATR), removing the same-bar-close lookahead. |
 | M2 CLAUDE.md wrong project | Rewritten to match the real Flask signal-bot (routes, CLI, data flow, config). |
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
-Still open (documented above, not yet coded): same-bar entry lookahead
-(next-open fills) and point-in-time constituents for a true survivorship fix
-(M11), plus assorted LOW items (M9 cache locking, M10 universe timeouts, etc.).
+Still open (documented above, not yet coded): point-in-time constituents for a
+true survivorship fix (M11), plus assorted LOW items (M9 cache locking, M10
+universe timeouts, etc.). Same-bar entry (M4) is fixed — see the table above.
 
 ### Follow-up round — live-execution hardening
 
