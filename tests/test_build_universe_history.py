@@ -97,6 +97,40 @@ def test_empty_constituents_fail_loudly():
         build_membership([], [])
 
 
+def test_empty_changes_fail_loudly():
+    # No parsed changes ⇒ flooring every current ticker to a default date would
+    # gate backtests against current constituents and silently reintroduce
+    # survivorship bias. The builder must refuse rather than emit that file.
+    with pytest.raises(ValueError):
+        build_membership(["AAA", "BBB"], [])
+
+
+def test_current_member_missing_readd_keeps_open_interval(tmp_path):
+    # Wikipedia's "selected changes" table is incomplete: it can list an old
+    # removal for a ticker that is still a current member while omitting the
+    # later re-addition. The current constituents table is authoritative, so the
+    # generated history must NEVER contradict it — every current ticker keeps an
+    # open interval and gates as a present-day member.
+    current = ["T", "U"]
+    changes = [
+        (pd.Timestamp("2018-05-05"), None, "T"),  # old removal of a current member, no re-add
+        (pd.Timestamp("2015-01-01"), "U", None),  # normal: U added, floors below it
+    ]
+    membership = build_membership(current, changes)
+
+    # T retains an open interval despite the orphan removal.
+    assert membership["T"] == [{"start": "2015-01-01", "end": None}]
+    # Invariant: every current ticker has an interval still open today.
+    for ticker in current:
+        assert any(iv["end"] is None for iv in membership[ticker])
+
+    # And it gates as a current member through the real loader.
+    path = tmp_path / "hist.json"
+    path.write_text(json.dumps(membership, indent=1, sort_keys=True))
+    hist = load_universe_history(str(path))
+    assert hist is not None and hist.is_member("T", "2026-08-04")
+
+
 def test_written_file_is_valid_sorted_json(tmp_path):
     path = tmp_path / "hist.json"
     build_universe_history_file(str(path), html=_FIXTURE_HTML)

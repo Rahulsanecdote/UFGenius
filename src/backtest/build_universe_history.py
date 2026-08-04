@@ -48,6 +48,9 @@ def _normalize(ticker: str) -> str:
 
 
 def _flat_columns(df: pd.DataFrame) -> list[str]:
+    """Flatten a table's columns to lowercase strings, joining MultiIndex
+    header rows (e.g. ("Added", "Ticker") → "added ticker") so tables can be
+    matched by header content rather than position."""
     if isinstance(df.columns, pd.MultiIndex):
         return [
             " ".join(str(part) for part in tup if str(part) != "nan").strip().lower()
@@ -57,6 +60,9 @@ def _flat_columns(df: pd.DataFrame) -> list[str]:
 
 
 def _find_table(tables: list[pd.DataFrame], *needles: str) -> pd.DataFrame:
+    """Return the first table whose (flattened) headers each contain one of the
+    given needles; raise ValueError if none match. Locates tables by content so
+    the parser survives Wikipedia reordering its tables."""
     for table in tables:
         cols = _flat_columns(table)
         if all(any(needle in c for c in cols) for needle in needles):
@@ -65,6 +71,8 @@ def _find_table(tables: list[pd.DataFrame], *needles: str) -> pd.DataFrame:
 
 
 def _column(df: pd.DataFrame, *needles: str) -> pd.Series:
+    """Return the first column whose flattened header contains all needles;
+    raise ValueError if none match."""
     cols = _flat_columns(df)
     for idx, name in enumerate(cols):
         if all(needle in name for needle in needles):
@@ -116,15 +124,26 @@ def build_membership(
     """Reconstruct membership intervals by replaying changes newest → oldest."""
     if not current:
         raise ValueError("no current constituents supplied")
+    if not changes:
+        # No usable change rows means the "selected changes" table wasn't found
+        # or parsed. Flooring every current ticker to a default date would emit
+        # a file that gates backtests against *current* constituents — silently
+        # reintroducing the survivorship bias this builder exists to remove.
+        # Fail loudly instead of writing a misleading dataset.
+        raise ValueError(
+            "no usable historical constituent changes parsed; refusing to emit "
+            "a membership file that would reintroduce survivorship bias"
+        )
 
     # ticker -> end of the membership interval whose start is not yet known
     # (None end = still a member today).
     open_end: dict[str, Optional[pd.Timestamp]] = {t: None for t in current}
     intervals: dict[str, list[dict]] = defaultdict(list)
 
-    floor = min((c[0] for c in changes), default=pd.Timestamp("1996-01-01"))
+    floor = min(c[0] for c in changes)
 
     def _emit(ticker: str, start: pd.Timestamp, end: Optional[pd.Timestamp]) -> None:
+        """Record one [start, end] membership interval (end=None ⇒ still open)."""
         intervals[ticker].append(
             {
                 "start": start.strftime("%Y-%m-%d"),
@@ -141,11 +160,31 @@ def build_membership(
                 # ticker was likely renamed. Zero-information; skip with a log.
                 log.debug(f"{added}: addition on {date.date()} with no open interval; skipped")
         if removed is not None:
-            if removed in open_end:
-                # A removal while an interval is already open means the data
-                # skipped the re-addition — close the open interval here.
-                log.debug(f"{removed}: removal on {date.date()} while interval open; overwriting")
-            open_end[removed] = date
+            if removed not in open_end:
+                open_end[removed] = date
+            elif open_end[removed] is None:
+                # `removed` is a *current* member (interval still open to today)
+                # but the change data carries no matching re-addition —
+                # Wikipedia's "selected changes" table is incomplete. The
+                # current constituents table is authoritative for present
+                # membership, so keep the open interval intact and drop this
+                # unplaceable older removal rather than emit history that
+                # contradicts current membership (is_member(today) must stay
+                # true). The lost older stint is acceptable: the floor already
+                # means "member since at least", and the data is admittedly
+                # partial.
+                log.debug(
+                    f"{removed}: removal on {date.date()} with no later re-add; "
+                    "keeping current open interval (incomplete change data)"
+                )
+            else:
+                # Two removals with no addition between them — inconsistent
+                # data. Keep the newer interval already recorded; skip the
+                # older removal rather than clobber it.
+                log.debug(
+                    f"{removed}: duplicate removal on {date.date()}; "
+                    "keeping the newer interval"
+                )
 
     # Whatever is still open predates the change history: floor the start and
     # document the meaning ("member since at least the floor date").
@@ -183,6 +222,7 @@ def build_universe_history_file(output_path: str, html: Optional[str] = None) ->
 
 
 def main() -> None:
+    """CLI entry point: build the membership file and print a summary."""
     parser = argparse.ArgumentParser(
         description="Build a point-in-time S&P 500 membership file (audit M11)."
     )
