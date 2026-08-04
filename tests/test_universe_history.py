@@ -74,6 +74,30 @@ class TestLoadUniverseHistory:
         path.write_text("{not json")
         assert load_universe_history(str(path)) is None
 
+    def test_timezone_aware_dates_are_normalized(self, tmp_path):
+        # ISO timestamps with a zone must not poison naive-date comparisons
+        # (pandas raises TypeError on aware-vs-naive).
+        path = _write_history(
+            tmp_path,
+            {"AAA": [{"start": "2020-01-01T00:00:00Z", "end": "2022-06-30T23:59:59+05:30"}]},
+        )
+        hist = load_universe_history(path)
+        assert hist is not None
+        assert hist.is_member("AAA", "2021-01-01")
+        assert not hist.is_member("AAA", "2023-01-01")
+        # An aware query date is normalized too.
+        assert hist.is_member("AAA", pd.Timestamp("2021-01-01", tz="UTC"))
+
+    def test_tickers_lists_all_covered_names(self, tmp_path):
+        path = _write_history(
+            tmp_path,
+            {
+                "bbb": [{"start": "2020-01-01", "end": None}],
+                "AAA": [{"start": "2020-01-01", "end": "2021-01-01"}],
+            },
+        )
+        assert load_universe_history(path).tickers() == ["AAA", "BBB"]
+
 
 class TestBacktestPointInTimeGate:
     def _frame(self):
@@ -135,6 +159,44 @@ class TestBacktestPointInTimeGate:
         assert any(
             d.startswith("SURVIVORSHIP (mitigated)") for d in with_hist["bias_disclosures"]
         )
+
+    def test_history_tickers_augment_supplied_universe(self, tmp_path, monkeypatch):
+        # Callers typically pass the CURRENT universe; former constituents in
+        # the membership file must still be fetched and simulated, or the
+        # survivorship bias survives under a "mitigated" label.
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+
+        def make_frame():
+            return pd.DataFrame(
+                {
+                    "Open": [100.0] * 5,
+                    "Close": [100.0, 100.5, 101.0, 101.5, 102.0],
+                    "ATR_14": [2.0] * 5,
+                    "entry_signal": [True, False, False, False, False],
+                },
+                index=dates,
+            )
+
+        frames = {"AAA": make_frame(), "OLDCO": make_frame()}
+        monkeypatch.setattr(
+            engine, "_prepare_ticker_history", lambda t, *_a, **_k: frames[t]
+        )
+        hist = load_universe_history(
+            _write_history(
+                tmp_path,
+                {
+                    "AAA": [{"start": "2020-01-01", "end": None}],
+                    "OLDCO": [{"start": "2020-01-01", "end": None}],
+                },
+            )
+        )
+        # OLDCO is NOT in the supplied list — only in the membership file.
+        result = backtest_signal_system(
+            ["AAA"], "2024-01-01", "2024-01-05",
+            initial_capital=10_000, universe_history=hist,
+        )
+        traded = {t["ticker"] for t in result["trades"]}
+        assert traded == {"AAA", "OLDCO"}
 
     def test_config_path_fallback(self, tmp_path, monkeypatch):
         frame = self._frame()

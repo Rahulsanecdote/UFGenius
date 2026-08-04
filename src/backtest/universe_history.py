@@ -44,6 +44,13 @@ class _Interval:
     end: pd.Timestamp | None  # None = open-ended (still a member)
 
 
+def _naive(ts: pd.Timestamp) -> pd.Timestamp:
+    """Normalize to timezone-naive (UTC) — aware/naive comparisons raise in pandas."""
+    if ts.tzinfo is not None:
+        return ts.tz_convert("UTC").tz_localize(None)
+    return ts
+
+
 class UniverseHistory:
     """Answers "was this ticker in the universe on this date?" queries."""
 
@@ -53,8 +60,12 @@ class UniverseHistory:
     def __len__(self) -> int:
         return len(self._intervals)
 
+    def tickers(self) -> list[str]:
+        """Every ticker the file covers — the universe across the whole period."""
+        return sorted(self._intervals)
+
     def is_member(self, ticker: str, date) -> bool:
-        ts = pd.Timestamp(date)
+        ts = _naive(pd.Timestamp(date))
         for interval in self._intervals.get(ticker.upper(), ()):
             if interval.start <= ts and (interval.end is None or ts <= interval.end):
                 return True
@@ -68,7 +79,7 @@ def _parse_date(ticker: str, value, field: str) -> pd.Timestamp:
         raise ValueError(f"{ticker}: bad {field} date {value!r}") from exc
     if pd.isna(ts):
         raise ValueError(f"{ticker}: bad {field} date {value!r}")
-    return ts
+    return _naive(ts)
 
 
 def _parse_interval(ticker: str, raw: dict) -> _Interval:

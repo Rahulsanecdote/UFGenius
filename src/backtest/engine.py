@@ -85,6 +85,22 @@ def backtest_signal_system(
     if universe_history is None:
         universe_history = load_universe_history(config.BACKTEST_UNIVERSE_HISTORY_PATH)
 
+    # The membership file must AUGMENT the candidate set, not just filter it:
+    # callers typically supply the CURRENT universe, so former constituents
+    # would otherwise never be fetched and the survivorship bias this exists
+    # to remove would survive under a "mitigated" label. Membership dates
+    # still gate every entry; how much of the added history is actually
+    # simulated depends on the data provider serving delisted names.
+    if universe_history is not None:
+        supplied = {t.upper() for t in tickers}
+        former = [t for t in universe_history.tickers() if t not in supplied]
+        if former:
+            log.info(
+                f"Universe history adds {len(former)} tickers beyond the supplied "
+                "list so former constituents are simulated too"
+            )
+        tickers = [*tickers, *former]
+
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
     if end_ts < start_ts:
@@ -557,7 +573,7 @@ def _compute_metrics(
                 else "SURVIVORSHIP: the universe is the ticker list supplied at "
                 "run time; delisted/renamed names never appear, so returns are "
                 "upward-biased. Supply a point-in-time membership file "
-                "(universe_history_path) for an unbiased test."
+                "(universe_history_path) to mitigate this bias."
             ),
             "DAILY_GRANULARITY: exits are evaluated on daily closes only; "
             "intraday stop/target sequencing within a bar is approximated.",
