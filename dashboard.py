@@ -1989,8 +1989,6 @@ HTML = '''
       }
       return false;
     }
-    const AUTH_RECOVERY_STORAGE_KEY = 'ufgenius.authRecoveryTs';
-    const AUTH_RECOVERY_COOLDOWN_MS = 15000;
     let authRecoveryTriggered = false;
     const STORAGE_KEYS = {
       recent: 'ufgenius.recentAnalyses',
@@ -2059,37 +2057,24 @@ HTML = '''
         .replaceAll("'", '&#39;');
     }
 
-    function clearAuthRecoveryMarkerIfStale() {
-      const raw = sessionStorage.getItem(AUTH_RECOVERY_STORAGE_KEY);
-      if (!raw) return;
-      const last = Number(raw);
-      if (!Number.isFinite(last)) {
-        sessionStorage.removeItem(AUTH_RECOVERY_STORAGE_KEY);
-        return;
-      }
-      if (Date.now() - last >= AUTH_RECOVERY_COOLDOWN_MS) {
-        sessionStorage.removeItem(AUTH_RECOVERY_STORAGE_KEY);
-      }
-    }
-
     function handleUnauthorizedResponse(errorMessage) {
+      // The latch only deduplicates PARALLEL 401s (window.prompt is modal,
+      // so queued handlers run while a prompt is up). It is released on a
+      // dismissed/failed prompt so a later 401 can always re-prompt — a
+      // mistyped key must never dead-end the session. No reload-loop
+      // cooldown is needed: every reload below is gated by the user
+      // actually typing a key into the modal prompt.
       if (authRecoveryTriggered) return;
       authRecoveryTriggered = true;
 
-      const last = Number(sessionStorage.getItem(AUTH_RECOVERY_STORAGE_KEY) || 0);
-      const recentlyRetried = Number.isFinite(last) && (Date.now() - last) < AUTH_RECOVERY_COOLDOWN_MS;
-      if (recentlyRetried) {
-        const message = errorMessage || 'Authorization failed. Verify dashboard API key configuration.';
-        showToast(message, 'error', true);
-        announce(message);
-        return;
-      }
+      // The stored key just failed — drop it so the retry starts clean.
+      try { sessionStorage.removeItem(API_KEY_STORAGE_KEY); } catch (_e) {}
 
-      sessionStorage.setItem(AUTH_RECOVERY_STORAGE_KEY, String(Date.now()));
       if (!promptForApiKey()) {
         const message = errorMessage || 'Authorization required. Provide the dashboard API key.';
         showToast(message, 'error', true);
         announce(message);
+        authRecoveryTriggered = false;
         return;
       }
       const message = 'API key saved. Refreshing dashboard session...';
@@ -3513,7 +3498,6 @@ HTML = '''
       handleScanRowKeys(event);
     });
 
-    clearAuthRecoveryMarkerIfStale();
     initializeResultState();
     loadRegime();
     loadProviderHealth();
