@@ -105,6 +105,60 @@ class TestPortfolioAccounting:
             assert trade["entry_date"] <= trade["exit_date"]
 
 
+class TestNextOpenEntry:
+    """Entries must fill at the NEXT bar's open after a signal (audit M4)."""
+
+    def _frame_with_open(self):
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        return pd.DataFrame(
+            {
+                "Open": [100.0, 105.0, 106.0, 107.0, 108.0],
+                "Close": [102.0, 105.5, 106.5, 107.5, 108.5],
+                "ATR_14": [2.0] * 5,
+                "entry_signal": [True, False, False, False, False],
+            },
+            index=dates,
+        )
+
+    def test_entry_fills_at_next_bars_open(self, monkeypatch):
+        frame = self._frame_with_open()
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_a, **_k: frame)
+
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-05", initial_capital=10_000)
+        trades = result["trades"]
+        assert trades, "Expected a trade from the day-1 signal"
+        t = trades[0]
+        # Signal fired on day 1 (close 102) → fill on day 2 at its OPEN (105),
+        # plus buy-side slippage — NOT at the day-1 signal close.
+        assert t["entry_date"] == "2024-01-02"
+        expected_fill = round(engine._buy_fill(105.0), 2)
+        assert t["entry_price"] == pytest.approx(expected_fill, abs=0.01)
+        assert t["entry_price"] > 102.0  # cannot transact at the signal close
+
+    def test_signal_on_last_bar_produces_no_trade(self, monkeypatch):
+        dates = pd.date_range("2024-01-01", periods=3, freq="D")
+        frame = pd.DataFrame(
+            {
+                "Open": [100.0, 101.0, 102.0],
+                "Close": [100.5, 101.5, 102.5],
+                "ATR_14": [2.0] * 3,
+                "entry_signal": [False, False, True],  # no next bar to fill on
+            },
+            index=dates,
+        )
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_a, **_k: frame)
+
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-03", initial_capital=10_000)
+        assert result["trades"] == []
+
+    def test_bias_disclosures_no_longer_claim_same_bar_entry(self, monkeypatch):
+        frame = self._frame_with_open()
+        monkeypatch.setattr(engine, "_prepare_ticker_history", lambda *_a, **_k: frame)
+        result = backtest_signal_system(["AAA"], "2024-01-01", "2024-01-05", initial_capital=10_000)
+        assert not any("SAME_BAR_ENTRY" in d for d in result["bias_disclosures"])
+        assert any("SURVIVORSHIP" in d for d in result["bias_disclosures"])
+
+
 class TestSimulateTicker:
     """Integration-level tests using live data when available."""
 

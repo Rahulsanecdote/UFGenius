@@ -86,6 +86,21 @@ def backtest_signal_system(
         for t in tickers
     }
     histories = {k: v for k, v in histories.items() if not v.empty}
+    # Ensure next-open entry columns exist (frames injected by tests or older
+    # callers may carry only entry_signal): a signal on bar T makes bar T+1 the
+    # entry bar, and the stop is sized from the signal bar's ATR — both known
+    # before the fill, eliminating the same-bar-close lookahead (audit M4).
+    for frame in histories.values():
+        if "enter_flag" not in frame.columns:
+            frame["enter_flag"] = (
+                frame["entry_signal"].shift(1).fillna(False).astype(bool)
+                if "entry_signal" in frame.columns
+                else False
+            )
+        if "atr_entry" not in frame.columns:
+            frame["atr_entry"] = (
+                frame["ATR_14"].shift(1) if "ATR_14" in frame.columns else np.nan
+            )
     if not histories:
         return {"error": "No trades simulated — check tickers and date range"}
 
@@ -123,28 +138,41 @@ def backtest_signal_system(
                     break
                 frame = histories[ticker]
                 row = frame.loc[date]
-                signal_price = float(row["Close"])
-                atr = float(row["ATR_14"])
+                # Next-open fill (audit M4): the signal fired on the PRIOR bar's
+                # close; this bar is the first tradeable one, so fill at its
+                # open. Frames without an Open column (older callers/tests)
+                # fall back to this bar's close.
+                open_px = row.get("Open") if hasattr(row, "get") else None
+                entry_ref = (
+                    float(open_px)
+                    if open_px is not None and np.isfinite(float(open_px))
+                    else float(row["Close"])
+                )
+                # Stop geometry uses the SIGNAL bar's ATR — the last value known
+                # at the open (this bar's ATR needs this bar's full range).
+                atr = float(row.get("atr_entry", np.nan))
+                if not np.isfinite(atr) or atr <= 0:
+                    atr = float(row.get("ATR_14", np.nan))
                 if not np.isfinite(atr) or atr <= 0:
                     continue
-                # Geometry (stop/targets/sizing) uses the signal price; the fill
-                # includes slippage and the entry pays commission (audit H5).
-                stop_price = signal_price - ATR_STOP_MULT * atr
+                # Geometry (stop/targets/sizing) keys off the entry reference;
+                # the fill adds slippage and the entry pays commission (H5).
+                stop_price = entry_ref - ATR_STOP_MULT * atr
                 shares = _position_size(
                     cash=cash,
                     equity=equity_before_entries,
-                    entry_price=signal_price,
+                    entry_price=entry_ref,
                     stop_price=stop_price,
                 )
                 if shares <= 0:
                     continue
-                buy_fill = _buy_fill(signal_price)
+                buy_fill = _buy_fill(entry_ref)
                 entry_commission = _commission(shares * buy_fill)
                 position_cost = shares * buy_fill + entry_commission
                 if position_cost > cash:
                     continue
                 cash -= position_cost
-                risk = signal_price - stop_price
+                risk = entry_ref - stop_price
                 open_positions[ticker] = Position(
                     ticker=ticker,
                     entry_date=date,
@@ -152,9 +180,9 @@ def backtest_signal_system(
                     shares_initial=shares,
                     shares_open=shares,
                     stop_price=stop_price,
-                    t1=signal_price + TARGET_RR[0] * risk,
-                    t2=signal_price + TARGET_RR[1] * risk,
-                    t3=signal_price + TARGET_RR[2] * risk,
+                    t1=entry_ref + TARGET_RR[0] * risk,
+                    t2=entry_ref + TARGET_RR[1] * risk,
+                    t3=entry_ref + TARGET_RR[2] * risk,
                     realized_pnl=-entry_commission,  # commission booked at entry
                     last_price=buy_fill,
                 )
@@ -251,7 +279,8 @@ def _entry_candidates_for_date(
             continue
         if date not in frame.index:
             continue
-        if bool(frame.loc[date, "entry_signal"]):
+        # enter_flag = prior bar's entry_signal → this bar fills at the open.
+        if bool(frame.loc[date, "enter_flag"]):
             candidates.append(ticker)
     return sorted(candidates)
 
@@ -399,6 +428,10 @@ def _prepare_ticker_history(
         & (df["RSI_14"] <= 65)
         & (df["ATR_14"] > 0)
     ).fillna(False)
+    # Shift BEFORE slicing so a signal on the bar just before start_date still
+    # produces an entry on the first in-range bar (next-open fills, audit M4).
+    df["enter_flag"] = df["entry_signal"].shift(1).fillna(False).astype(bool)
+    df["atr_entry"] = df["ATR_14"].shift(1)
 
     return df.loc[(df.index >= start_date) & (df.index <= end_date)].copy()
 
@@ -480,16 +513,18 @@ def _compute_metrics(
             "commission_pct": COMMISSION_PCT,
             "slippage_pct": SLIPPAGE_PCT,
             "note": "Per-side commission + slippage applied to every fill; "
+                    "entries fill at the NEXT bar's open after a signal; "
                     "stops fill at min(close, stop) to reflect gap-through.",
         },
         # Known biases that inflate results — surfaced so they are not mistaken
-        # for edge (audit M11 / same-bar entry).
+        # for edge (audit M11). Same-bar entry (M4) is fixed: fills now occur at
+        # the next bar's open, using the signal bar's ATR for stop geometry.
         "bias_disclosures": [
             "SURVIVORSHIP: the universe is the ticker list supplied at run time; "
             "delisted/renamed names never appear, so returns are upward-biased. "
             "Use a point-in-time constituent list for an unbiased test.",
-            "SAME_BAR_ENTRY: entries fill at the same daily close that generated "
-            "the signal; live fills would occur at or after the next open.",
+            "DAILY_GRANULARITY: exits are evaluated on daily closes only; "
+            "intraday stop/target sequencing within a bar is approximated.",
         ],
         "minimum_acceptance": _minimum_check(sharpe, win_rate, profit_factor, max_drawdown),
     }
