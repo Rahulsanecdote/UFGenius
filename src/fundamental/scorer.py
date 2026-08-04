@@ -59,89 +59,63 @@ def _piotroski(fd: dict) -> tuple:
         except Exception:
             return None
 
+    # Every criterion below returns None when its required inputs are
+    # UNAVAILABLE and a bool when they can actually be evaluated. The composite
+    # normalizes by the count of non-None (measurable) criteria (audit M7), so
+    # conflating missing data with a measured failure would corrupt the
+    # denominator for partial fundamentals records.
+    def _mark(key: str, evaluable: bool, passed: bool) -> None:
+        nonlocal score
+        if not evaluable:
+            detail[key] = None
+            return
+        detail[key] = passed
+        if passed:
+            score += 1
+
     # F1: ROA > 0
     roa = _safe_div(fd.get("net_income"), fd.get("total_assets"))
-    if roa is not None and roa > 0:
-        score += 1
-        detail["F1_roa_positive"] = True
-    else:
-        detail["F1_roa_positive"] = False
+    _mark("F1_roa_positive", roa is not None, roa is not None and roa > 0)
 
     # F2: Operating Cash Flow > 0
     ocf = fd.get("operating_cash_flow")
-    if ocf is not None and ocf > 0:
-        score += 1
-        detail["F2_ocf_positive"] = True
-    else:
-        detail["F2_ocf_positive"] = False
+    _mark("F2_ocf_positive", ocf is not None, ocf is not None and ocf > 0)
 
     # F3: ROA improving YoY. None ONLY when prior-period data is unavailable —
-    # a measured decline is a FAILED criterion (False), not an unmeasurable
-    # one, and must count against the measurable-criteria denominator.
+    # a measured decline is a FAILED criterion (False), not an unmeasurable one.
     roa_prev = _safe_div(fd.get("net_income_prev"), fd.get("total_assets_prev"))
-    if roa is not None and roa_prev is not None:
-        improving = roa > roa_prev
-        if improving:
-            score += 1
-        detail["F3_roa_improving"] = improving
-    else:
-        detail["F3_roa_improving"] = None  # Data unavailable
+    f3_evaluable = roa is not None and roa_prev is not None
+    _mark("F3_roa_improving", f3_evaluable, f3_evaluable and roa > roa_prev)
 
-    # F4: Accruals < 0 (cash earnings > reported earnings)
-    accruals = _safe_div(
-        (fd.get("net_income") or 0) - (ocf or 0),
-        fd.get("total_assets")
-    )
-    if accruals is not None and accruals < 0:
-        score += 1
-        detail["F4_low_accruals"] = True
-    else:
-        detail["F4_low_accruals"] = False
+    # F4: Accruals < 0 (cash earnings > reported earnings). Needs net income,
+    # operating cash flow, AND total assets — don't fabricate missing ones as 0.
+    ni = fd.get("net_income")
+    total_assets = fd.get("total_assets")
+    f4_evaluable = ni is not None and ocf is not None and total_assets not in (None, 0)
+    accruals = (ni - ocf) / total_assets if f4_evaluable else None
+    _mark("F4_low_accruals", f4_evaluable, accruals is not None and accruals < 0)
 
     # F5: Debt decreased (long-term debt ratio)
     total_debt = fd.get("total_debt")
-    total_assets = fd.get("total_assets")
-    if total_debt is not None and total_assets and total_assets > 0:
-        debt_ratio = total_debt / total_assets
-        if debt_ratio < 0.5:
-            score += 1
-            detail["F5_low_leverage"] = True
-        else:
-            detail["F5_low_leverage"] = False
-    else:
-        detail["F5_low_leverage"] = None
+    f5_evaluable = total_debt is not None and bool(total_assets) and total_assets > 0
+    _mark("F5_low_leverage", f5_evaluable, f5_evaluable and total_debt / total_assets < 0.5)
 
     # F6: Current Ratio > 1.0
     curr_assets = fd.get("current_assets")
     curr_liabs  = fd.get("current_liabilities")
-    if curr_assets is not None and curr_liabs and curr_liabs > 0:
-        cr = curr_assets / curr_liabs
-        if cr > 1.0:
-            score += 1
-            detail["F6_current_ratio_ok"] = True
-        else:
-            detail["F6_current_ratio_ok"] = False
-    else:
-        detail["F6_current_ratio_ok"] = None
+    f6_evaluable = curr_assets is not None and bool(curr_liabs) and curr_liabs > 0
+    _mark("F6_current_ratio_ok", f6_evaluable, f6_evaluable and curr_assets / curr_liabs > 1.0)
 
-    # F7: No excessive share dilution (skip — data not easily available)
-    detail["F7_no_dilution"] = None
+    # F7: No excessive share dilution — prior-period share count not available.
+    _mark("F7_no_dilution", False, False)
 
     # F8: Gross Margin > 0
     gm = _safe_div(fd.get("gross_profit"), fd.get("revenue"))
-    if gm is not None and gm > 0:
-        score += 1
-        detail["F8_gross_margin_positive"] = True
-    else:
-        detail["F8_gross_margin_positive"] = False
+    _mark("F8_gross_margin_positive", gm is not None, gm is not None and gm > 0)
 
     # F9: Asset Turnover > 0 (revenue / assets)
     at = _safe_div(fd.get("revenue"), fd.get("total_assets"))
-    if at is not None and at > 0:
-        score += 1
-        detail["F9_asset_turnover_positive"] = True
-    else:
-        detail["F9_asset_turnover_positive"] = False
+    _mark("F9_asset_turnover_positive", at is not None, at is not None and at > 0)
 
     return score, detail
 

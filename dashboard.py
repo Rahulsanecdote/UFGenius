@@ -2068,12 +2068,14 @@ HTML = '''
       authRecoveryTriggered = true;
 
       // Refuse to collect a key we would refuse to send (see apiFetch): over
-      // cleartext HTTP the only safe advice is to fix the transport.
+      // cleartext HTTP the only safe advice is to fix the transport. Show this
+      // once — the latch stays SET (re-prompting can't help until the page is
+      // reloaded over HTTPS), so queued 401s short-circuit above instead of
+      // appending a fresh permanent toast each time.
       if (!window.isSecureContext) {
         const message = 'This dashboard is served over insecure HTTP — refusing to send an API key. Serve it over HTTPS.';
         showToast(message, 'error', true);
         announce(message);
-        authRecoveryTriggered = false;
         return;
       }
 

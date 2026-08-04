@@ -63,6 +63,26 @@ def test_exit_pcts_must_sum_to_100(monkeypatch):
     assert "sum to 100" in plan["error"]
 
 
+def test_invalid_target_values_rejected(monkeypatch):
+    # Length and sum checks alone let bad values through: a negative RR places
+    # a target below entry; a negative exit pct can still sum to 100; NaN would
+    # slip through sum() (CodeRabbit finding on PR #18).
+    monkeypatch.setattr(cfg, "TARGET_RR_RATIOS", [1.5, -2.5, 4.0])
+    monkeypatch.setattr(cfg, "TARGET_EXIT_PCTS", [30, 40, 30])
+    assert "must be finite and > 0" in generate_trade_plan(
+        "AAPL", _signal(), account_size=50_000, df=_df())["error"]
+
+    monkeypatch.setattr(cfg, "TARGET_RR_RATIOS", [1.5, 2.5, 4.0])
+    monkeypatch.setattr(cfg, "TARGET_EXIT_PCTS", [-10, 60, 50])  # sums to 100
+    assert "within [0, 100]" in generate_trade_plan(
+        "AAPL", _signal(), account_size=50_000, df=_df())["error"]
+
+    monkeypatch.setattr(cfg, "TARGET_RR_RATIOS", [1.5, float("nan"), 4.0])
+    monkeypatch.setattr(cfg, "TARGET_EXIT_PCTS", [30, 40, 30])
+    assert "must be finite" in generate_trade_plan(
+        "AAPL", _signal(), account_size=50_000, df=_df())["error"]
+
+
 def test_non_three_target_configs_rejected_loudly(monkeypatch):
     # Exactly 3 targets are supported end-to-end: PositionTracker/executor
     # allocate fixed T1/T2/T3 tranches and default MISSING targets to the
@@ -118,7 +138,7 @@ def test_declining_roa_is_a_measured_failure_not_unavailable():
     fd = _fundamentals()
     fd["net_income_prev"] = 200          # prior ROA 200/900 > current 100/1000
     fd["total_assets_prev"] = 900
-    score, detail = _piotroski(fd)
+    _score, detail = _piotroski(fd)
     assert detail["F3_roa_improving"] is False
     measurable = sum(1 for v in detail.values() if v is not None)
     assert measurable == 8  # only F7 remains unmeasurable
@@ -131,3 +151,34 @@ def test_improving_roa_still_scores():
     score, detail = _piotroski(fd)
     assert detail["F3_roa_improving"] is True
     assert score == 8  # the 7 baseline passes + F3
+
+
+def test_partial_fundamentals_do_not_count_as_measured_failures():
+    # A ticker with almost no fundamentals: only F7 was already None, but F1,
+    # F2, F4, F5, F6, F8, F9 must ALSO be None (inputs unavailable) rather than
+    # a sentinel False — otherwise they inflate the measurable denominator and
+    # corrupt the normalized Piotroski score (CodeRabbit finding on PR #18).
+    _score, detail = _piotroski({})  # empty fundamentals
+    measurable = [k for k, v in detail.items() if v is not None]
+    assert measurable == []  # nothing was actually evaluable
+    # F3 (needs current+prior ROA) and F4 (needs NI, OCF, assets) stay None too.
+    assert detail["F1_roa_positive"] is None
+    assert detail["F4_low_accruals"] is None
+    assert detail["F8_gross_margin_positive"] is None
+
+
+def test_measured_failures_still_count_in_denominator():
+    # Inputs present but the criterion fails → False (measurable), not None.
+    fd = {"net_income": -50, "total_assets": 1000, "operating_cash_flow": -20,
+          "total_debt": 900, "current_assets": 100, "current_liabilities": 500,
+          "gross_profit": -10, "revenue": 900}
+    score, detail = _piotroski(fd)
+    # F1 roa<0, F2 ocf<0, F5 debt-ratio 0.9, F6 cr<1, F8 gm<0 are measured
+    # failures; F4 (accruals = (NI-OCF)/assets = -0.03 < 0) and F9 (rev/assets)
+    # pass. The point: all seven with inputs are non-None (measurable).
+    assert detail["F1_roa_positive"] is False
+    assert detail["F4_low_accruals"] is True
+    assert detail["F9_asset_turnover_positive"] is True
+    assert score == 2
+    measurable = sum(1 for v in detail.values() if v is not None)
+    assert measurable == 7  # only F3 and F7 unmeasurable

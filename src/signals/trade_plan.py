@@ -18,6 +18,8 @@ Expected Value (45% win rate, 2.5:1 avg R:R):
     EV = (0.45 × 2.5 × risk) - (0.55 × risk) = 0.575 × risk
 """
 
+import math
+
 import pandas as pd
 
 from src.technical.support_resistance import calculate_support_resistance
@@ -125,6 +127,13 @@ def generate_trade_plan(
                 "exactly T1/T2/T3 today."
             )
         }
+    # Values must be finite and sane before they drive target geometry: a
+    # negative RR would place a "target" below entry, and a negative exit pct
+    # can still sum to 100 (audit M4 hardening).
+    if not all(isinstance(rr, (int, float)) and math.isfinite(rr) and rr > 0 for rr in rr_ratios):
+        return {"error": f"Config error: target_rr_ratios must be finite and > 0 (got {rr_ratios})."}
+    if not all(isinstance(ep, (int, float)) and math.isfinite(ep) and 0 <= ep <= 100 for ep in exit_pcts):
+        return {"error": f"Config error: target_exit_pcts must each be within [0, 100] (got {exit_pcts})."}
     if abs(sum(exit_pcts) - 100.0) > 1e-6:
         return {
             "error": (
@@ -142,7 +151,7 @@ def generate_trade_plan(
 
     targets = {}
     labels = [f"T{i + 1}" for i in range(len(rr_ratios))]
-    for label, price, rr, ep in zip(labels, raw_targets, rr_ratios, exit_pcts):
+    for label, price, rr, ep in zip(labels, raw_targets, rr_ratios, exit_pcts, strict=True):
         targets[label] = {
             "price":    price,
             "exit_pct": ep,
