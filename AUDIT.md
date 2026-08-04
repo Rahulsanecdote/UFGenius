@@ -53,13 +53,13 @@ path (`src/alpaca/executor.py`, `position_tracker.py`) surfaced by review:
 | Partial entry fill treated as a completed entry (remaining shares left untracked/unprotected) | Partial fills cancel the unfilled remainder, then protect exactly the filled quantity. |
 | Stop stayed sized to the initial position after target fills; stale full-size stop lived on after full exit | Stop is cancel-replaced to the remaining shares after each partial exit and cancelled when the position fully exits via targets. |
 | Entry submitted but tracking failure left a live order with no stop | On any tracking failure after submit, the entry order is best-effort cancelled. |
-| Position cap counted only broker positions, not in-flight `pending_fill` entries | RiskGuard counts `max(broker positions, open tracker positions)`. |
+| Position cap counted only broker positions, not in-flight `pending_fill` entries | RiskGuard adds the open tracker positions the broker does not yet report to the broker position count (not `max()`, which undercounts disjoint sets). |
 | Closed positions permanently blocked re-entry for that ticker | Duplicate guard uses `has_open()` (ignores closed); stale prior-day closed records are pruned on load. |
 | Tracker mutated by monitor + main thread with no lock | All tracker mutations/queries guarded by a reentrant lock. |
 | One malformed record discarded all tracked positions on load | Records parsed independently; bad ones skipped, not fatal. |
 | Monitor interval could busy-loop at 0/negative | Interval clamped to a ≥60s floor; `MONITOR_INTERVAL_MIN` exposed in config. |
 
-Tests: **303 pass** (adds `test_live_execution_fixes.py`), 3 network tests
+Tests: **308 pass** (adds `test_live_execution_fixes.py`), 3 network tests
 deselected by default. Still not implemented (separate risk features, not bugs):
 the RiskGuard rules noted under C2 (loss limits, cooldown, earnings-week,
 stop-required, paper-trading-days).

@@ -70,6 +70,26 @@ class LivePosition:
     status: str             # "pending_fill" | "active" | "closed"
     trades_today_date: str  # YYYY-MM-DD (for daily trade count)
 
+    # Shares the live stop order currently covers (0 when no/unknown stop).
+    # Lets the monitor detect an oversized stop after a partial exit without an
+    # extra broker poll. Trailing default keeps old records loadable.
+    stop_shares: int = 0
+
+
+def _coerce_daily_entries(raw: dict) -> dict[str, int]:
+    """Keep only str->non-negative-int pairs; drop anything unreadable.
+
+    Prevents a corrupt counter value (e.g. ``{"2026-08-04": "x"}``) from raising
+    inside ``load()`` and aborting startup.
+    """
+    clean: dict[str, int] = {}
+    for key, value in raw.items():
+        try:
+            clean[str(key)] = max(0, int(value))
+        except (TypeError, ValueError):
+            log.warning(f"Position store: dropping unreadable daily count {key!r}")
+    return clean
+
 
 def _allocate_exit_tranches(shares: int) -> tuple[int, int, int]:
     """
@@ -139,6 +159,7 @@ class PositionTracker:
                     f"Failed to read position store ({self._path}): {exc}", exc_info=True
                 )
                 self._positions = {}
+                self._daily_entries = {}
                 return
 
             # A valid-JSON-but-non-object store (e.g. a list) must fail safe, not
@@ -149,6 +170,7 @@ class PositionTracker:
                     f"({type(data).__name__}); starting empty"
                 )
                 self._positions = {}
+                self._daily_entries = {}
                 return
 
             # v2 wraps positions + daily entry counts; legacy is a flat
@@ -156,7 +178,11 @@ class PositionTracker:
             if isinstance(data.get("positions"), dict):
                 raw_positions = data["positions"]
                 raw_daily = data.get("daily_entries")
-                self._daily_entries = dict(raw_daily) if isinstance(raw_daily, dict) else {}
+                self._daily_entries = (
+                    _coerce_daily_entries(raw_daily)
+                    if isinstance(raw_daily, dict)
+                    else {}
+                )
             else:
                 raw_positions = data
                 self._daily_entries = {}
@@ -181,7 +207,7 @@ class PositionTracker:
             record_today = sum(
                 1 for p in self._positions.values() if p.trades_today_date == today
             )
-            count_today = max(int(self._daily_entries.get(today, 0)), record_today)
+            count_today = max(self._daily_entries.get(today, 0), record_today)
             self._daily_entries = {today: count_today} if count_today else {}
 
             log.info(f"Loaded {len(self._positions)} position(s) from {self._path}")
@@ -238,9 +264,6 @@ class PositionTracker:
             ValueError: If a position for this ticker is already being tracked.
         """
         ticker = plan["ticker"]
-        with self._lock:
-            if ticker in self._positions and self._positions[ticker].status != "closed":
-                raise ValueError(f"Position already tracked for {ticker}")
 
         position_info = plan.get("position", {})
         entry_price = float(plan["entry"]["price"])
@@ -278,6 +301,11 @@ class PositionTracker:
             trades_today_date=date.today().isoformat(),
         )
         with self._lock:
+            # Re-check the duplicate guard INSIDE the critical section so a
+            # concurrent add for the same ticker can't overwrite the first
+            # record (and double-count the entry).
+            if ticker in self._positions and self._positions[ticker].status != "closed":
+                raise ValueError(f"Position already tracked for {ticker}")
             self._positions[ticker] = pos
             # Count this as a distinct entry EVENT (survives a same-day re-entry
             # that replaces a closed record for the same ticker).
@@ -308,11 +336,18 @@ class PositionTracker:
             self.save()
         log.info(f"{ticker}: entry filled @ ${fill_price:.2f} x{shares}")
 
-    def mark_stop_placed(self, ticker: str, order_id: str) -> None:
-        """Record the Alpaca order ID of the stop-loss order."""
+    def mark_stop_placed(
+        self, ticker: str, order_id: Optional[str], shares: int = 0
+    ) -> None:
+        """Record the stop-loss order id and the share count it covers.
+
+        Pass ``order_id=None`` to record that no protective stop is currently
+        live (``stop_shares`` is reset to 0 in that case).
+        """
         with self._lock:
             pos = self._require(ticker)
             pos.stop_order_id = order_id
+            pos.stop_shares = int(shares) if order_id else 0
             self.save()
 
     def mark_target_placed(self, ticker: str, level: Literal["t1", "t2", "t3"], order_id: str) -> None:
@@ -365,14 +400,23 @@ class PositionTracker:
     # ------------------------------------------------------------------ #
 
     def get(self, ticker: str) -> Optional[LivePosition]:
-        """Return position or None if not tracked."""
+        """Return a snapshot of the position, or None if not tracked.
+
+        A copy (not the live record) so a caller reading fields after the lock
+        releases can't observe a record another thread is mid-update on.
+        """
         with self._lock:
-            return self._positions.get(ticker)
+            pos = self._positions.get(ticker)
+            return dataclasses.replace(pos) if pos is not None else None
 
     def get_open(self) -> dict[str, LivePosition]:
-        """Return all positions with status != 'closed'."""
+        """Return snapshots of all positions with status != 'closed'."""
         with self._lock:
-            return {t: p for t, p in self._positions.items() if p.status != "closed"}
+            return {
+                t: dataclasses.replace(p)
+                for t, p in self._positions.items()
+                if p.status != "closed"
+            }
 
     def has_open(self, ticker: str) -> bool:
         """True if an OPEN (pending_fill/active) position exists for `ticker`.

@@ -55,7 +55,7 @@ def tracker(tmp_path):
 def test_tranches_always_sum_to_shares():
     for s in range(0, 51):
         t1, t2, t3 = _allocate_exit_tranches(s)
-        assert (t1, t2, t3) >= (0, 0, 0)
+        assert min(t1, t2, t3) >= 0, f"negative tranche for {s}: {(t1, t2, t3)}"
         assert t1 + t2 + t3 == s, f"tranches for {s} sum to {t1 + t2 + t3}"
     assert _allocate_exit_tranches(1) == (1, 0, 0)  # not (1, 1, 0)
 
@@ -121,11 +121,34 @@ def test_partial_fill_cancels_remainder_and_sizes_protection(tracker):
     assert mock_stop.call_args[0][1] == 6     # stop sized to filled shares
 
 
+def test_partial_fill_defers_when_refetch_fails(tracker):
+    # If the post-cancel re-fetch fails, we must NOT finalize with the stale
+    # (understated) qty — leave the record pending_fill and retry next cycle.
+    tracker.add_position(_plan(shares=10), "E1")
+    partial = MagicMock(status="partially_filled", filled_qty="4", filled_avg_price="189.5")
+    calls = {"n": 0}
+
+    def _get_order(_oid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return partial
+        raise ex.OrderError("api down")  # re-fetch after cancel fails
+
+    with patch("src.alpaca.executor.get_order", side_effect=_get_order):
+        with patch("src.alpaca.executor.cancel_order", return_value=True):
+            with patch("src.alpaca.executor.place_stop_order") as mock_stop:
+                _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
+
+    pos = tracker.get("AAPL")
+    assert pos.status == "pending_fill"   # not finalized on stale data
+    mock_stop.assert_not_called()         # no protection sized to the wrong qty
+
+
 # ── Stop is resized after a partial exit ────────────────────────────────────
 def _add_active(tracker):
     tracker.add_position(_plan(shares=10), "entry-id")
     tracker.mark_entry_filled("AAPL", 189.50, 10)
-    tracker.mark_stop_placed("AAPL", "stop-order-id")
+    tracker.mark_stop_placed("AAPL", "stop-order-id", 10)  # stop covers all 10
     tracker.mark_target_placed("AAPL", "t1", "t1-order-id")
     tracker.mark_target_placed("AAPL", "t2", "t2-order-id")
     tracker.mark_target_placed("AAPL", "t3", "t3-order-id")
