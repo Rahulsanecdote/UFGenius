@@ -148,11 +148,17 @@ def generate_trade_plan(
     # ── Risk factors ───────────────────────────────────────────────────────
     risk_factors = _build_risk_factors(signal, sr, df)
 
+    # Days until the next earnings report (best effort from provider info), so
+    # RiskGuard can honour the trade_earnings_week safety rule. None when unknown.
+    ctx = signal.get("_context")
+    days_to_earnings = _days_to_earnings(getattr(ctx, "ticker_info", None))
+
     plan = {
         "ticker":          ticker,
         "signal":          signal.get("signal", "UNKNOWN"),
         "confidence":      signal.get("confidence", "N/A"),
         "composite_score": signal.get("score", 0.0),
+        "days_to_earnings": days_to_earnings,
 
         "entry": {
             "type":  "LIMIT",
@@ -189,6 +195,31 @@ def generate_trade_plan(
     }
 
     return plan
+
+
+def _days_to_earnings(ticker_info: dict | None) -> int | None:
+    """Best-effort days until the next earnings date from provider info.
+
+    Reads the yfinance-style unix-second timestamp keys. Returns None when the
+    date is unavailable or in the past — RiskGuard then does NOT block on it.
+    """
+    if not isinstance(ticker_info, dict):
+        return None
+    import time as _time
+
+    ts = None
+    for key in ("earningsTimestampStart", "earningsTimestamp"):
+        v = ticker_info.get(key)
+        if v:
+            ts = v
+            break
+    if not ts:
+        return None
+    try:
+        days = int((float(ts) - _time.time()) // 86400)
+    except (TypeError, ValueError):
+        return None
+    return days if days >= 0 else None
 
 
 def _build_risk_factors(signal: dict, sr: dict, df: pd.DataFrame) -> list:

@@ -20,9 +20,10 @@ Usage (from bot.py):
 
 from __future__ import annotations
 
+import math
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
@@ -156,6 +157,88 @@ class RiskGuard:
             reasons = plan.get("reasoning", [])
             if any("BEAR" in str(r).upper() for r in reasons):
                 return False, "Bear market regime detected; trade_in_bear_market=False"
+
+        # 10. A resting stop must be part of the plan when required — and it must
+        #     be a real, positive price (a truthy garbage value is not a stop).
+        if bool(safety.get("stop_loss_required", False)):
+            raw_stop = (plan.get("stop_loss") or {}).get("price")
+            try:
+                stop_px = float(raw_stop)
+            except (TypeError, ValueError):
+                stop_px = float("nan")
+            if not math.isfinite(stop_px) or stop_px <= 0:
+                return False, "stop_loss_required: plan has no valid stop-loss price"
+
+        now = datetime.utcnow()
+
+        # 11. Daily realized-loss kill switch.
+        daily_pct = safety.get("max_daily_loss_pct")
+        if daily_pct and equity > 0:
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            realized_today = tracker.realized_pnl_since(day_start)
+            if realized_today <= -abs(float(daily_pct)) / 100.0 * equity:
+                return False, (
+                    f"Daily loss limit hit: realized ${realized_today:.0f} "
+                    f"<= -{daily_pct}% of ${equity:.0f}"
+                )
+
+        # 12. Weekly realized-loss kill switch.
+        weekly_pct = safety.get("max_weekly_loss_pct")
+        if weekly_pct and equity > 0:
+            week_start = (now - timedelta(days=now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            realized_week = tracker.realized_pnl_since(week_start)
+            if realized_week <= -abs(float(weekly_pct)) / 100.0 * equity:
+                return False, (
+                    f"Weekly loss limit hit: realized ${realized_week:.0f} "
+                    f"<= -{weekly_pct}% of ${equity:.0f}"
+                )
+
+        # 13. Cooldown after a losing trade.
+        cooldown_h = safety.get("cooldown_after_loss_hours")
+        if cooldown_h:
+            last_loss = tracker.last_loss_time()
+            if last_loss is not None:
+                elapsed_h = (now - last_loss).total_seconds() / 3600.0
+                if elapsed_h < float(cooldown_h):
+                    return False, (
+                        f"In post-loss cooldown ({elapsed_h:.1f}h of {cooldown_h}h)"
+                    )
+
+        # 14. Earnings-week block. Best effort: enforced only when the plan
+        #     carries days_to_earnings (plumbed from ticker_info); if the earnings
+        #     date is unknown the trade is allowed rather than blocked blindly.
+        if not bool(safety.get("trade_earnings_week", True)):
+            days = plan.get("days_to_earnings")
+            try:
+                window = float(safety.get("earnings_week_window_days", 7))
+            except (TypeError, ValueError):
+                window = 7.0
+            if isinstance(days, (int, float)) and 0 <= days <= window:
+                return False, (
+                    f"Earnings in {days:.0f}d and trade_earnings_week=False"
+                )
+            if days is None:
+                # Fail-open by design (blocking would reject every trade when the
+                # metadata provider carries no earnings dates — e.g. the Alpaca
+                # payload), but say so loudly instead of silently skipping the rule.
+                log.warning(
+                    f"[{ticker}] trade_earnings_week=False but earnings date is "
+                    "unknown for this ticker — rule NOT evaluated (metadata "
+                    "provider supplies no earnings timestamp)."
+                )
+
+        # 15. Require a minimum paper-trading tenure before real-money trading.
+        req_days = safety.get("paper_trade_days_required")
+        if req_days and not config.ALPACA_PAPER:
+            since = tracker.trading_since()
+            elapsed_days = (now - since).days if since is not None else -1
+            if elapsed_days < int(req_days):
+                return False, (
+                    f"paper_trade_days_required: need {req_days} days of trading "
+                    f"history before live (have {max(elapsed_days, 0)})"
+                )
 
         return True, ""
 
@@ -447,8 +530,14 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
         return
 
     # Stop has the highest priority — check it first
-    if pos.stop_order_id and _is_filled(pos.stop_order_id, ticker, "stop"):
+    stop_order = _filled_order(pos.stop_order_id, ticker, "stop") if pos.stop_order_id else None
+    if stop_order is not None:
         log.info(f"{ticker}: stop order filled — cancelling target orders")
+        # The remaining open shares exited at the stop. Book realized P&L from
+        # the order's ACTUAL average fill (falling back to the stop level) —
+        # a stop that gapped through fills worse than its trigger price.
+        stop_fill = _order_fill_price(stop_order, pos.stop_price)
+        stop_pnl = _exit_pnl(ticker, pos, stop_fill, pos.shares_open)
         for level in ("t1", "t2", "t3"):
             oid = getattr(pos, f"{level}_order_id")
             if oid and not getattr(pos, f"{level}_hit"):
@@ -456,7 +545,9 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
                     cancel_order(oid)
                 except OrderError as exc:
                     log.warning(f"{ticker}: could not cancel {level.upper()}: {exc}")
-        tracker.mark_closed(ticker, "STOP")
+        # Single tracker mutation: close + ledger append under one atomic save,
+        # so a crash between the two can't leave P&L and position state split.
+        tracker.mark_closed(ticker, "STOP", realized_pnl=stop_pnl)
         return
 
     # Reload after potential stop mutation
@@ -469,8 +560,12 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
         if getattr(pos, f"{level}_hit"):
             continue
         oid = getattr(pos, f"{level}_order_id")
-        if oid and _is_filled(oid, ticker, level):
-            tracker.mark_target_hit(ticker, level)
+        tgt_order = _filled_order(oid, ticker, level) if oid else None
+        if tgt_order is not None:
+            # Realized P&L from the actual fill (falls back to the target level).
+            tgt_fill = _order_fill_price(tgt_order, getattr(pos, f"{level}_price"))
+            tgt_pnl = _exit_pnl(ticker, pos, tgt_fill, getattr(pos, f"{level}_shares"))
+            tracker.mark_target_hit(ticker, level, realized_pnl=tgt_pnl)
             pos = tracker.get(ticker)  # Reload after mutation
 
     pos = tracker.get(ticker)
@@ -511,6 +606,31 @@ def _resize_stop(ticker: str, pos, tracker: PositionTracker) -> None:
     # the replacement; if that fails, _ensure_stop retries on later cycles.
     tracker.mark_stop_placed(ticker, None)
     _ensure_stop(ticker, tracker)
+
+
+def _exit_pnl(ticker: str, pos, exit_price: float, shares: int):
+    """Realized P&L = (exit - cost basis) * shares, or None if not computable."""
+    basis = pos.fill_price if pos.fill_price else pos.entry_price
+    try:
+        if basis and shares:
+            return (float(exit_price) - float(basis)) * int(shares)
+    except (TypeError, ValueError) as exc:
+        log.warning(f"{ticker}: could not compute realized P&L: {exc}")
+    return None
+
+
+def _filled_order(order_id: str, ticker: str, label: str):
+    """Return the order object if it is in 'filled' status, else None.
+
+    Fetching the full order (not just a boolean) lets exit booking use the
+    actual average fill price instead of assuming the trigger/limit level.
+    """
+    try:
+        order = get_order(order_id)
+    except OrderError as exc:
+        log.warning(f"{ticker}: could not check {label} order {order_id}: {exc}")
+        return None
+    return order if str(order.status).lower() == "filled" else None
 
 
 def _ensure_stop(ticker: str, tracker: PositionTracker) -> None:
