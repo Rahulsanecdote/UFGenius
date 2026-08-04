@@ -54,9 +54,39 @@ def test_sanitized_diagnose_drops_internals():
     assert "python" not in out and "yfinance_version" not in out
     assert "GCC" not in flat and "HTTPSConnectionPool" not in flat
     assert "provider" not in flat and "columns" not in flat
-    assert out["tests"]["AAPL"] == {"status": "OK", "rows": 5, "elapsed_sec": 0.4}
+    assert out["tests"]["AAPL"] == {
+        "status": "OK", "rows": 5, "elapsed_sec": 0.4, "rate_limited": False,
+    }
+    # SPY errored but not from rate-limiting — the raw error stays dropped and
+    # the safe flag stays False.
+    assert out["tests"]["SPY"]["rate_limited"] is False
     assert out["status"] == "degraded"  # SPY probe errored
-    assert out["fundamentals"] == {"status": "OK", "market_cap": 3e12}
+    assert out["fundamentals"] == {
+        "status": "OK", "market_cap": 3e12, "rate_limited": False,
+    }
+
+
+def test_sanitized_diagnose_flags_rate_limiting_without_leaking_detail():
+    full = {
+        "tests": {
+            "AAPL": {
+                "status": "EMPTY", "elapsed_sec": 0.3,
+                "provider_failures": [
+                    {"provider": "yfinance", "reason": "429 Too Many Requests"},
+                ],
+            },
+        },
+        "fundamentals": {
+            "status": "ERROR", "error": "rate limit exceeded, retry later",
+        },
+    }
+    out = dashboard._sanitize_diagnose(full)
+    # The rate-limit state survives so the UI can render it (Codex review) ...
+    assert out["tests"]["AAPL"]["rate_limited"] is True
+    assert out["fundamentals"]["rate_limited"] is True
+    # ... but the underlying strings/provider names do not (audit L1).
+    flat = str(out)
+    assert "429" not in flat and "yfinance" not in flat and "retry later" not in flat
 
 
 def test_sanitized_diagnose_ok_when_all_probes_pass():
