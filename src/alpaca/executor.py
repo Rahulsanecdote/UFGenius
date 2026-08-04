@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
@@ -156,6 +156,69 @@ class RiskGuard:
             reasons = plan.get("reasoning", [])
             if any("BEAR" in str(r).upper() for r in reasons):
                 return False, "Bear market regime detected; trade_in_bear_market=False"
+
+        # 10. A resting stop must be part of the plan when required.
+        if bool(safety.get("stop_loss_required", False)):
+            if not (plan.get("stop_loss") or {}).get("price"):
+                return False, "stop_loss_required: plan has no stop-loss price"
+
+        now = datetime.utcnow()
+
+        # 11. Daily realized-loss kill switch.
+        daily_pct = safety.get("max_daily_loss_pct")
+        if daily_pct and equity > 0:
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            realized_today = tracker.realized_pnl_since(day_start)
+            if realized_today <= -abs(float(daily_pct)) / 100.0 * equity:
+                return False, (
+                    f"Daily loss limit hit: realized ${realized_today:.0f} "
+                    f"<= -{daily_pct}% of ${equity:.0f}"
+                )
+
+        # 12. Weekly realized-loss kill switch.
+        weekly_pct = safety.get("max_weekly_loss_pct")
+        if weekly_pct and equity > 0:
+            week_start = (now - timedelta(days=now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            realized_week = tracker.realized_pnl_since(week_start)
+            if realized_week <= -abs(float(weekly_pct)) / 100.0 * equity:
+                return False, (
+                    f"Weekly loss limit hit: realized ${realized_week:.0f} "
+                    f"<= -{weekly_pct}% of ${equity:.0f}"
+                )
+
+        # 13. Cooldown after a losing trade.
+        cooldown_h = safety.get("cooldown_after_loss_hours")
+        if cooldown_h:
+            last_loss = tracker.last_loss_time()
+            if last_loss is not None:
+                elapsed_h = (now - last_loss).total_seconds() / 3600.0
+                if elapsed_h < float(cooldown_h):
+                    return False, (
+                        f"In post-loss cooldown ({elapsed_h:.1f}h of {cooldown_h}h)"
+                    )
+
+        # 14. Earnings-week block. Best effort: enforced only when the plan
+        #     carries days_to_earnings (plumbed from ticker_info); if the earnings
+        #     date is unknown the trade is allowed rather than blocked blindly.
+        if not bool(safety.get("trade_earnings_week", True)):
+            days = plan.get("days_to_earnings")
+            if isinstance(days, (int, float)) and 0 <= days <= 7:
+                return False, (
+                    f"Earnings in {days:.0f}d and trade_earnings_week=False"
+                )
+
+        # 15. Require a minimum paper-trading tenure before real-money trading.
+        req_days = safety.get("paper_trade_days_required")
+        if req_days and not config.ALPACA_PAPER:
+            since = tracker.trading_since()
+            elapsed_days = (now - since).days if since is not None else -1
+            if elapsed_days < int(req_days):
+                return False, (
+                    f"paper_trade_days_required: need {req_days} days of trading "
+                    f"history before live (have {max(elapsed_days, 0)})"
+                )
 
         return True, ""
 
@@ -449,6 +512,9 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
     # Stop has the highest priority — check it first
     if pos.stop_order_id and _is_filled(pos.stop_order_id, ticker, "stop"):
         log.info(f"{ticker}: stop order filled — cancelling target orders")
+        # The remaining open shares exited at the stop — book the realized P&L
+        # (feeds the daily/weekly loss limits and post-loss cooldown).
+        _record_exit_pnl(tracker, ticker, pos, pos.stop_price, pos.shares_open)
         for level in ("t1", "t2", "t3"):
             oid = getattr(pos, f"{level}_order_id")
             if oid and not getattr(pos, f"{level}_hit"):
@@ -470,6 +536,11 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
             continue
         oid = getattr(pos, f"{level}_order_id")
         if oid and _is_filled(oid, ticker, level):
+            # Book realized P&L for the tranche before mutating the record.
+            _record_exit_pnl(
+                tracker, ticker, pos,
+                getattr(pos, f"{level}_price"), getattr(pos, f"{level}_shares"),
+            )
             tracker.mark_target_hit(ticker, level)
             pos = tracker.get(ticker)  # Reload after mutation
 
@@ -511,6 +582,16 @@ def _resize_stop(ticker: str, pos, tracker: PositionTracker) -> None:
     # the replacement; if that fails, _ensure_stop retries on later cycles.
     tracker.mark_stop_placed(ticker, None)
     _ensure_stop(ticker, tracker)
+
+
+def _record_exit_pnl(tracker: PositionTracker, ticker: str, pos, exit_price: float, shares: int) -> None:
+    """Book realized P&L = (exit - cost basis) * shares for an exiting tranche."""
+    basis = pos.fill_price if pos.fill_price else pos.entry_price
+    try:
+        if basis and shares:
+            tracker.record_realized(ticker, (float(exit_price) - float(basis)) * int(shares))
+    except (TypeError, ValueError) as exc:
+        log.warning(f"{ticker}: could not record realized P&L: {exc}")
 
 
 def _ensure_stop(ticker: str, tracker: PositionTracker) -> None:

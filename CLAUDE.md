@@ -120,11 +120,13 @@ pytest --cov=src       # coverage
   `signals/trade_plan` (entry/stop/targets/sizing) → alerts / executor.
 - **Money paths are gated:** sizing never forces a share it can't afford
   (returns a `skip` plan); `RiskGuard` (`src/alpaca/executor.py`) blocks entries
-  that breach a **subset** of `safety_rules` — max positions, single-position
-  cap, cash reserve, per-trade risk, daily trade count, bear-market, and
-  duplicate-ticker. The loss-limit, cooldown, earnings-week, and
-  `stop_loss_required`/`paper_trade_days_required` rules are declared in config
-  but **not yet enforced**. Live trading needs an explicit flag + `ALPACA_PAPER=false`.
+  that breach `safety_rules` — max positions, single-position cap, cash reserve,
+  per-trade risk, daily trade count, bear-market, duplicate-ticker,
+  `stop_loss_required`, daily/weekly realized-loss limits, post-loss cooldown,
+  earnings-week (best-effort, when `days_to_earnings` is known), and
+  `paper_trade_days_required` (live only). Realized-loss limits and the cooldown
+  read a realized-P&L ledger the monitor writes at each exit. Live trading needs
+  an explicit flag + `ALPACA_PAPER=false`.
 - **Most network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry) and `src/data/cache.py` (TTL disk cache with a stale-fallback path).
   Exception: `src/data/universe.py` still fetches constituent lists directly
@@ -171,8 +173,9 @@ network-exposed (see Dashboard security above).
 (score→label), `atr_stop_multiplier`, `target_rr_ratios`/`target_exit_pcts`,
 `filter_*` (disqualifier thresholds), and `safety_rules` (max positions,
 loss/exposure limits, cooldowns) — `RiskGuard` enforces the position/exposure/
-trade-count/bear-market/duplicate subset; loss-limit, cooldown, earnings-week,
-and stop-required rules are not yet wired.
+trade-count/bear-market/duplicate rules, plus stop-required, daily/weekly
+realized-loss limits, post-loss cooldown, earnings-week (best-effort), and
+paper-trading-tenure (live only).
 
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env);

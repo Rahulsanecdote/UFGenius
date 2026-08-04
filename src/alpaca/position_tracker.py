@@ -91,6 +91,34 @@ def _coerce_daily_entries(raw: dict) -> dict[str, int]:
     return clean
 
 
+def _parse_iso(value) -> Optional[datetime]:
+    """Parse an ISO timestamp string to a datetime, or None on failure."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _coerce_realized(raw) -> list[dict]:
+    """Keep only well-formed realized-P&L entries ({ts, pnl[, ticker]})."""
+    if not isinstance(raw, list):
+        return []
+    clean: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ts = item.get("ts")
+        try:
+            pnl = float(item.get("pnl"))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(ts, str):
+            clean.append({"ts": ts, "ticker": str(item.get("ticker", "")), "pnl": pnl})
+    return clean
+
+
 def _allocate_exit_tranches(shares: int) -> tuple[int, int, int]:
     """
     Allocate shares across three exit tranches: T1≈30%, T2≈40%, T3=remainder.
@@ -128,6 +156,12 @@ class PositionTracker:
         # same-day close-then-re-enter of one ticker is two entries but one
         # record, so counting records would let it bypass max_trades_per_day.
         self._daily_entries: dict[str, int] = {}
+        # Realized-P&L ledger: [{ts, ticker, pnl}] recorded at each exit. Source
+        # of truth for the daily/weekly loss limits and the post-loss cooldown.
+        self._realized: list[dict] = []
+        # ISO timestamp of the first tracked entry (paper or live), used by the
+        # paper_trade_days_required gate.
+        self._trading_since: Optional[str] = None
         # Reentrant: mutators call save() while holding the lock, and the monitor
         # thread mutates the same instance as the main thread (audit: tracker
         # thread-safety). RLock lets a thread re-acquire without deadlocking.
@@ -160,6 +194,8 @@ class PositionTracker:
                 )
                 self._positions = {}
                 self._daily_entries = {}
+                self._realized = []
+                self._trading_since = None
                 return
 
             # A valid-JSON-but-non-object store (e.g. a list) must fail safe, not
@@ -171,6 +207,8 @@ class PositionTracker:
                 )
                 self._positions = {}
                 self._daily_entries = {}
+                self._realized = []
+                self._trading_since = None
                 return
 
             # v2 wraps positions + daily entry counts; legacy is a flat
@@ -183,9 +221,15 @@ class PositionTracker:
                     if isinstance(raw_daily, dict)
                     else {}
                 )
+                raw_realized = data.get("realized")
+                self._realized = _coerce_realized(raw_realized)
+                ts = data.get("trading_since")
+                self._trading_since = ts if isinstance(ts, str) else None
             else:
                 raw_positions = data
                 self._daily_entries = {}
+                self._realized = []
+                self._trading_since = None
 
             positions: dict[str, LivePosition] = {}
             skipped = 0
@@ -236,6 +280,8 @@ class PositionTracker:
                         for ticker, pos in self._positions.items()
                     },
                     "daily_entries": dict(self._daily_entries),
+                    "realized": list(self._realized),
+                    "trading_since": self._trading_since,
                 }
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
@@ -311,6 +357,8 @@ class PositionTracker:
             # that replaces a closed record for the same ticker).
             today = date.today().isoformat()
             self._daily_entries[today] = self._daily_entries.get(today, 0) + 1
+            if self._trading_since is None:
+                self._trading_since = datetime.utcnow().isoformat()
             self.save()
         log.info(
             f"Position tracked: {ticker} | {shares_initial} shares"
@@ -395,6 +443,16 @@ class PositionTracker:
             self.save()
         log.info(f"{ticker}: position closed (reason={reason})")
 
+    def record_realized(
+        self, ticker: str, pnl: float, now: Optional[datetime] = None
+    ) -> None:
+        """Append a realized-P&L event (positive = gain, negative = loss)."""
+        ts = (now or datetime.utcnow()).isoformat()
+        with self._lock:
+            self._realized.append({"ts": ts, "ticker": ticker, "pnl": float(pnl)})
+            self.save()
+        log.info(f"{ticker}: realized P&L {pnl:+.2f}")
+
     # ------------------------------------------------------------------ #
     # Queries                                                              #
     # ------------------------------------------------------------------ #
@@ -434,6 +492,32 @@ class PositionTracker:
         today = date.today().isoformat()
         with self._lock:
             return int(self._daily_entries.get(today, 0))
+
+    def realized_pnl_since(self, since: datetime) -> float:
+        """Sum realized P&L recorded at/after `since` (naive-UTC comparison)."""
+        with self._lock:
+            total = 0.0
+            for e in self._realized:
+                ts = _parse_iso(e.get("ts"))
+                if ts is not None and ts >= since:
+                    total += float(e.get("pnl", 0.0))
+            return total
+
+    def last_loss_time(self) -> Optional[datetime]:
+        """Timestamp of the most recent realized loss (pnl < 0), or None."""
+        with self._lock:
+            times = [
+                _parse_iso(e.get("ts"))
+                for e in self._realized
+                if float(e.get("pnl", 0.0)) < 0
+            ]
+            times = [t for t in times if t is not None]
+            return max(times) if times else None
+
+    def trading_since(self) -> Optional[datetime]:
+        """When trading (paper or live) first began on this store, or None."""
+        with self._lock:
+            return _parse_iso(self._trading_since)
 
     def remove(self, ticker: str) -> None:
         """Permanently remove a position from the tracker."""
