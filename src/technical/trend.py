@@ -94,7 +94,10 @@ def calculate_trend_indicators(df: pd.DataFrame) -> dict:
     indicators["kijun_sen"]   = (high_26 + low_26) / 2
     indicators["senkou_a"]    = ((indicators["tenkan_sen"] + indicators["kijun_sen"]) / 2).shift(26)
     indicators["senkou_b"]    = ((high_52 + low_52) / 2).shift(26)
-    indicators["chikou_span"] = df["Close"].shift(-26)
+    # chikou_span (Close.shift(-26)) was REMOVED (audit L7): it places today's
+    # close 26 bars in the past, so any consumer evaluating bar t reads bar
+    # t+26 — future data. It was unused in scoring; reintroduce only as a
+    # display-time overlay, never as a scoring input.
 
     # MACD (12, 26, 9)
     ema_12 = df["Close"].ewm(span=12, adjust=False).mean()

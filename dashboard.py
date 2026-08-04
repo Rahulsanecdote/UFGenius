@@ -2681,16 +2681,10 @@ HTML = '''
       const allPriceErrors = testStatuses.length > 0 && testStatuses.every(status => status === 'ERROR');
       const corePriceHealthy = ['AAPL', 'SPY'].every(symbol => isPriceHealthy((testsBySymbol[symbol] || {}).status));
 
-      const rateLimitPattern = /too many requests|rate limit/i;
-      const rateLimited = testItems.some(item => {
-        const failureItems = Array.isArray(item.provider_failures) ? item.provider_failures : [];
-        return rateLimitPattern.test(String(item.error || ''))
-          || failureItems.some(failure => rateLimitPattern.test(String(failure.reason || '')));
-      }) || (() => {
-        const failureItems = Array.isArray(fundamentals.provider_failures) ? fundamentals.provider_failures : [];
-        return rateLimitPattern.test(String(fundamentals.error || ''))
-          || failureItems.some(failure => rateLimitPattern.test(String(failure.reason || '')));
-      })();
+      // The sanitized /api/diagnose payload (audit L1) omits raw error strings
+      // and provider_failures, exposing a safe `rate_limited` boolean instead.
+      const rateLimited = testItems.some(item => item.rate_limited)
+        || Boolean(fundamentals.rate_limited);
       if (rateLimited) {
         return {
           className: 'status-info',
@@ -3697,11 +3691,64 @@ def healthz():
     return jsonify({"status": "ok"}), 200
 
 
+_DIAGNOSE_RATE_LIMIT_RE = re.compile(r"too many requests|rate limit", re.IGNORECASE)
+
+
+def _diagnose_rate_limited(entry: dict) -> bool:
+    """Whether a diagnose probe/fundamentals entry reflects provider
+    rate-limiting. Reads the raw error/reason/provider_failures fields (which
+    stay server-side) and returns only a safe boolean, so the sanitized
+    /api/diagnose payload can still drive the UI's rate-limit state without
+    exposing the underlying error strings or provider names (audit L1)."""
+    if _DIAGNOSE_RATE_LIMIT_RE.search(str(entry.get("error", ""))):
+        return True
+    if _DIAGNOSE_RATE_LIMIT_RE.search(str(entry.get("reason", ""))):
+        return True
+    for failure in entry.get("provider_failures") or []:
+        if isinstance(failure, dict) and _DIAGNOSE_RATE_LIMIT_RE.search(
+            str(failure.get("reason", ""))
+        ):
+            return True
+    return False
+
+
+def _sanitize_diagnose(full: dict) -> dict:
+    """Trim diagnostics to what the UI renders (audit L1).
+
+    Interpreter/library versions, provider names, provider-failure details,
+    and raw error strings stay in the CLI (`python diagnose.py`) — the HTTP
+    surface only reports per-probe health, plus a safe `rate_limited` boolean
+    so the health panel can still distinguish rate-limiting from an outage.
+    """
+    tests = {}
+    for symbol, probe in (full.get("tests") or {}).items():
+        tests[symbol] = {
+            "status": probe.get("status", "UNKNOWN"),
+            "rows": probe.get("rows", 0),
+            "elapsed_sec": probe.get("elapsed_sec"),
+            "rate_limited": _diagnose_rate_limited(probe),
+        }
+    fund = full.get("fundamentals") or {}
+    ok = bool(tests) and all(str(t["status"]).startswith("OK") for t in tests.values())
+    out = {
+        "status": "ok" if ok else "degraded",
+        "tests": tests,
+        "fundamentals": {
+            "status": fund.get("status", "UNKNOWN"),
+            "market_cap": fund.get("market_cap"),
+            "rate_limited": _diagnose_rate_limited(fund),
+        },
+    }
+    if "cache_freshness" in full:
+        out["cache_freshness"] = full["cache_freshness"]
+    return out
+
+
 @app.route("/api/diagnose")
 def api_diagnose():
     """Health check — test yfinance connectivity."""
     try:
-        return jsonify(diagnose())
+        return jsonify(_sanitize_diagnose(diagnose()))
     except Exception:
         log.exception("Diagnose endpoint error")
         return jsonify({"error": "Diagnosis failed"}), 500
