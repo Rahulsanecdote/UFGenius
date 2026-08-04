@@ -30,6 +30,11 @@ log = get_logger(__name__)
 WIN_RATE  = 0.45
 AVG_RR    = 2.5
 
+# The planner is LONG-ONLY: every plan it builds is a bullish entry with a stop
+# below and targets above. Handing that to a SELL/HOLD signal invites buying
+# into a downtrend (audit M3) — those signals get an explicit skip instead.
+_LONG_SIGNALS = {"STRONG_BUY", "BUY", "WEAK_BUY"}
+
 
 def generate_trade_plan(
     ticker: str,
@@ -50,6 +55,19 @@ def generate_trade_plan(
     """
     if account_size is None:
         account_size = config.ACCOUNT_SIZE
+
+    signal_label = str(signal.get("signal", "UNKNOWN")).upper()
+    if signal_label not in _LONG_SIGNALS:
+        return {
+            "ticker": ticker,
+            "signal": signal_label,
+            "skip": True,
+            "reason": (
+                f"Long-only planner: a {signal_label} signal gets no bullish "
+                "entry/stop/target plan. Close or avoid the position instead."
+            ),
+            "disclaimer": "NOT FINANCIAL ADVICE. All trading involves risk of loss.",
+        }
 
     # Use pre-fetched df or load from signal
     if df is None:
@@ -90,21 +108,38 @@ def generate_trade_plan(
 
     # ── Targets ────────────────────────────────────────────────────────────
     risk = entry_price - stop_loss
-    rr_ratios  = config.TARGET_RR_RATIOS   # [1.5, 2.5, 4.0]
-    exit_pcts  = config.TARGET_EXIT_PCTS   # [30, 40, 30]
+    rr_ratios  = list(config.TARGET_RR_RATIOS)   # [1.5, 2.5, 4.0]
+    exit_pcts  = list(config.TARGET_EXIT_PCTS)   # [30, 40, 30]
+
+    # Fail loudly on inconsistent target config (audit M4): a silent zip()
+    # truncation drops targets, and exit pcts that don't sum to 100 leave
+    # positions that never fully exit.
+    if not rr_ratios or len(rr_ratios) != len(exit_pcts):
+        return {
+            "error": (
+                f"Config error: target_rr_ratios ({len(rr_ratios)} entries) and "
+                f"target_exit_pcts ({len(exit_pcts)} entries) must be equal-length, "
+                "non-empty lists."
+            )
+        }
+    if abs(sum(exit_pcts) - 100.0) > 1e-6:
+        return {
+            "error": (
+                f"Config error: target_exit_pcts must sum to 100 "
+                f"(got {sum(exit_pcts)})."
+            )
+        }
 
     raw_targets = [round(entry_price + risk * rr, 2) for rr in rr_ratios]
 
     # Snap T1 to nearest resistance if it's between entry and T2
     nearest_res = sr.get("nearest_resistance")
-    if nearest_res and entry_price < nearest_res < raw_targets[1]:
+    if nearest_res and len(raw_targets) >= 2 and entry_price < nearest_res < raw_targets[1]:
         raw_targets[0] = round(float(nearest_res) * 0.995, 2)
 
     targets = {}
-    labels = ["T1", "T2", "T3"]
-    for i, (label, price, rr, ep) in enumerate(
-        zip(labels, raw_targets, rr_ratios, exit_pcts)
-    ):
+    labels = [f"T{i + 1}" for i in range(len(rr_ratios))]
+    for label, price, rr, ep in zip(labels, raw_targets, rr_ratios, exit_pcts):
         targets[label] = {
             "price":    price,
             "exit_pct": ep,

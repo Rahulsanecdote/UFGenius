@@ -21,16 +21,22 @@ def calculate_fundamental_score(ticker: str, fundamentals_data: dict | None = No
     fd = fundamentals_data if fundamentals_data is not None else fetch_fundamentals(ticker)
 
     f_score, f_breakdown = _piotroski(fd)
+    # Criteria whose data is unavailable are marked None in the breakdown —
+    # normalize by what was actually measurable, not a fixed 9 (audit M7):
+    # F3/F7 need prior-period data the fetcher can't supply, so dividing by 9
+    # structurally underscored every ticker (max reachable was 7/9).
+    f_measurable = sum(1 for v in f_breakdown.values() if v is not None)
     z_score = _altman_z(fd)
     valuation = _valuation_metrics(fd)
     growth    = _growth_metrics(fd)
 
-    composite = _composite(f_score, z_score, valuation, growth)
+    composite = _composite(f_score, z_score, valuation, growth, f_measurable)
 
     return {
         "ticker":            ticker,
         "market_cap":        fd.get("market_cap"),
         "piotroski_f_score": f_score,
+        "piotroski_measurable_criteria": f_measurable,
         "piotroski_detail":  f_breakdown,
         "altman_z_score":    z_score,
         "valuation":         valuation,
@@ -203,20 +209,21 @@ def _growth_metrics(fd: dict) -> dict:
     }
 
 
-def _composite(f_score: int, z_score, valuation: dict, growth: dict) -> int:
+def _composite(f_score: int, z_score, valuation: dict, growth: dict, f_measurable: int = 9) -> int:
     """
     Composite fundamental score (0-100).
 
     Weights:
-        Piotroski (0-9 → 0-25 pts):   25%
+        Piotroski (fraction of measurable criteria → 0-25 pts): 25%
         Z-Score safety (0-20 pts):     20%
         PEG valuation (0-25 pts):      25%
         Revenue growth (0-30 pts):     30%
     """
     score = 0.0
 
-    # Piotroski
-    score += (f_score / 9) * 25
+    # Piotroski — normalize by criteria that could actually be evaluated
+    # (audit M7); unmeasurable ones must not count against the ticker.
+    score += (f_score / max(f_measurable, 1)) * 25
 
     # Z-Score
     if z_score is not None:
