@@ -134,6 +134,14 @@ BACKTEST_SLIPPAGE_PCT: float = env_float(
     "BACKTEST_SLIPPAGE_PCT", float(get("slippage_pct", 0.001))
 )
 
+# Optional point-in-time universe membership file (audit M11). When set, the
+# backtest only takes entries in tickers that were members of the universe on
+# the entry date, correcting survivorship bias in the run-time ticker list.
+# Empty/unset keeps the current behavior plus its survivorship disclosure.
+BACKTEST_UNIVERSE_HISTORY_PATH: str | None = env(
+    "BACKTEST_UNIVERSE_HISTORY_PATH", get("universe_history_path", None)
+)
+
 SIGNAL_WEIGHTS: dict = get("signal_weights", {
     "technical": 0.35,
     "volume": 0.20,

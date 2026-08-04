@@ -181,7 +181,11 @@ Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env).
 Entries fill at the **next bar's open** after a signal (no same-bar lookahead);
 results include `cost_model` and `bias_disclosures` (survivorship / daily
-granularity) so reported returns are read with the right caveats.
+granularity) so reported returns are read with the right caveats. Survivorship
+bias can be corrected by supplying a point-in-time membership file via
+`universe_history_path` (config.yaml) or `BACKTEST_UNIVERSE_HISTORY_PATH`
+(env) — see `src/backtest/universe_history.py` for the JSON format; entries
+are then gated by membership on the entry date.
 
 ---
 
@@ -194,9 +198,11 @@ granularity) so reported returns are read with the right caveats.
 
 ## Known Gaps / Contribution Areas
 
-- Backtest uses a run-time universe (survivorship bias) — disclosed in results,
-  not yet corrected with point-in-time constituents. (Same-bar entry is fixed:
-  fills occur at the next bar's open.)
+- Backtest survivorship bias is corrected only when a point-in-time membership
+  file is supplied (`universe_history_path`); without one it remains and is
+  disclosed in results. Even with the file, price history for delisted names
+  depends on the data provider (yfinance drops many). No bundled membership
+  dataset yet — contributing one is an open area.
 - CORS is open on the dashboard; restrict before any shared deployment.
 - No auth layer beyond the dashboard API key; the CLI/broker path trusts local env.
 - Alembic/DB not used — there is no relational database in this project.

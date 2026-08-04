@@ -74,3 +74,15 @@ resistance_snap_discount: 0.995  # Enter 0.5% below resistance to allow for spre
 # Live order execution settings
 live_position_store: "data/live_positions.json"  # Path for live position state JSON
 monitor_interval_min: 5  # How often (minutes) to poll order fills during market hours
+
+# Backtest realism
+commission_pct: 0.001  # Per-side commission as a fraction of notional (0.001 = 0.1%)
+slippage_pct: 0.001    # Per-side adverse slippage as a fraction of notional
+# Optional point-in-time universe membership JSON (audit M11). When a valid
+# file loads, the backtest adds the file's tickers to the candidate set and
+# only enters tickers that were universe members on the entry date. An invalid
+# or unavailable file logs a warning and falls back to the run-time universe
+# (survivorship disclosure then applies).
+# Format: {"AAPL": [{"start": "2015-01-01", "end": null}], ...} — inclusive
+# dates, null end = still a member, absent ticker = never a member.
+# universe_history_path: "data/universe_history.json"
