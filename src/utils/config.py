@@ -42,6 +42,14 @@ def env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
+def _as_int(value: Any, default: int) -> int:
+    """Coerce an arbitrary value to int, falling back to default on failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def env_int(key: str, default: int) -> int:
     try:
         return int(env(key, str(default)))
@@ -109,6 +117,12 @@ FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTIN
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",
     str(_ROOT / "data" / "live_positions.json"),
+)
+
+# Position-monitor poll interval in minutes (used by src/alpaca/executor.py).
+# Clamped to a positive floor at use; declared here so it is actually configurable.
+MONITOR_INTERVAL_MIN: int = env_int(
+    "MONITOR_INTERVAL_MIN", _as_int(get("monitor_interval_min", 5), 5)
 )
 
 # Backtest cost model (audit H5). Per-side commission and slippage as fractions

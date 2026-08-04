@@ -199,12 +199,15 @@ def test_get_open_excludes_closed_positions(tracker):
 # ─── trades_today ────────────────────────────────────────────────────────── #
 
 
-def test_trades_today_counts_only_todays_entries(tracker, monkeypatch):
+def test_trades_today_counts_entry_events_not_records(tracker):
     tracker.add_position(_sample_plan(), "order-060")
-    # Backdate the second position to yesterday
     tracker.add_position(_sample_plan("MSFT"), "order-061")
-    tracker._positions["MSFT"].trades_today_date = "2020-01-01"
-    assert tracker.trades_today() == 1
+    assert tracker.trades_today() == 2
+    # A same-day close + re-entry of one ticker is a second ENTRY event even
+    # though it replaces the single ticker-keyed record.
+    tracker.mark_closed("AAPL", "STOP")
+    tracker.add_position(_sample_plan(), "order-062")
+    assert tracker.trades_today() == 3
 
 
 # ─── Persistence ─────────────────────────────────────────────────────────── #
