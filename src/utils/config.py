@@ -78,6 +78,23 @@ SIGNAL_WEIGHTS: dict = get("signal_weights", {
     "macro": 0.10,
 })
 
+# Signal classification thresholds (score → signal name, confidence)
+SIGNAL_THRESHOLDS: list = get("signal_thresholds", [
+    [80, "STRONG_BUY",  "VERY_HIGH"],
+    [65, "BUY",         "HIGH"],
+    [50, "WEAK_BUY",    "MODERATE"],
+    [40, "HOLD",        "LOW"],
+    [25, "WEAK_SELL",   "MODERATE"],
+    [10, "SELL",        "HIGH"],
+    [0,  "STRONG_SELL", "VERY_HIGH"],
+])
+
+# Phase 3 feature store
+FEATURE_CACHE_TTL_SEC: int = env_int("FEATURE_CACHE_TTL_SEC", 300)
+FEATURE_CACHE_MAX_ENTRIES: int = env_int("FEATURE_CACHE_MAX_ENTRIES", 2000)
+FEATURE_CACHE_VERSION: str = env("FEATURE_CACHE_VERSION", "v1")
+FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTING", False)
+
 SAFETY: dict = get("safety_rules", {
     "max_positions": 5,
     "max_portfolio_risk_pct": 5.0,

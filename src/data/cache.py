@@ -34,6 +34,23 @@ def get(key: str) -> Optional[Any]:
     return entry["data"]
 
 
+def get_stale(key: str) -> Optional[Any]:
+    """Return cached data even if the entry has expired (fallback for provider outages).
+
+    Returns None only when no cache entry exists or it is unreadable.
+    """
+    p = _cache_path(key)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            entry = pickle.load(f)
+    except Exception:
+        p.unlink(missing_ok=True)
+        return None
+    return entry["data"]
+
+
 def set(key: str, data: Any, ttl: int = DEFAULT_TTL) -> None:
     p = _cache_path(key)
     with open(p, "wb") as f:
