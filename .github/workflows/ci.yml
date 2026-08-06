@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: import-check & tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+
+      # Guards against deleted/renamed modules leaving dangling imports —
+      # the failure mode that broke main around 0f264d6. This catches it even
+      # when the affected modules have no test coverage.
+      - name: Import check (all modules)
+        run: python scripts/check_imports.py
+
+      # Exclude integration tests: they hit live market-data APIs (yfinance,
+      # etc.) and are rate-limited / non-deterministic in CI.
+      - name: Run unit tests
+        run: pytest -m "not integration" -q
