@@ -47,6 +47,8 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | L6 sample std in BB/HV | **Fixed in a follow-up:** Bollinger Bands and HV_20 use population std (`ddof=0`), the canonical definition. |
 | L7 chikou future leak | **Fixed in a follow-up:** the `Close.shift(-26)` series was removed from trend indicators (unused in scoring; pure latent lookahead). |
 | L9 shared Session | **Fixed in a follow-up:** `get_retry_session` returns a per-thread `requests.Session` (thread-local) instead of one shared instance across the 8-worker pool. |
+| L10 render autoDeploy | **Fixed in a follow-up:** `render.yaml` sets `autoDeploy: false` — a push to the default branch no longer auto-ships the real-money service; deploys are triggered deliberately from the Render dashboard after review. |
+| L11 partial-exit mislabel | **Resolved by the C1 engine rewrite:** `shares_open` changes only inside `_book_sell`, which always receives a real exit reason (STOP/T1/T2/T3) and records it when the position reaches zero, and the closed-trade `exit_price` reads the actual `exit_fill_price` (net of slippage) rather than the raw daily close. The `or "UNKNOWN"` fallback is now defensive-only (unreachable in normal flow). |
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
 Nothing from the audit's still-open list remains. Same-bar entry (M4) and

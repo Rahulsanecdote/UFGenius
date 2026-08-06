@@ -10,7 +10,10 @@ services:
     # --threads 4:   handle concurrent API + UI requests within one worker
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 wsgi:app
     healthCheckPath: /healthz
-    autoDeploy: true
+    # Manual deploys only (audit L10): this service fronts a real-money trading
+    # bot, so a push to the default branch should not auto-ship to production.
+    # Trigger deploys deliberately from the Render dashboard after review.
+    autoDeploy: false
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.2"
