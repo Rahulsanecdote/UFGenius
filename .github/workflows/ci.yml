@@ -37,6 +37,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.lock
 
+      # Catches a deleted/renamed module that other code still imports — even
+      # when the affected modules have no test coverage (pytest would skip them).
+      - name: Import check (all modules)
+        run: python scripts/check_imports.py
+
       # Integration/network tests are excluded by default via pytest.ini
       # (addopts = -m "not integration"), so this run is hermetic — no network,
       # no API keys required.
