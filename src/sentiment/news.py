@@ -1,7 +1,7 @@
 """News sentiment via NewsAPI + VADER. Gracefully degrades if key is missing."""
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from src.utils import config
@@ -81,8 +81,8 @@ def analyze_news_sentiment(ticker: str, company_name: str = "") -> dict:
             # Recency decay (exponential, half-life ≈ 7 hours)
             published = article.get("publishedAt", "")
             try:
-                pub_dt    = datetime.strptime(published[:19], "%Y-%m-%dT%H:%M:%S")
-                age_hours = (datetime.utcnow() - pub_dt).total_seconds() / 3600
+                pub_dt    = datetime.strptime(published[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600
             except Exception:
                 age_hours = 24
             recency_weight = math.exp(-0.1 * age_hours)
