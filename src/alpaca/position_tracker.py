@@ -16,7 +16,7 @@ import math
 import os
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -24,6 +24,18 @@ from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC 'now', replacing the deprecated ``datetime.utcnow()``.
+
+    Deliberately naive (tz-info stripped): the ledger writes these as ISO
+    strings and reads them back with ``fromisoformat``/``_parse_iso`` for the
+    RiskGuard loss-limit and cooldown comparisons, all of which operate on
+    naive datetimes. A tz-aware value would raise ``TypeError`` there. This is
+    a behavioral no-op vs ``utcnow()``.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Default path relative to project root; overridden by config constant.
 _DEFAULT_STORE_PATH = str(
@@ -347,7 +359,7 @@ class PositionTracker:
             t3_shares=t3_shares,
             t3_order_id=None,
             t3_hit=False,
-            opened_at=datetime.utcnow().isoformat(),
+            opened_at=_utcnow().isoformat(),
             status="pending_fill",
             trades_today_date=date.today().isoformat(),
         )
@@ -363,7 +375,7 @@ class PositionTracker:
             today = date.today().isoformat()
             self._daily_entries[today] = self._daily_entries.get(today, 0) + 1
             if self._trading_since is None:
-                self._trading_since = datetime.utcnow().isoformat()
+                self._trading_since = _utcnow().isoformat()
             self.save()
         log.info(
             f"Position tracked: {ticker} | {shares_initial} shares"
@@ -491,7 +503,7 @@ class PositionTracker:
         if not math.isfinite(value):
             log.warning(f"{ticker}: dropping non-finite realized P&L {value!r}")
             return False
-        ts = (now or datetime.utcnow()).isoformat()
+        ts = (now or _utcnow()).isoformat()
         self._realized.append({"ts": ts, "ticker": ticker, "pnl": value})
         return True
 

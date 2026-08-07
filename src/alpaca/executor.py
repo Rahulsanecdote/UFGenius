@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
@@ -43,6 +43,19 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 _EXECUTABLE_SIGNALS = frozenset({"BUY", "STRONG_BUY"})
+
+
+def _utcnow() -> datetime:
+    """Naive UTC 'now', replacing the deprecated ``datetime.utcnow()``.
+
+    Deliberately naive (tz-info stripped), NOT tz-aware: this value is compared
+    against the position-tracker ledger timestamps (`realized_pnl_since`,
+    `last_loss_time`, `trading_since`), which are stored and parsed as naive
+    ISO strings. A tz-aware value would raise ``TypeError`` on those
+    comparisons and could silently disable the loss-limit / cooldown kill
+    switches. This form is a byte-for-byte behavioral no-op vs ``utcnow()``.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _lookup_days_to_earnings(ticker: str):
@@ -190,7 +203,7 @@ class RiskGuard:
             if not math.isfinite(stop_px) or stop_px <= 0:
                 return False, "stop_loss_required: plan has no valid stop-loss price"
 
-        now = datetime.utcnow()
+        now = _utcnow()
 
         # 11. Daily realized-loss kill switch.
         daily_pct = safety.get("max_daily_loss_pct")
