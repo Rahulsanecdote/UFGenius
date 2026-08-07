@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
@@ -190,7 +190,7 @@ class RiskGuard:
             if not math.isfinite(stop_px) or stop_px <= 0:
                 return False, "stop_loss_required: plan has no valid stop-loss price"
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # 11. Daily realized-loss kill switch.
         daily_pct = safety.get("max_daily_loss_pct")

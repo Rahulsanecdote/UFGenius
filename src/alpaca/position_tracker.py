@@ -16,7 +16,7 @@ import math
 import os
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -347,7 +347,7 @@ class PositionTracker:
             t3_shares=t3_shares,
             t3_order_id=None,
             t3_hit=False,
-            opened_at=datetime.utcnow().isoformat(),
+            opened_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             status="pending_fill",
             trades_today_date=date.today().isoformat(),
         )
@@ -363,7 +363,7 @@ class PositionTracker:
             today = date.today().isoformat()
             self._daily_entries[today] = self._daily_entries.get(today, 0) + 1
             if self._trading_since is None:
-                self._trading_since = datetime.utcnow().isoformat()
+                self._trading_since = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
             self.save()
         log.info(
             f"Position tracked: {ticker} | {shares_initial} shares"
@@ -491,7 +491,7 @@ class PositionTracker:
         if not math.isfinite(value):
             log.warning(f"{ticker}: dropping non-finite realized P&L {value!r}")
             return False
-        ts = (now or datetime.utcnow()).isoformat()
+        ts = (now or datetime.now(timezone.utc).replace(tzinfo=None)).isoformat()
         self._realized.append({"ts": ts, "ticker": ticker, "pnl": value})
         return True
 

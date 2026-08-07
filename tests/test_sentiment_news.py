@@ -69,8 +69,8 @@ def test_returns_neutral_when_no_articles():
 
 def _recent_ts() -> str:
     """Return a publishedAt string from 1 hour ago so recency weight is near 1.0."""
-    from datetime import datetime, timedelta
-    return (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _make_article(title="Apple reports strong earnings", url="https://reuters.com/article",

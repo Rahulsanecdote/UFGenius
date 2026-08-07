@@ -4,7 +4,7 @@ Each rule is isolated by monkeypatching config.SAFETY to just that rule, so the
 earlier RiskGuard checks pass on their defaults and we assert the rule fires.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -77,14 +77,14 @@ def test_weekly_loss_limit_blocks(tracker, monkeypatch):
 # ── cooldown_after_loss_hours ───────────────────────────────────────────────
 def test_cooldown_blocks_after_recent_loss(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"cooldown_after_loss_hours": 24})
-    tracker.record_realized("X", -100, now=datetime.utcnow() - timedelta(hours=2))
+    tracker.record_realized("X", -100, now=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2))
     ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert not ok and "cooldown" in reason.lower()
 
 
 def test_cooldown_elapsed_allows(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"cooldown_after_loss_hours": 24})
-    tracker.record_realized("X", -100, now=datetime.utcnow() - timedelta(hours=48))
+    tracker.record_realized("X", -100, now=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=48))
     ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert ok, reason
 
@@ -122,7 +122,7 @@ def test_paper_days_required_blocks_live_without_history(tracker, monkeypatch):
 def test_paper_days_required_allows_with_tenure(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"paper_trade_days_required": 30})
     monkeypatch.setattr(cfg, "ALPACA_PAPER", False)
-    tracker._trading_since = (datetime.utcnow() - timedelta(days=40)).isoformat()
+    tracker._trading_since = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=40)).isoformat()
     ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert ok, reason
 
@@ -141,7 +141,7 @@ def test_realized_ledger_queries_and_persist(tmp_path):
     t.load()
     t.record_realized("A", -200)
     t.record_realized("B", 150)
-    since = datetime.utcnow() - timedelta(hours=1)
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     assert t.realized_pnl_since(since) == pytest.approx(-50.0)
     assert t.last_loss_time() is not None
 
@@ -184,7 +184,7 @@ def test_stop_exit_books_realized_loss_at_actual_fill(tracker):
             _check_exits("AAPL", tracker.get("AAPL"), tracker)
 
     # (186.00 actual fill - 189.50 basis) * 10 shares = -35.00
-    since = datetime.utcnow() - timedelta(hours=1)
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     assert tracker.realized_pnl_since(since) == pytest.approx(-35.0)
     assert tracker.last_loss_time() is not None
 
@@ -204,7 +204,7 @@ def test_target_exit_books_gain_with_level_fallback(tracker):
                 _check_exits("AAPL", tracker.get("AAPL"), tracker)
 
     # (191.69 t1 level - 189.50 basis) * 3 shares (t1 tranche) = +6.57
-    since = datetime.utcnow() - timedelta(hours=1)
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     assert tracker.realized_pnl_since(since) == pytest.approx(6.57)
 
 
@@ -212,7 +212,7 @@ def test_record_realized_rejects_non_finite(tracker):
     tracker.record_realized("A", float("nan"))
     tracker.record_realized("A", float("inf"))
     tracker.record_realized("A", -25.0)
-    since = datetime.utcnow() - timedelta(hours=1)
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     # Only the finite value is booked; NaN/inf would poison the sums that
     # drive the loss-limit kill switches.
     assert tracker.realized_pnl_since(since) == pytest.approx(-25.0)
