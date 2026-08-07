@@ -37,6 +37,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.lock
 
+      # Guards against deleted/renamed modules leaving dangling imports — the
+      # failure mode behind 0f264d6, which deleted whole subsystems yet left
+      # main importing them. Catches it even where the modules have no tests.
+      - name: Import check (all modules)
+        run: python scripts/check_imports.py
+
       # Integration/network tests are excluded by default via pytest.ini
       # (addopts = -m "not integration"), so this run is hermetic — no network,
       # no API keys required.
