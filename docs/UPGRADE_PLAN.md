@@ -201,9 +201,19 @@ then an optional intelligence layer. Every phase makes the edge more
       (`tests/test_scorecard.py`).
 
 ### P1 — The real-time day-trading core *(the biggest genuine gap)*
-- [ ] **P1.1 — Intraday data layer**: 1-/5-minute bars (Alpaca/Polygon) behind
+- [x] **P1.1 — Intraday data layer**: 1-/5-minute bars (Alpaca/Polygon) behind
       the existing provider abstraction, with intraday-aware TTL and the
       **look-ahead assertions** adopted from TradingAgents.
+      **Delivered:** `fetch_intraday()` (`src/data/fetcher.py`) — the clean
+      intraday entry point for the real-time layer — fetches 1m/5m/… bars
+      through the existing Alpaca→Polygon→yfinance abstraction with an
+      **interval-scaled cache TTL** (`_ttl_for_interval`: a 5m bar caches for
+      ~5m, not the daily default), then applies the P1.1 **look-ahead guards**
+      in `src/data/lookahead.py` (`sort_dedupe`, `drop_future_bars`, `as_of`
+      as-of clamp, `is_stale`/`bar_age_seconds` stale-frame detection). Pure,
+      deterministic guards reusable by the fetch path, backtest as-of reads, and
+      the live loop. Config-driven (`config.yaml` `intraday:` + `INTRADAY_*`);
+      19 offline tests (`tests/test_lookahead.py`, `tests/test_intraday_fetch.py`).
 - [ ] **P1.2 — Continuous scan loop**: replace the 6 fixed slots with a
       short-interval (≈30–60 s) intraday scanner running the existing
       **pre-market gapper**, **unusual-volume**, and **momentum/breakout**

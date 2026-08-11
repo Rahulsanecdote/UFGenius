@@ -114,6 +114,26 @@ FEATURE_CACHE_MAX_ENTRIES: int = env_int("FEATURE_CACHE_MAX_ENTRIES", 2000)
 FEATURE_CACHE_VERSION: str = env("FEATURE_CACHE_VERSION", "v1")
 FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTING", False)
 
+# Intraday data layer (upgrade plan P1.1). Intraday OHLCV bars (1m/5m/…) refresh
+# far faster than the daily default TTL, and must be guarded against look-ahead
+# (future-labelled bars) and stale frames. These knobs tune the intraday-aware
+# cache TTL and the look-ahead/staleness assertions.
+_INTRADAY: dict = get("intraday", {})
+INTRADAY_DEFAULT_INTERVAL: str = env("INTRADAY_DEFAULT_INTERVAL", _INTRADAY.get("default_interval", "5m"))
+# Floor on the derived intraday cache TTL (seconds). The TTL defaults to the
+# bar's own duration; this stops sub-floor churn on very short bars.
+INTRADAY_CACHE_TTL_FLOOR_SEC: int = env_int(
+    "INTRADAY_CACHE_TTL_FLOOR_SEC", _as_int(_INTRADAY.get("cache_ttl_floor_sec", 30), 30)
+)
+# A frame whose newest bar is older than this many bar-intervals is "stale".
+INTRADAY_MAX_STALENESS_INTERVALS: float = env_float(
+    "INTRADAY_MAX_STALENESS_INTERVALS", float(_INTRADAY.get("max_staleness_intervals", 3))
+)
+# Clock-skew tolerance before a future-labelled bar is dropped as look-ahead.
+INTRADAY_FUTURE_BAR_TOLERANCE_SEC: float = env_float(
+    "INTRADAY_FUTURE_BAR_TOLERANCE_SEC", float(_INTRADAY.get("future_bar_tolerance_sec", 5))
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

@@ -18,6 +18,10 @@ import pandas as pd
 import yfinance as yf
 
 from src.data import cache
+from src.data.lookahead import (
+    interval_seconds as _interval_seconds,
+    sanitize_intraday as _sanitize_intraday,
+)
 from src.utils import config
 from src.utils.http import get_retry_session, retry_call
 from src.utils.logger import get_logger
@@ -29,6 +33,29 @@ _BACKOFF = max(0.0, config.REQUEST_BACKOFF_SEC)
 _YF_TIMEOUT = max(1.0, config.YFINANCE_TIMEOUT_SEC)
 _BATCH_WORKERS = 8  # parallel threads for batch fetches
 _STALE_CACHE_THRESHOLD_SEC = 3_600
+
+# Intraday intervals the fetch layer accepts for fetch_intraday (P1.1).
+_INTRADAY_INTERVALS = frozenset({"1m", "2m", "5m", "15m", "30m", "60m", "1h", "90m"})
+# Default lookback period per intraday interval (providers cap 1m history hard).
+_INTRADAY_DEFAULT_PERIOD = {
+    "1m": "5d", "2m": "5d", "5m": "5d", "15m": "1mo",
+    "30m": "1mo", "60m": "3mo", "1h": "3mo", "90m": "3mo",
+}
+
+
+def _ttl_for_interval(interval: str) -> int:
+    """Cache TTL (seconds) for an interval — bar-scaled for intraday, else daily.
+
+    An intraday frame cached for a day would serve bars hours stale; scale the
+    TTL to the bar's own duration (a 5m bar caches for ~5m) so it refreshes each
+    bar, floored by ``INTRADAY_CACHE_TTL_FLOOR_SEC`` to avoid sub-floor churn.
+    Daily/unknown intervals keep the default long TTL.
+    """
+    secs = _interval_seconds(interval)
+    if secs is None:
+        return cache.DEFAULT_TTL
+    floor = max(1, int(getattr(config, "INTRADAY_CACHE_TTL_FLOOR_SEC", 30)))
+    return max(floor, int(secs))
 _UPSTREAM_FETCH_SEMAPHORE = threading.BoundedSemaphore(max(1, config.PROVIDER_CONCURRENCY_LIMIT))
 
 _ALPACA_DATA_BASE_URL = config.env("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
@@ -881,7 +908,7 @@ def fetch_ohlcv(
         return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
     if use_cache:
-        cache.set(cache_key, cleaned)
+        cache.set(cache_key, cleaned, ttl=_ttl_for_interval(interval))
     return cleaned
 
 
@@ -931,6 +958,51 @@ def fetch_ohlcv_batch(
                 results[ticker] = pd.DataFrame()
 
     return results
+
+
+def fetch_intraday(
+    ticker: str,
+    interval: str | None = None,
+    period: str | None = None,
+    use_cache: bool = True,
+    now: datetime | None = None,
+) -> pd.DataFrame:
+    """Fetch intraday OHLCV bars, look-ahead-sanitized (upgrade plan P1.1).
+
+    The clean entry point for the real-time layer: it fetches intraday bars
+    through the existing provider abstraction (Alpaca → Polygon → yfinance) with
+    an interval-scaled cache TTL, then applies the P1.1 look-ahead guards —
+    ordering + de-duplication and dropping any future-labelled (still-forming)
+    bars — so callers never trade on a bar they could not have had.
+
+    Args:
+        ticker:   Symbol.
+        interval: Intraday bar size (default ``config.INTRADAY_DEFAULT_INTERVAL``);
+                  must be one of ``_INTRADAY_INTERVALS``.
+        period:   Lookback window (default per-interval; providers cap 1m hard).
+        use_cache: Serve/refresh via the TTL disk cache.
+        now:      Reference time for the future-bar clamp (defaults to now);
+                  injectable for tests.
+
+    Returns:
+        A naive-UTC-indexed OHLCV DataFrame (empty on failure).
+
+    Raises:
+        ValueError: if ``interval`` is not an intraday interval (use
+        ``fetch_ohlcv`` for daily bars).
+    """
+    iv = str(interval or config.INTRADAY_DEFAULT_INTERVAL).lower()
+    if iv not in _INTRADAY_INTERVALS:
+        raise ValueError(
+            f"fetch_intraday: {iv!r} is not an intraday interval "
+            f"(expected one of {sorted(_INTRADAY_INTERVALS)}); use fetch_ohlcv for daily bars"
+        )
+    lookback = period or _INTRADAY_DEFAULT_PERIOD.get(iv, "5d")
+    df = fetch_ohlcv(ticker, period=lookback, interval=iv, use_cache=use_cache)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    tolerance = float(getattr(config, "INTRADAY_FUTURE_BAR_TOLERANCE_SEC", 5))
+    return _sanitize_intraday(df, now=now, future_tolerance_sec=tolerance)
 
 
 def fetch_ticker_info(ticker: str) -> dict:
