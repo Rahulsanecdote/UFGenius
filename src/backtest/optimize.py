@@ -39,6 +39,7 @@ from src.backtest.validation import (
     MIN_OOS_TRADES,
     OOS_SHARPE_FLOOR,
     PROB_PROFITABLE_FLOOR,
+    WINDOW_PROFITABLE_FRACTION_FLOOR,
     bootstrap_return_metrics,
     bootstrap_trade_metrics,
     walk_forward,
@@ -145,14 +146,20 @@ def _evaluate_oos(
     ret_ci = bootstrap_return_metrics(oos, n_resamples=n_bootstrap, seed=seed)
 
     oos_sharpe = oos.get("sharpe_ratio")
+    oos_accept = bool((oos.get("minimum_acceptance") or {}).get("all_pass"))
     boot_p05 = (ret_ci.get("sharpe_ratio") or {}).get("p05")
     prob_profitable = trade_ci.get("prob_profitable")
     oos_trades = int(oos.get("total_trades", 0) or 0)
     oos_days = max(0, len(oos.get("equity_curve") or []) - 1)
 
+    # Mirror validate_strategy's OOS gate exactly, so the search's "confirmed"
+    # is no weaker than the standalone validation verdict. In particular the
+    # engine's own minimum_acceptance (profit factor / win rate / drawdown)
+    # must pass — an acceptable Sharpe alone is not enough.
     checks = {
         "sufficient_sample_ok": oos_trades >= MIN_OOS_TRADES and oos_days >= MIN_OOS_DAYS,
         "oos_sharpe_ok": oos_sharpe is not None and oos_sharpe >= OOS_SHARPE_FLOOR,
+        "oos_acceptance_ok": oos_accept,
         "bootstrap_sharpe_p05_ok": boot_p05 is not None and boot_p05 > BOOTSTRAP_SHARPE_P05_FLOOR,
         "prob_profitable_ok": prob_profitable is not None and prob_profitable >= PROB_PROFITABLE_FLOOR,
     }
@@ -163,6 +170,7 @@ def _evaluate_oos(
         "total_trades": oos_trades,
         "prob_profitable": prob_profitable,
         "bootstrap_sharpe_p05": boot_p05,
+        "minimum_acceptance": oos.get("minimum_acceptance"),
         "checks": checks,
         "confirmed": all(checks.values()),
     }
@@ -216,6 +224,12 @@ def parameter_search(
     winner = rankable[0] if rankable else None
     beats_threshold = bool(winner and winner["sharpe_mean"] > threshold)
 
+    # A high mean Sharpe can come from a single hot in-sample window. Require the
+    # same walk-forward persistence floor validate_strategy uses, so a
+    # temporally concentrated result cannot earn a deployment-oriented verdict.
+    winner_frac = winner["windows_profitable_fraction"] if winner else None
+    persistence_ok = bool(winner_frac is not None and winner_frac >= WINDOW_PROFITABLE_FRACTION_FLOOR)
+
     oos_eval = None
     if winner is not None:
         oos_eval = _evaluate_oos(
@@ -224,7 +238,7 @@ def parameter_search(
             run_backtest=run_backtest, **bt_kwargs,
         )
 
-    trustworthy = bool(beats_threshold and oos_eval and oos_eval["confirmed"])
+    trustworthy = bool(beats_threshold and persistence_ok and oos_eval and oos_eval["confirmed"])
 
     def _summ(s: dict) -> dict:
         p = s["params"]
@@ -232,6 +246,7 @@ def parameter_search(
             "params": {
                 "entry_rsi_min": p.entry_rsi_min, "entry_rsi_max": p.entry_rsi_max,
                 "atr_stop_mult": p.atr_stop_mult, "target_rr": list(p.target_rr),
+                "target_exit_pcts": list(p.target_exit_pcts),
                 "risk_per_trade": p.risk_per_trade, "max_position_pct": p.max_position_pct,
             },
             "insample_sharpe_mean": s["sharpe_mean"],
@@ -247,17 +262,21 @@ def parameter_search(
         "selection": {
             "params": _summ(winner)["params"] if winner else None,
             "insample_sharpe_mean": winner["sharpe_mean"] if winner else None,
+            "insample_windows_profitable_fraction": winner_frac,
             "beats_false_strategy_threshold": beats_threshold,
+            "walkforward_persistence_ok": persistence_ok,
             "out_of_sample": oos_eval,
             "trustworthy": trustworthy,
             "summary": (
                 "TRUSTWORTHY: the selected parameters beat the multiple-testing "
-                "threshold and validated on the held-out out-of-sample tail. Still "
-                "paper-trade before risking capital."
+                "threshold, persisted across in-sample walk-forward windows, and "
+                "validated on the held-out out-of-sample tail. Still paper-trade "
+                "before risking capital."
                 if trustworthy else
                 "NOT TRUSTWORTHY: the best in-sample parameters are consistent with "
-                "curve-fitting (did not beat the false-strategy threshold and/or did "
-                "not validate out-of-sample). Do NOT deploy this configuration."
+                "curve-fitting (did not beat the false-strategy threshold, lacked "
+                "walk-forward persistence, and/or did not validate out-of-sample). "
+                "Do NOT deploy this configuration."
             ),
         },
         "disclaimer": (

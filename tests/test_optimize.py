@@ -113,6 +113,73 @@ def test_search_flags_curve_fitting_when_winner_is_within_the_null():
     assert sel["trustworthy"] is False
 
 
+def _counting_fake(window_returns: list[float], *, oos_sharpe: float, oos_confirm: bool, oos_accept: bool):
+    """Single-candidate fake: the first ``len(window_returns)`` calls are the
+    in-sample walk-forward windows (profit sign taken from ``window_returns``,
+    constant Sharpe), and the final call is the held-out OOS confirmation.
+
+    Lets a test drive in-sample persistence and OOS minimum-acceptance
+    independently of Sharpe, to exercise the two gates in isolation.
+    """
+    state = {"n": 0}
+
+    def fake(tickers, start, end, initial_capital=10_000, **kw):
+        i = state["n"]
+        state["n"] += 1
+        insample = i < len(window_returns)
+        if insample:
+            sharpe, ret, accept, up = 1.5, window_returns[i], True, True
+        else:
+            sharpe, ret, accept, up = oos_sharpe, oos_sharpe * 5, oos_accept, oos_confirm
+        res = {
+            "sharpe_ratio": sharpe, "total_return_pct": ret, "win_rate_pct": 55.0,
+            "profit_factor": 1.5, "max_drawdown_pct": -8.0, "total_trades": 25,
+            "minimum_acceptance": {"all_pass": accept},
+        }
+        res["trades"] = ([{"pnl": 100.0}] * 18 + [{"pnl": -50.0}] * 7) if up else [{"pnl": -30.0}] * 25
+        vals, v = [], 10_000.0
+        for k in range(80):
+            v *= (1 + (0.03 if k % 2 else 0.008)) if up else (1 - (0.01 if k % 2 else 0.004))
+            vals.append({"portfolio_value": round(v, 2)})
+        res["equity_curve"] = vals
+        return res
+
+    return fake
+
+
+def test_search_not_trustworthy_without_walkforward_persistence():
+    # Winner clears the threshold and confirms OOS, but is profitable in only one
+    # of three in-sample windows — persistence gate must veto trust.
+    fake = _counting_fake([10.0, -10.0, -10.0], oos_sharpe=1.5, oos_confirm=True, oos_accept=True)
+    out = parameter_search(["AAA"], "2020-01-01", "2021-01-01", {"atr_stop_mult": [2.0]},
+                           n_windows=3, n_bootstrap=200, run_backtest=fake)
+    sel = out["selection"]
+    assert sel["beats_false_strategy_threshold"] is True
+    assert sel["out_of_sample"]["confirmed"] is True
+    assert sel["walkforward_persistence_ok"] is False
+    assert sel["trustworthy"] is False
+
+
+def test_search_oos_not_confirmed_when_minimum_acceptance_fails():
+    # Good OOS Sharpe/bootstrap, but the engine's minimum_acceptance fails —
+    # confirmation must not pass on Sharpe alone.
+    fake = _counting_fake([10.0, 10.0, 10.0], oos_sharpe=1.5, oos_confirm=True, oos_accept=False)
+    out = parameter_search(["AAA"], "2020-01-01", "2021-01-01", {"atr_stop_mult": [2.0]},
+                           n_windows=3, n_bootstrap=200, run_backtest=fake)
+    sel = out["selection"]
+    assert sel["walkforward_persistence_ok"] is True
+    assert sel["out_of_sample"]["checks"]["oos_acceptance_ok"] is False
+    assert sel["out_of_sample"]["confirmed"] is False
+    assert sel["trustworthy"] is False
+
+
+def test_summary_includes_target_exit_pcts():
+    fake = _fake({2.0: 2.5}, confirm_mult=2.0)
+    out = parameter_search(["AAA"], "2020-01-01", "2021-01-01", {"atr_stop_mult": [2.0]},
+                           n_windows=2, n_bootstrap=100, run_backtest=fake)
+    assert "target_exit_pcts" in out["selection"]["params"]
+
+
 def test_search_is_reproducible_with_a_seed():
     fake = _fake({1.0: 0.2, 1.5: 0.3, 2.0: 2.5, 2.5: 0.3, 3.0: 0.2}, confirm_mult=2.0)
     kw = dict(n_windows=3, n_bootstrap=200, run_backtest=fake, seed=7)
