@@ -112,6 +112,16 @@ smart_orders:
   entry_offset_floor_pct: 0.001  # minimum crossing (0.1%) so the limit is actually marketable
   entry_offset_cap_pct: 0.01     # maximum crossing (1%) — hard cap on how far we chase
 
+# Observability stack (upgrade plan P2.3). A bounded per-scan metrics ledger
+# (latency, signal counts, data-gap detection) surfaced on the dashboard, plus
+# opt-in operational alerts for circuit-breaker trips and data gaps.
+observability:
+  metrics_ledger_path: "data/metrics.json"  # per-scan metrics ledger (bounded)
+  metrics_max_scans: 2000                    # cap on retained scan records
+  data_gap_seconds: 3600                     # flag a data gap after this many seconds without a scan (<=0 disables)
+  alerts:
+    enabled: false                           # operational alerts (breaker trips, data gaps) — opt-in
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

@@ -31,3 +31,16 @@ def _isolate_execution_quality_ledger(tmp_path, monkeypatch):
     import src.alpaca.execution_quality as _eq
     monkeypatch.setattr(cfg, "EXEC_QUALITY_LEDGER_PATH", str(tmp_path / "execution_quality.json"))
     monkeypatch.setattr(_eq, "_default", None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_metrics_ledger(tmp_path, monkeypatch):
+    """Point the P2.3 scan-metrics ledger at a per-test temp path.
+
+    ``run_daily_scan`` records each scan to ``config.METRICS_LEDGER_PATH`` via a
+    lazy singleton; isolate the path AND reset the singleton so scan/metrics tests
+    never write to the real ``data/metrics.json`` or leak across tests.
+    """
+    import src.observability.metrics as _metrics
+    monkeypatch.setattr(cfg, "METRICS_LEDGER_PATH", str(tmp_path / "metrics.json"))
+    monkeypatch.setattr(_metrics, "_default", None)

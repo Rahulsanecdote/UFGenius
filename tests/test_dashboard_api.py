@@ -113,6 +113,42 @@ def test_execution_quality_endpoint(client, monkeypatch, tmp_path):
     assert response.get_json()["n_fills"] == 0
 
 
+def test_metrics_endpoint_empty(client, monkeypatch, tmp_path):
+    import src.observability.metrics as metrics
+    monkeypatch.setattr(dashboard.config, "METRICS_LEDGER_PATH", str(tmp_path / "m.json"))
+    monkeypatch.setattr(metrics, "_default", None)
+    response = client.get("/api/metrics")
+    assert response.status_code == 200
+    assert response.get_json()["n_scans"] == 0
+
+
+def test_metrics_endpoint_reports_recorded_scan(client, monkeypatch, tmp_path):
+    import src.observability.metrics as metrics
+    monkeypatch.setattr(dashboard.config, "METRICS_LEDGER_PATH", str(tmp_path / "m.json"))
+    monkeypatch.setattr(metrics, "_default", None)
+    metrics.record_scan(9.0, 50, 4, label_counts={"BUY": 4}, regime="BULL")
+    monkeypatch.setattr(metrics, "_default", None)  # force endpoint to reload from disk
+    payload = client.get("/api/metrics").get_json()
+    assert payload["n_scans"] == 1
+    assert payload["last_scan_latency_sec"] == 9.0
+
+
+def test_attribution_endpoint_empty(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard.config, "LIVE_POSITION_STORE_PATH", str(tmp_path / "pos.json"))
+    response = client.get("/api/attribution")
+    assert response.status_code == 200
+    assert response.get_json()["overall"]["trades"] == 0
+
+
+def test_metrics_and_attribution_panels_present():
+    # The dashboard HTML wires the new P2.3 panels + their loaders.
+    assert 'id="metricsPanel"' in dashboard.HTML
+    assert 'id="attributionPanel"' in dashboard.HTML
+    assert 'id="execQualityPanel"' in dashboard.HTML
+    assert "loadMetrics()" in dashboard.HTML
+    assert "loadAttribution()" in dashboard.HTML
+
+
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")

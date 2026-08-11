@@ -70,6 +70,27 @@ def _record_execution_quality(ticker, side, kind, expected, fill, shares, order=
         log.debug(f"{ticker}: execution-quality record ({kind}) failed: {exc}")
 
 
+def _record_broker_error(breaker, context: str) -> None:
+    """Feed the broker-error breaker and, if this error *trips* it (P2.3), alert.
+
+    Fires the operational alert only on the false→true transition so a single
+    trip notifies once, not on every subsequent error. Alerting is opt-in and
+    best-effort — it never affects the breaker or the execution path.
+    """
+    try:
+        was_tripped = breaker.broker_breaker_tripped()
+    except Exception:
+        was_tripped = False
+    breaker.record_broker_error(context)
+    try:
+        if not was_tripped and breaker.broker_breaker_tripped():
+            from src.observability.alerting import alert_breaker_trip
+
+            alert_breaker_trip(breaker.state(), kind="broker_breaker")
+    except Exception as exc:  # alerting must never break execution
+        log.debug(f"breaker-trip alert skipped: {exc}")
+
+
 def _lookup_days_to_earnings(ticker: str):
     """Calendar-backed earnings-date lookup for plans that arrived without one (P1.4).
 
@@ -415,7 +436,7 @@ def execute_trade_plan(
         # A failed portfolio read is a broker failure — feed the broker breaker
         # so a run of them halts new entries (RiskGuard also rejects this plan
         # outright below via the portfolio-unavailable check).
-        breaker.record_broker_error(f"portfolio read: {portfolio['error']}")
+        _record_broker_error(breaker, f"portfolio read: {portfolio['error']}")
     ok, reason = RiskGuard().check(risk_plan, portfolio, tracker, breaker)
     if not ok:
         log.warning(f"[{ticker}] Trade rejected by RiskGuard: {reason}")
@@ -449,7 +470,7 @@ def execute_trade_plan(
         order_id = str(order.id)
     except OrderError as exc:
         # Broker submit failure — count it toward the broker-error breaker.
-        breaker.record_broker_error(f"entry submit {ticker}: {exc}")
+        _record_broker_error(breaker, f"entry submit {ticker}: {exc}")
         log.error(f"[{ticker}] Order placement failed: {exc}", exc_info=True)
         return {
             "ok": False,

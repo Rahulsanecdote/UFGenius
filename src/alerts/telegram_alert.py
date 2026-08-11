@@ -55,11 +55,12 @@ def _format_message(plan: dict) -> str:
     return "\n".join(lines)
 
 
-def send_telegram_alert(plan: dict) -> bool:
-    """
-    Send a Telegram alert for a trade plan.
+def send_telegram_message(text: str, *, context: str = "message") -> bool:
+    """Send a pre-formatted HTML Telegram message.
 
-    Returns True on success, False on failure or not configured.
+    Shared transport for both trade-plan alerts and the P2.3 operational alerts
+    (breaker trips, data gaps). Returns True on success, False on failure or when
+    Telegram is not configured. Never raises.
     """
     bot_token = config.env("TELEGRAM_BOT_TOKEN")
     chat_id = config.env("TELEGRAM_CHAT_ID")
@@ -68,8 +69,6 @@ def send_telegram_alert(plan: dict) -> bool:
         log.debug("Telegram not configured — skipping alert")
         return False
 
-    ticker = plan.get("ticker", "?")
-    text = _format_message(plan)
     if len(text) > _MAX_TG_LEN:
         text = text[: _MAX_TG_LEN - 20] + "\n…[truncated]"
 
@@ -79,8 +78,23 @@ def send_telegram_alert(plan: dict) -> bool:
     try:
         resp = requests.post(url, json=payload, timeout=10)
         resp.raise_for_status()
-        log.info(f"Telegram alert sent for {ticker}")
+        log.info(f"Telegram alert sent ({context})")
         return True
     except Exception as exc:
-        log.warning(f"Telegram alert failed for {ticker}: {exc}")
+        log.warning(f"Telegram alert failed ({context}): {exc}")
         return False
+
+
+def send_telegram_alert(plan: dict) -> bool:
+    """
+    Send a Telegram alert for a trade plan.
+
+    Returns True on success, False on failure or not configured.
+    """
+    ticker = plan.get("ticker", "?")
+    return send_telegram_message(_format_message(plan), context=f"plan {ticker}")
+
+
+def send_text_alert(text: str, *, context: str = "alert") -> bool:
+    """Send a plain-text operational alert (HTML-escaped) via Telegram."""
+    return send_telegram_message(escape(str(text)), context=context)

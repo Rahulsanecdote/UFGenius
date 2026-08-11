@@ -1910,6 +1910,60 @@ HTML = '''
               <p id="scorecardNarrative" class="health-note">Paper results include no real slippage and are not a guarantee of live performance. Going live requires this scorecard to clear its floors.</p>
             </div>
           </section>
+
+          <section class="panel health-shell" id="metricsPanel" aria-labelledby="metricsTitle">
+            <div class="panel-heading">
+              <div>
+                <h3 id="metricsTitle">Scan Metrics</h3>
+                <p>Scan latency, signal throughput, and whether the scanner has gone quiet.</p>
+              </div>
+            </div>
+            <div class="health-list" id="metricsList">
+              <div class="health-item">
+                <strong>Metrics pending</strong>
+                <span>Loading scan latency and signal counts…</span>
+              </div>
+            </div>
+            <div style="padding: 18px 24px 0;">
+              <p id="metricsNarrative" class="health-note">A data gap means no scan has completed within the configured window — the scanner may be down.</p>
+            </div>
+          </section>
+
+          <section class="panel health-shell" id="execQualityPanel" aria-labelledby="execQualityTitle">
+            <div class="panel-heading">
+              <div>
+                <h3 id="execQualityTitle">Execution Quality</h3>
+                <p>Realized slippage and implementation shortfall from recorded fills.</p>
+              </div>
+            </div>
+            <div class="health-list" id="execQualityList">
+              <div class="health-item">
+                <strong>Execution quality pending</strong>
+                <span>Loading realized slippage from recorded fills…</span>
+              </div>
+            </div>
+            <div style="padding: 18px 24px 0;">
+              <p id="execQualityNarrative" class="health-note">Positive slippage is adverse (paid more / received less than intended). Measured slippage can feed the backtest cost model.</p>
+            </div>
+          </section>
+
+          <section class="panel health-shell" id="attributionPanel" aria-labelledby="attributionTitle">
+            <div class="panel-heading">
+              <div>
+                <h3 id="attributionTitle">Signal Attribution</h3>
+                <p>Realized outcome by the signal grade that opened each trade.</p>
+              </div>
+            </div>
+            <div class="health-list" id="attributionList">
+              <div class="health-item">
+                <strong>Attribution pending</strong>
+                <span>Loading per-signal realized outcomes…</span>
+              </div>
+            </div>
+            <div style="padding: 18px 24px 0;">
+              <p id="attributionNarrative" class="health-note">Win rate and average return per signal label. A grade with negative expectancy shows exactly that — labels are not assumed to pay off.</p>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -3261,6 +3315,9 @@ HTML = '''
         loadProviderHealth();
         loadBreakerState();
         loadScorecard();
+        loadMetrics();
+        loadExecQuality();
+        loadAttribution();
       }, PROVIDER_HEALTH_REFRESH_MS);
     }
 
@@ -3450,6 +3507,103 @@ HTML = '''
       }
     }
 
+    function renderMetrics(m) {
+      const list = $('metricsList');
+      if (!list) return;
+      if (!m) {
+        list.innerHTML = '<div class="health-item"><strong>Metrics unavailable</strong><span>Could not load scan metrics.</span></div>';
+        return;
+      }
+      if (!m.n_scans) {
+        list.innerHTML = `<div class="health-item"><strong>No scans recorded yet</strong><span>${escapeHtml(m.note || 'Run a scan to start collecting metrics.')}</span></div>`;
+        return;
+      }
+      const gap = !!m.data_gap;
+      const sinceMin = m.seconds_since_last_scan === null || m.seconds_since_last_scan === undefined
+        ? 'n/a' : Math.round(Number(m.seconds_since_last_scan) / 60) + ' min';
+      const lc = m.last_label_counts || {};
+      const items = [
+        `<div class="health-item"><strong>Data gap: ${gap ? '⚠️ YES' : '✅ no'}</strong><span>Last scan ${sinceMin} ago (threshold ${Math.round(Number(m.data_gap_threshold_seconds) / 60)} min).</span></div>`,
+        `<div class="health-item"><strong>Scan latency: ${m.last_scan_latency_sec ?? 'n/a'}s last</strong><span>Avg ${m.avg_scan_latency_sec ?? 'n/a'}s · p95 ${m.p95_scan_latency_sec ?? 'n/a'}s across ${m.n_scans} scan(s).</span></div>`,
+        `<div class="health-item"><strong>Signals last scan: ${m.last_total_signals ?? 0}/${m.last_total_scanned ?? 0}</strong><span>${Number(lc.STRONG_BUY) || 0} strong buy · ${Number(lc.BUY) || 0} buy · ${Number(lc.WEAK_BUY) || 0} watch. Regime ${escapeHtml(String(m.last_regime || 'n/a'))}.</span></div>`
+      ];
+      list.innerHTML = items.join('');
+    }
+
+    async function loadMetrics() {
+      try {
+        renderMetrics(await apiFetchJson('/api/metrics'));
+      } catch (error) {
+        renderMetrics(null);
+      }
+    }
+
+    function renderExecQuality(eq) {
+      const list = $('execQualityList');
+      if (!list) return;
+      if (!eq) {
+        list.innerHTML = '<div class="health-item"><strong>Execution quality unavailable</strong><span>Could not load fill metrics.</span></div>';
+        return;
+      }
+      if (!eq.n_fills) {
+        list.innerHTML = `<div class="health-item"><strong>No fills recorded yet</strong><span>${escapeHtml(eq.note || 'Execute trades to measure fill quality.')}</span></div>`;
+        return;
+      }
+      const measured = eq.measured_slippage_pct === null || eq.measured_slippage_pct === undefined
+        ? 'not yet (thin sample)' : (Number(eq.measured_slippage_pct) * 100).toFixed(3) + '%';
+      const items = [
+        `<div class="health-item"><strong>Avg slippage: ${eq.avg_slippage_bps ?? 'n/a'} bps</strong><span>Across ${eq.n_fills} fill(s). Positive is adverse.</span></div>`,
+        `<div class="health-item"><strong>Entry ${eq.avg_entry_slippage_bps ?? 'n/a'} · Exit ${eq.avg_exit_slippage_bps ?? 'n/a'} bps</strong><span>Total implementation shortfall ${eq.total_implementation_shortfall ?? 'n/a'}.</span></div>`,
+        `<div class="health-item"><strong>Measured slippage: ${measured}</strong><span>Feeds the backtest cost model when enabled and enough fills exist.</span></div>`
+      ];
+      list.innerHTML = items.join('');
+    }
+
+    async function loadExecQuality() {
+      try {
+        renderExecQuality(await apiFetchJson('/api/execution-quality'));
+      } catch (error) {
+        renderExecQuality(null);
+      }
+    }
+
+    function renderAttribution(a) {
+      const list = $('attributionList');
+      if (!list) return;
+      if (!a || !a.overall) {
+        list.innerHTML = '<div class="health-item"><strong>Attribution unavailable</strong><span>Could not load per-signal outcomes.</span></div>';
+        return;
+      }
+      if (!a.overall.trades) {
+        list.innerHTML = '<div class="health-item"><strong>No closed trades yet</strong><span>Per-signal attribution appears once trades close.</span></div>';
+        return;
+      }
+      const bySignal = a.by_signal || {};
+      const order = ['STRONG_BUY', 'BUY', 'WEAK_BUY'];
+      const labels = Object.keys(bySignal).sort((x, y) => {
+        const ix = order.indexOf(x), iy = order.indexOf(y);
+        return (ix < 0 ? 99 : ix) - (iy < 0 ? 99 : iy);
+      });
+      const rows = labels.map((label) => {
+        const s = bySignal[label] || {};
+        const wr = s.win_rate === null || s.win_rate === undefined ? 'n/a' : Math.round(Number(s.win_rate) * 100) + '%';
+        const ret = s.avg_return_pct === null || s.avg_return_pct === undefined ? 'n/a' : s.avg_return_pct + '%';
+        return `<div class="health-item"><strong>${escapeHtml(label)}: ${wr} win (${s.trades} trades)</strong><span>Avg return ${ret} · total P&L ${s.total_pnl}.</span></div>`;
+      });
+      const o = a.overall;
+      const owr = o.win_rate === null || o.win_rate === undefined ? 'n/a' : Math.round(Number(o.win_rate) * 100) + '%';
+      rows.unshift(`<div class="health-item"><strong>Overall: ${owr} win (${o.trades} trades)</strong><span>Total P&L ${o.total_pnl}. Realized outcomes, not a forecast.</span></div>`);
+      list.innerHTML = rows.join('');
+    }
+
+    async function loadAttribution() {
+      try {
+        renderAttribution(await apiFetchJson('/api/attribution'));
+      } catch (error) {
+        renderAttribution(null);
+      }
+    }
+
     function viewTickerFromScan(ticker) {
       $('tickerInput').value = ticker;
       updateFormState();
@@ -3633,6 +3787,9 @@ HTML = '''
     startProviderHealthPolling();
     loadBreakerState();
     loadScorecard();
+    loadMetrics();
+    loadExecQuality();
+    loadAttribution();
   </script>
 </body>
 </html>
@@ -3927,6 +4084,33 @@ def api_execution_quality():
         return _error_response("Internal server error", 500)
 
 
+@app.route("/api/metrics")
+def api_metrics():
+    """Structured scan metrics: latency, signal counts, data-gap state (P2.3)."""
+    try:
+        from src.observability.metrics import default_ledger
+
+        return jsonify(default_ledger().load().summary())
+    except Exception:
+        log.exception("Metrics endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/attribution")
+def api_attribution():
+    """Per-signal outcome attribution from the trade-outcome ledger (P2.3)."""
+    try:
+        from src.alpaca.position_tracker import PositionTracker
+        from src.observability.attribution import attribution_from_tracker
+
+        tracker = PositionTracker()
+        tracker.load()
+        return jsonify(attribution_from_tracker(tracker))
+    except Exception:
+        log.exception("Attribution endpoint error")
+        return _error_response("Internal server error", 500)
+
+
 @app.route("/api/breaker", methods=["POST"])
 def api_breaker():
     """Flip the global halt switch (P0.3). Body: {"action": "halt"|"resume", "reason": "..."}.
@@ -3943,6 +4127,13 @@ def api_breaker():
         if action == "halt":
             reason = str(body.get("reason", "") or "")[:200]
             breaker.halt(reason)
+            # P2.3: an operator halt is a breaker trip — alert (opt-in, best-effort).
+            try:
+                from src.observability.alerting import alert_breaker_trip
+
+                alert_breaker_trip(breaker.state(), kind="manual_halt")
+            except Exception:
+                log.debug("manual-halt alert skipped", exc_info=True)
         elif action == "resume":
             breaker.resume()
         else:

@@ -247,6 +247,26 @@ SMART_ORDERS_ENTRY_OFFSET_CAP_PCT: float = env_float(
     "SMART_ORDERS_ENTRY_OFFSET_CAP_PCT", float(_SMART_ORDERS.get("entry_offset_cap_pct", 0.01))
 )
 
+# Observability stack (upgrade plan P2.3): scan-metrics ledger + operational alerts.
+_OBSERVABILITY: dict = get("observability", {})
+METRICS_LEDGER_PATH: str = _resolve_root(env(
+    "METRICS_LEDGER_PATH",
+    _OBSERVABILITY.get("metrics_ledger_path") or str(_ROOT / "data" / "metrics.json"),
+))
+METRICS_MAX_SCANS: int = env_int(
+    "METRICS_MAX_SCANS", _as_int(_OBSERVABILITY.get("metrics_max_scans", 2000), 2000)
+)
+# Seconds without a scan before the dashboard flags a "data gap" and (if enabled)
+# an alert fires. Default 1 hour; set <= 0 to disable gap detection.
+METRICS_DATA_GAP_SECONDS: float = env_float(
+    "METRICS_DATA_GAP_SECONDS", float(_OBSERVABILITY.get("data_gap_seconds", 3600.0))
+)
+# Operational alerting (breaker trips, data gaps) — default OFF, opt-in.
+OBSERVABILITY_ALERTS_ENABLED: bool = env_bool(
+    "OBSERVABILITY_ALERTS_ENABLED",
+    bool((_OBSERVABILITY.get("alerts") or {}).get("enabled", False)),
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",
