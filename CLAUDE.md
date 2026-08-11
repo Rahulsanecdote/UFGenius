@@ -169,6 +169,22 @@ pytest --cov=src       # coverage
   (tables/headers are located by content, not position). `src/data/cache.py`
   is a TTL disk cache with atomic writes, a lock-guarded eviction sweep, and
   a stale-fallback path.
+- **Observability (P2.3):** `src/observability/` is pure telemetry — it never
+  gates or places an order. `metrics.py` (`MetricsLedger`, singleton
+  `default_ledger()`, interprocess-`flock`ed writes like the breaker store)
+  records one bounded JSON record per scan (latency, scanned/signal counts,
+  buy-side label histogram, regime) and its `summary()` exposes avg/**p95**
+  (nearest-rank) latency and a **data-gap** flag. Gap detection
+  (`observability.data_gap_seconds`) is **default-disabled** — raw elapsed time
+  can't tell an outage from a normal quiet period (overnight/weekends), so it's
+  opt-in above the deployment's real cadence; active-outage detection is better
+  driven by an external watchdog polling `/api/metrics`.
+  `attribution.py` turns the P0.4 trade-outcome ledger into a per-signal-label
+  scorecard. `alerting.py` sends opt-in operational alerts (breaker trips, data
+  gaps) via `send_text_alert` — **default off** (`observability.alerts.enabled`),
+  best-effort, never raises. `run_daily_scan` records each scan (best-effort);
+  the executor alerts only on the broker-breaker false→true trip transition.
+  Surfaced via `/api/metrics`, `/api/attribution`, and dashboard panels.
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
   fan-out for scans). Do not introduce `async def` without cause.
 
@@ -199,6 +215,8 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
 | GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4) |
 | GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
+| GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |
+| GET | `/api/attribution` | Per-signal realized outcome (win rate / avg return / P&L) from the trade ledger (P2.3) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/clear-cache` | Clear the market-data cache |

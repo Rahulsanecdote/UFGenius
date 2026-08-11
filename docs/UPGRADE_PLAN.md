@@ -303,11 +303,35 @@ then an optional intelligence layer. Every phase makes the edge more
       full cancel-replace on the entry side — is the remaining sub-item, deferred
       as a money-path lifecycle change to add after the edge is validated; the
       existing partial-entry path already safely protects the filled shares.)*
-- [ ] **P2.3 — Observability stack**: structured metrics (scan latency, signal
+- [x] **P2.3 — Observability stack**: structured metrics (scan latency, signal
       counts, fill quality, data-staleness), a **trade-outcome ledger** with
       per-signal attribution, and dashboard panels for **kill-switch and
       circuit-breaker state**, with alerting on breaker trips and data gaps.
       *(Builds on `/api/diagnose`.)*
+      **Delivered:** new `src/observability/` package —
+      `metrics.py` (`MetricsLedger`: JSON-persisted, atomic, bounded; records
+      per-scan latency + scanned/signal counts + buy-side label histogram +
+      regime, and a `summary()` with avg/p95 latency and a **data-gap** flag —
+      seconds since the last scan vs `observability.data_gap_seconds`),
+      `attribution.py` (per-signal-label scorecard — count / win rate / avg
+      return / total P&L — over the P0.4 trade-outcome ledger, which already
+      stamps each closed trade with its opening signal + composite score), and
+      `alerting.py` (opt-in operational alerts for **circuit-breaker trips** and
+      **data gaps**, default off, best-effort, never gates or places an order).
+      Wired: `run_daily_scan` records each scan (best-effort) and checks for a
+      pre-scan data gap; the executor alerts on the broker-error breaker's
+      false→true **trip transition** (once, not per error); a dashboard manual
+      halt alerts too. New endpoints `GET /api/metrics`, `GET /api/attribution`,
+      plus dashboard panels for **scan metrics**, **execution quality** (wiring
+      the previously orphan `/api/execution-quality`), and **signal
+      attribution**. A shared `send_telegram_message`/`send_text_alert` transport
+      was factored out of `telegram_alert.py`. Config-driven (`config.yaml`
+      `observability:`; `METRICS_*` / `OBSERVABILITY_ALERTS_ENABLED` env). 30
+      offline tests (`tests/test_metrics.py`, `test_attribution.py`,
+      `test_observability_alerting.py`, `+` dashboard-API cases).
+      *(Note: the buy-side label histogram counts STRONG_BUY/BUY/WEAK_BUY — the
+      scanner filters SELL/HOLD upstream before a scan result exists, so a full
+      BUY/SELL/HOLD histogram would need a scan-worker hook and is deferred.)*
 
 ### P3 — Optional intelligence layer *(only after P0–P2 pay off)*
 - [ ] **P3.1 — Explainability layer, not a decision layer**: an *optional* LLM

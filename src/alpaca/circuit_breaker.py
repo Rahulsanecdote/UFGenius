@@ -232,6 +232,27 @@ class CircuitBreaker:
             )
             self._prune_locked(now)
 
+    def record_broker_error_and_check_trip(
+        self, context: str = "", now: Optional[datetime] = None
+    ) -> bool:
+        """Record a broker error and report whether THIS call tripped the breaker.
+
+        Returns True only on the untripped→tripped transition. The
+        before-state, the append, and the after-state are all computed inside
+        one interprocess transaction, so two concurrent executor processes
+        cannot both observe the transition and fire duplicate trip alerts — at
+        most one caller sees True.
+        """
+        now = now or _utcnow()
+        with self._exclusive():
+            was_tripped = self.broker_breaker_tripped(now)
+            self._broker_errors.append(
+                {"at": now.isoformat(), "context": str(context or "")[:200]}
+            )
+            self._prune_locked(now)
+            now_tripped = self.broker_breaker_tripped(now)
+        return (not was_tripped) and now_tripped
+
     def _prune_locked(self, now: datetime) -> None:
         window = float(config.CIRCUIT_BROKER_ERROR_WINDOW_SECONDS)
         if window <= 0:

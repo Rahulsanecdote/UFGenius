@@ -28,6 +28,33 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 BUY_SIGNALS = {"STRONG_BUY", "BUY", "WEAK_BUY"}
+
+
+def _record_scan_metrics(elapsed_sec, *, total_scanned, total_signals, label_counts, regime):
+    """Best-effort P2.3 metrics write — must never break a scan."""
+    try:
+        from src.observability.metrics import record_scan
+
+        record_scan(
+            elapsed_sec,
+            total_scanned,
+            total_signals,
+            label_counts=label_counts,
+            regime=regime,
+        )
+    except Exception as exc:
+        log.warning(f"scan metrics unavailable (ignored): {exc}")
+
+
+def _check_data_gap() -> None:
+    """Best-effort P2.3 data-gap alert: how long since the previous scan ran."""
+    try:
+        from src.observability.alerting import maybe_alert_data_gap
+        from src.observability.metrics import default_ledger
+
+        maybe_alert_data_gap(default_ledger().seconds_since_last_scan())
+    except Exception as exc:
+        log.debug(f"data-gap check skipped: {exc}")
 _PREFILTER_WORKERS = 8
 _SIGNAL_WORKERS = 4
 
@@ -136,11 +163,25 @@ def run_daily_scan(
     scan_start = datetime.now()
     log.info(f"=== Daily Scan Started: {scan_start.strftime('%Y-%m-%d %H:%M')} ===")
 
+    # P2.3: if the scanner was dark longer than the configured ceiling, flag it
+    # (opt-in alert) before running this scan and refreshing the timestamp.
+    _check_data_gap()
+
     regime = detect_market_regime()
     log.info(f"Market Regime: {regime['regime']} (score={regime['regime_score']})")
 
     if regime["regime"] == "BEAR_RISK_OFF" and not config.SAFETY.get("trade_in_bear_market", False):
         log.warning("BEAR MARKET DETECTED - no long positions recommended")
+        # This IS a completed scan — the regime check ran. Record it (zero
+        # signals) so the metrics ledger's last-scan timestamp stays fresh; a
+        # sustained bear regime must not read as a scanner outage / data gap.
+        _record_scan_metrics(
+            (datetime.now() - scan_start).total_seconds(),
+            total_scanned=0,
+            total_signals=0,
+            label_counts={"STRONG_BUY": 0, "BUY": 0, "WEAK_BUY": 0},
+            regime=regime["regime"],
+        )
         return {
             "scan_date": scan_start.isoformat(),
             "market_regime": regime["regime"],
@@ -185,6 +226,21 @@ def run_daily_scan(
     log.info(
         f"=== Scan Complete in {elapsed:.1f}s - "
         f"{len(strong_buys)} STRONG BUY, {len(buys)} BUY, {len(watch_list)} WATCH ==="
+    )
+
+    # P2.3 observability: record this scan's latency / signal counts to the
+    # metrics ledger. Best-effort — a metrics write never breaks a scan. Count
+    # every buy-side label the results carry (not just the [:5] shown buckets).
+    _record_scan_metrics(
+        elapsed,
+        total_scanned=len(candidates),
+        total_signals=len(results),
+        label_counts={
+            "STRONG_BUY": sum(1 for r in results if r.get("signal") == "STRONG_BUY"),
+            "BUY": sum(1 for r in results if r.get("signal") == "BUY"),
+            "WEAK_BUY": sum(1 for r in results if r.get("signal") == "WEAK_BUY"),
+        },
+        regime=regime["regime"],
     )
 
     return {
