@@ -86,6 +86,19 @@ def test_build_plan_from_entry_has_intraday_stop():
     assert plan.get("quote_as_of")           # staleness-breaker timestamp stamped
 
 
+def test_plan_stop_uses_intraday_atr(monkeypatch):
+    # The stop distance must equal the intraday ATR × the configured multiplier,
+    # proving the decision's intraday ATR (not a recomputed ATR_14) drives it.
+    monkeypatch.setattr(cfg, "ATR_STOP_MULTIPLIER", 2.0)
+    df = _breakout_session()
+    d = evaluate_intraday_entry(df, now=None)
+    atr = d["intraday"]["atr"]
+    plan = build_intraday_plan("AAA", df, d, account_size=10_000)
+    entry = plan["entry"]["price"]
+    stop = plan["stop_loss"]["price"]
+    assert (entry - stop) == pytest.approx(atr * 2.0, abs=0.02)
+
+
 def test_build_plan_skips_non_entry():
     plan = build_intraday_plan("AAA", _frame([(100, 1000)] * 3),
                                {"signal": "HOLD", "enter": False}, account_size=10_000)

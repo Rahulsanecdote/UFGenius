@@ -11,7 +11,9 @@ import src.utils.config as cfg
 from src.scanner.candidate_queue import Candidate, CandidateQueue
 from src.scanner.intraday_consumer import IntradayConsumer
 
-T0 = datetime(2026, 1, 2, 15, 0, 0)
+# Just after the last bar of the 20-bar test frames (09:30 → 11:05 @ 5m), so the
+# frames read as fresh against the consumer's P1.1 staleness guard.
+T0 = datetime(2026, 1, 2, 11, 7, 0)
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +25,7 @@ def _cfg(monkeypatch):
     monkeypatch.setattr(cfg, "INTRADAY_ATR_PERIOD", 14)
     monkeypatch.setattr(cfg, "INTRADAY_CONSUMER_MAX_PER_CYCLE", 20)
     monkeypatch.setattr(cfg, "CONTINUOUS_SCAN_INTERVAL", "5m")
+    monkeypatch.setattr(cfg, "INTRADAY_MAX_STALENESS_INTERVALS", 3)
 
 
 def _breakout_df():
@@ -80,6 +83,29 @@ def test_consumer_respects_per_cycle_cap(monkeypatch):
     consumer = IntradayConsumer(q, fetch=lambda t, interval=None: _flat_df())
     consumer.drain_once(now=T0)
     assert len(q) == 2  # only 2 drained this cycle; 2 remain queued
+
+
+def test_consumer_coalesces_candidates_by_ticker():
+    # A volume-confirmed breakout queues several kinds for one ticker; the
+    # consumer must emit a single plan, not one per kind.
+    q = CandidateQueue(dedup_ttl_sec=0)
+    q.push(Candidate("AAA", "volume", 5.0, T0.isoformat()), now=T0)
+    q.push(Candidate("AAA", "breakout", 1.0, T0.isoformat()), now=T0)
+    q.push(Candidate("AAA", "momentum", 3.0, T0.isoformat()), now=T0)
+    calls = []
+    consumer = IntradayConsumer(
+        q, sink=calls.append, fetch=lambda t, interval=None: _breakout_df(), account_size=10_000,
+    )
+    plans = consumer.drain_once(now=T0)
+    assert len(plans) == 1 and len(calls) == 1  # one plan for AAA despite 3 candidates
+
+
+def test_consumer_rejects_stale_frames():
+    q = CandidateQueue(dedup_ttl_sec=0)
+    q.push(_cand("AAA"), now=T0)
+    consumer = IntradayConsumer(q, fetch=lambda t, interval=None: _breakout_df(), account_size=10_000)
+    late = datetime(2026, 1, 2, 15, 0, 0)  # ~4h after the last 11:05 bar → stale
+    assert consumer.drain_once(now=late) == []
 
 
 def test_consumer_isolates_per_candidate_errors():

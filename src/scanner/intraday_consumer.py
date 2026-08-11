@@ -22,6 +22,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 from src.data.fetcher import fetch_intraday
+from src.data.lookahead import is_stale
 from src.scanner.candidate_queue import CandidateQueue
 from src.signals.intraday_signal import build_intraday_plan, evaluate_intraday_entry
 from src.utils import config
@@ -66,10 +67,25 @@ class IntradayConsumer:
         cap = max(1, int(config.INTRADAY_CONSUMER_MAX_PER_CYCLE))
         candidates = self.queue.drain(max_items=cap)
         interval = config.CONTINUOUS_SCAN_INTERVAL
+        max_stale = float(config.INTRADAY_MAX_STALENESS_INTERVALS)
         plans: list[dict] = []
+        seen: set[str] = set()
         for c in candidates:
+            # Coalesce by ticker: one volume-confirmed breakout queues several
+            # candidate kinds (volume/breakout/momentum) for the same symbol —
+            # evaluate it once so the sink (and any execution) sees one plan.
+            if c.ticker in seen:
+                continue
+            seen.add(c.ticker)
             try:
                 df = self._fetch(c.ticker, interval=interval)
+                # Reject stale frames here too: fetch_intraday can return a
+                # stale-cache fallback, and generate_trade_plan stamps a fresh
+                # quote_as_of that would let a stale plan slip past the P0.3
+                # data-staleness circuit breaker.
+                if is_stale(df, interval, max_staleness_intervals=max_stale, now=now):
+                    log.debug(f"{c.ticker}: intraday frame stale — skipping")
+                    continue
                 decision = evaluate_intraday_entry(df, now=now)
                 if not decision.get("enter"):
                     continue

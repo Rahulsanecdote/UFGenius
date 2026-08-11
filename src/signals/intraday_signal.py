@@ -144,6 +144,13 @@ def build_intraday_plan(
     if not decision.get("enter"):
         return {"ticker": ticker, "signal": decision.get("signal", "HOLD"),
                 "skip": True, "reason": "intraday decision is not an entry"}
+    # Feed the intraday ATR (computed with INTRADAY_ATR_PERIOD) into the planner's
+    # volatility input so the stop is sized off it — otherwise generate_trade_plan
+    # recomputes a hard-coded ATR_14 (or a 2% fallback), and INTRADAY_ATR_PERIOD
+    # would silently have no effect on the stop or sizing.
+    atr = (decision.get("intraday") or {}).get("atr")
+    if atr is not None and "volatility" not in decision:
+        decision = {**decision, "volatility": {"ATR_14": pd.Series([float(atr)])}}
     plan = generate_trade_plan(ticker, decision, account_size=account_size, df=df)
     if isinstance(plan, dict) and "error" not in plan and not plan.get("skip"):
         plan["intraday"] = decision.get("intraday", {})
