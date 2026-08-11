@@ -192,6 +192,20 @@ INTRADAY_CONSUMER_MAX_PER_CYCLE: int = env_int(
     "INTRADAY_CONSUMER_MAX_PER_CYCLE", _as_int(_INTRADAY_SIGNAL.get("consumer_max_per_cycle", 20), 20)
 )
 
+# Catalyst gating (upgrade plan P1.4): calendar-backed earnings + catalyst-tag veto.
+_CATALYSTS: dict = get("catalysts", {})
+CATALYST_EARNINGS_CALENDAR_PATH: str = env(
+    "CATALYST_EARNINGS_CALENDAR_PATH",
+    _CATALYSTS.get("earnings_calendar_path") or str(_ROOT / "data" / "earnings_calendar.json"),
+)
+CATALYST_ENABLE_GATE: bool = env_bool(
+    "CATALYST_ENABLE_GATE", bool(_CATALYSTS.get("enable_catalyst_gate", True))
+)
+_DEFAULT_VETO_TAGS = ["TRADING_HALT", "SEC_INVESTIGATION", "FRAUD", "GOING_CONCERN", "BANKRUPTCY"]
+CATALYST_VETO_TAGS: list = [
+    str(t).upper() for t in (_CATALYSTS.get("veto_tags") or _DEFAULT_VETO_TAGS)
+]
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

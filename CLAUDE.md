@@ -126,7 +126,9 @@ pytest --cov=src       # coverage
   that breach `safety_rules` — max positions, single-position cap, cash reserve,
   per-trade risk, daily trade count, bear-market, duplicate-ticker,
   `stop_loss_required`, daily/weekly realized-loss limits, post-loss cooldown,
-  earnings-week (best-effort, when `days_to_earnings` is known),
+  earnings-week (P1.4 **calendar-backed** via `src/catalysts/earnings_calendar.py`,
+  yfinance fallback), the **P1.4 catalyst-tag veto** (`src/catalysts/catalyst_gate.py`
+  — blocks entries whose `catalyst_tags` hit `catalysts.veto_tags`),
   `paper_trade_days_required` (live only — **P0.4** upgraded this from a tenure
   check to tenure **plus** a paper-scorecard performance gate: the realized
   paper trades must clear configured floors before real money), and the

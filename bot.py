@@ -505,6 +505,32 @@ def cmd_intraday_scan(args) -> None:
         print("\n  Scanner stopped.\n")
 
 
+def cmd_earnings_calendar(args) -> None:
+    """Build/refresh the P1.4 earnings calendar from the data provider.
+
+    Populates ``catalysts.earnings_calendar_path`` with next-earnings dates for
+    the universe so the RiskGuard earnings-week block is calendar-backed rather
+    than doing a per-ticker lookup at decision time.
+    """
+    from src.catalysts.earnings_calendar import EarningsCalendar
+    from src.data.universe import get_universe
+
+    universe_name = args.universe or config.SCAN_UNIVERSE
+    tickers = [args.ticker.upper()] if args.ticker else get_universe(universe_name)
+
+    print(f"\n{'='*60}")
+    print("  EARNINGS CALENDAR REFRESH (P1.4)")
+    print(f"{'='*60}")
+    print(f"  Universe:  {len(tickers)} tickers ({universe_name})")
+    print(f"  Path:      {config.CATALYST_EARNINGS_CALENDAR_PATH}")
+    print("  Fetching next-earnings dates (best-effort per ticker) ...")
+
+    cal = EarningsCalendar()
+    written = cal.refresh_from_provider(tickers)
+    print(f"\n  Wrote {written}/{len(tickers)} earnings dates.")
+    print(f"{'='*60}\n")
+
+
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 _DEFAULT_SCHEDULE = {
@@ -643,7 +669,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "optimize", "portfolio", "intraday-scan"],
+        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -744,6 +770,8 @@ Examples:
         cmd_portfolio(args)
     elif args.mode == "intraday-scan":
         cmd_intraday_scan(args)
+    elif args.mode == "earnings-calendar":
+        cmd_earnings_calendar(args)
     else:
         parser.print_help()
         sys.exit(1)

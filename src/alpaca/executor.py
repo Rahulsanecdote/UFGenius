@@ -60,21 +60,19 @@ def _utcnow() -> datetime:
 
 
 def _lookup_days_to_earnings(ticker: str):
-    """Best-effort earnings-date lookup for plans that arrived without one.
+    """Calendar-backed earnings-date lookup for plans that arrived without one (P1.4).
 
     Plans built on the execution path from Alpaca metadata carry no earnings
     timestamps, so the earnings-week rule could never evaluate for them and
-    always failed open. Ask yfinance directly (cached) before giving up — the
-    generic ``fetch_ticker_info`` short-circuits to Alpaca asset metadata,
-    which has no earnings fields, so it would return ``None`` on the very live
-    Alpaca path this lookup exists for. Any failure preserves the documented
+    always failed open. The P1.4 earnings calendar answers first (a pre-built,
+    auditable ``{ticker: date}`` file), falling back to the per-ticker yfinance
+    lookup when the ticker is absent. Any failure preserves the documented
     fail-open behavior.
     """
     try:
-        from src.data.fetcher import fetch_ticker_info_yfinance
-        from src.signals.trade_plan import _days_to_earnings
+        from src.catalysts.earnings_calendar import default_calendar
 
-        return _days_to_earnings(fetch_ticker_info_yfinance(ticker))
+        return default_calendar().days_to_earnings(ticker)
     except Exception as exc:
         log.debug(f"[{ticker}] earnings-date lookup failed: {exc}")
         return None
@@ -279,6 +277,17 @@ class RiskGuard:
                     "unknown for this ticker — rule NOT evaluated (no provider "
                     "supplied an earnings timestamp)."
                 )
+
+        # 14b. Catalyst-tag veto (P1.4). Never buy into a hard catalyst (halt,
+        #      fraud, SEC investigation, going-concern). Tags ride on the plan
+        #      (`catalyst_tags`), attached by any upstream news/insider source;
+        #      the gate vetoes when any tag is in the configured veto set.
+        if bool(getattr(config, "CATALYST_ENABLE_GATE", False)):
+            from src.catalysts.catalyst_gate import CatalystGate
+
+            decision = CatalystGate().evaluate(ticker, plan.get("catalyst_tags"))
+            if decision.vetoed:
+                return False, f"Catalyst veto: {'; '.join(decision.reasons)}"
 
         # 15. Paper-trading graduation gate before real-money trading. Two parts,
         #     both on the live path only (ALPACA_PAPER=false):
