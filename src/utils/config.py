@@ -252,6 +252,7 @@ PAPER_SCORECARD_REQUIRE_POSITIVE_EXPECTANCY: bool = bool(
 PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED: bool = bool(
     _PAPER_SCORECARD.get("performance_gate_enabled", True)
 )
+PAPER_SCORECARD_MAX_TRADES: int = int(_PAPER_SCORECARD.get("max_trades_retained", 5000))
 
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 _VALIDATION: dict = get("validation", {})

@@ -299,7 +299,11 @@ class RiskGuard:
             from src.alpaca.scorecard import meets_live_performance_gate
 
             passes, card = meets_live_performance_gate(tracker, initial_capital=equity)
-            if not passes and card is not None:
+            if not passes:
+                # Fail CLOSED on the money path: reject whenever the gate does
+                # not pass, even if it returned no scorecard (defensive — a
+                # future (False, None) must never approve a real-money order).
+                card = card or {}
                 n = card.get("n_trades", 0)
                 pp = card.get("prob_profitable")
                 pf = card.get("profit_factor")

@@ -42,10 +42,6 @@ _DEFAULT_STORE_PATH = str(
     Path(__file__).parent.parent.parent / "data" / "live_positions.json"
 )
 
-# Cap on retained closed-trade outcome records (P0.4 scorecard) — bounds the
-# store while keeping a long-enough rolling window for stable statistics.
-_MAX_TRADE_LEDGER = 5000
-
 
 @dataclass
 class LivePosition:
@@ -553,6 +549,11 @@ class PositionTracker:
         atomically with the state change (single save)."""
         with self._lock:
             pos = self._require(ticker)
+            # Idempotent: a second close of an already-closed record must not
+            # re-book realized P&L or append a duplicate trade outcome (which
+            # would distort the loss-limit accounting and the scorecard).
+            if pos.status == "closed":
+                return
             pos.shares_open = 0
             pos.status = "closed"
             self._append_realized_locked(ticker, realized_pnl)
@@ -631,8 +632,9 @@ class PositionTracker:
         })
         # Bound growth: keep the most recent trades (the scorecard is a rolling
         # performance record, and the store must not grow without limit).
-        if len(self._trades) > _MAX_TRADE_LEDGER:
-            self._trades = self._trades[-_MAX_TRADE_LEDGER:]
+        cap = max(1, int(getattr(config, "PAPER_SCORECARD_MAX_TRADES", 5000)))
+        if len(self._trades) > cap:
+            self._trades = self._trades[-cap:]
 
     # ------------------------------------------------------------------ #
     # Queries                                                              #

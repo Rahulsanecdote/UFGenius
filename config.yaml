@@ -40,6 +40,7 @@ paper_scorecard:
   prob_profitable_floor: 0.55     # bootstrap fraction of profitable resamples
   require_positive_expectancy: true  # mean per-trade P&L must be > 0
   performance_gate_enabled: true  # gate live trading on scorecard performance, not just tenure
+  max_trades_retained: 5000       # cap on retained closed-trade outcome records (bounds the store)
 
 schedule:
   pre_market: "06:00"

@@ -178,11 +178,12 @@ then an optional intelligence layer. Every phase makes the edge more
       (halt/resume), and a "Circuit Breakers & Kill Switch" panel. Thresholds
       are config-driven (`config.yaml` `circuit_breakers:` + `CIRCUIT_*` env);
       19 offline tests (`tests/test_circuit_breaker.py` + dashboard route tests).
-- [x] **P0.4 — Paper-trading scorecard**: persist every paper decision + realized
-      outcome to a ledger and compute the **same validated metrics** live, so
-      paper results are directly comparable to the backtest. Upgrade
-      `paper_trade_days_required` from a **duration** check to a **performance**
-      check.
+- [x] **P0.4 — Paper-trading scorecard**: persist paper entry decisions and
+      realized outcomes, then compute the **same validated metrics** live so
+      paper results are directly comparable to the backtest. The scorecard
+      outcome ledger holds one record per fully-closed *filled* position
+      (unfilled/expired entries are excluded). Upgrade `paper_trade_days_required`
+      from a **duration** check to a **performance** check.
       **Delivered:** the position tracker now writes a per-**trade** outcome
       ledger (one record per fully-closed *filled* position — ticker, signal,
       score, entry/exit, realized P&L, return %) alongside its per-exit realized

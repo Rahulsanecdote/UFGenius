@@ -22,6 +22,7 @@ backtest numbers come from the exact same estimator.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 from src.backtest.validation import DEFAULT_SEED, bootstrap_trade_metrics
@@ -37,6 +38,11 @@ def _trade_pnls(trades: list[dict]) -> list[float]:
         try:
             v = float(t.get("pnl"))
         except (TypeError, ValueError):
+            continue
+        # A single NaN/inf would poison total_pnl, expectancy and the bootstrap,
+        # collapsing the gate silently. compute_scorecard is a public entry, so
+        # guard here too (the tracker also filters non-finite on load).
+        if not math.isfinite(v):
             continue
         out.append(v)
     return out

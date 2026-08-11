@@ -132,6 +132,47 @@ def test_multiple_tranche_exits_aggregate_into_one_trade(tracker):
     assert trades[0]["pnl"] == pytest.approx(100.0)  # 30 + 80 - 10
 
 
+def test_mark_closed_is_idempotent(tracker):
+    # A repeated close must not double-book the trade ledger or realized P&L.
+    tracker.add_position(_plan(), "oid1")
+    tracker.mark_entry_filled("AAA", 100.0, 10)
+    tracker.mark_closed("AAA", "STOP", realized_pnl=-30.0)
+    tracker.mark_closed("AAA", "STOP", realized_pnl=-30.0)  # duplicate call
+    assert len(tracker.get_trades()) == 1
+    from datetime import datetime
+    assert tracker.realized_pnl_since(datetime(2000, 1, 1)) == pytest.approx(-30.0)
+
+
+def test_trade_ledger_is_bounded(tracker, monkeypatch):
+    monkeypatch.setattr(cfg, "PAPER_SCORECARD_MAX_TRADES", 3)
+    for i in range(5):
+        t = f"T{i}"
+        tracker.add_position(_plan(ticker=t), f"oid{i}")
+        tracker.mark_entry_filled(t, 100.0, 10)
+        tracker.mark_closed(t, "STOP", realized_pnl=float(i))
+    trades = tracker.get_trades()
+    assert len(trades) == 3  # trimmed to the cap
+    assert [x["ticker"] for x in trades] == ["T2", "T3", "T4"]  # newest kept
+
+
+def test_load_drops_malformed_trade_records(tmp_path):
+    import json
+    store = tmp_path / "pos.json"
+    store.write_text(json.dumps({
+        "positions": {},
+        "trades": [
+            {"pnl": 10.0, "closed_at": "2026-01-01T00:00:00", "ticker": "OK"},
+            {"pnl": None, "closed_at": "2026-01-01T00:00:00"},   # bad pnl
+            {"pnl": 5.0},                                        # missing closed_at
+            "not-a-dict",                                        # wrong type
+        ],
+    }), encoding="utf-8")
+    t = PositionTracker(store_path=str(store))
+    t.load()
+    trades = t.get_trades()
+    assert len(trades) == 1 and trades[0]["ticker"] == "OK"
+
+
 def test_live_outcomes_excluded_from_paper_scorecard(tracker, monkeypatch):
     # A trade closed on the paper account and one on the live account.
     monkeypatch.setattr(cfg, "ALPACA_PAPER", True)
@@ -147,7 +188,7 @@ def test_live_outcomes_excluded_from_paper_scorecard(tracker, monkeypatch):
     assert len(tracker.get_trades()) == 2
     paper = tracker.get_trades(paper_only=True)
     assert len(paper) == 1 and paper[0]["ticker"] == "AAA"
-    # The live −$500 loss must not enter the paper graduation scorecard.
+    # The live -$500 loss must not enter the paper graduation scorecard.
     card = scorecard_from_tracker(tracker, initial_capital=10_000, n_bootstrap=100)
     assert card["n_trades"] == 1
     assert card["total_pnl"] == -30.0
@@ -168,7 +209,7 @@ def test_legacy_open_position_backfills_realized_pnl_on_load(tracker, tmp_path):
 
     # And the final close now includes the pre-upgrade P&L in the trade outcome.
     reloaded.mark_closed("AAA", "STOP", realized_pnl=-15.0)
-    assert reloaded.get_trades()[0]["pnl"] == pytest.approx(30.0)  # 45 − 15
+    assert reloaded.get_trades()[0]["pnl"] == pytest.approx(30.0)  # 45 - 15
 
 
 # ── live-performance gate ─────────────────────────────────────────────────────
