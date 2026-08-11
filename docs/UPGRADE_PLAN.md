@@ -135,7 +135,9 @@ then an optional intelligence layer. Every phase makes the edge more
       Verdict is `validated` only when the edge clears the OOS Sharpe floor, the
       OOS minimum-acceptance gate, a bootstrap 5th-pct Sharpe > 0,
       `prob_profitable ≥ 0.60`, and persistence across a majority of
-      walk-forward windows. Seeded/reproducible; 13 offline tests
+      walk-forward windows, **and a minimum OOS sample size** (so a lucky
+      handful of trades can't validate). Thresholds are config-driven
+      (`config.yaml` `validation:`); seeded/reproducible; 18 offline tests
       (`tests/test_validation.py`).
 - [ ] **P0.2 — Parameter-selection discipline**: coarse grid/search scored
       **only** on validation folds, with an explicit overfitting penalty

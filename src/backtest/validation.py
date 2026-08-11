@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import RISK_FREE_RATE_ANNUAL, backtest_signal_system
+from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -42,10 +43,16 @@ DEFAULT_SEED = 12345
 
 # A validated edge must clear these on the HELD-OUT OOS data, not in-sample.
 # Deliberately conservative — the point is to reject noise, not to flatter.
-OOS_SHARPE_FLOOR = 1.0          # OOS point Sharpe
-BOOTSTRAP_SHARPE_P05_FLOOR = 0.0  # 5th-pct bootstrap Sharpe must stay > 0
-PROB_PROFITABLE_FLOOR = 0.60    # ≥60% of bootstrap resamples profitable
-WINDOW_PROFITABLE_FRACTION_FLOOR = 0.60  # edge persists in ≥60% of walk windows
+# Thresholds live in config.yaml (`validation:`) per the repo convention;
+# these module names are read-throughs so the logic stays readable.
+OOS_SHARPE_FLOOR = config.VALIDATION_OOS_SHARPE_FLOOR
+BOOTSTRAP_SHARPE_P05_FLOOR = config.VALIDATION_BOOTSTRAP_SHARPE_P05_FLOOR
+PROB_PROFITABLE_FLOOR = config.VALIDATION_PROB_PROFITABLE_FLOOR
+WINDOW_PROFITABLE_FRACTION_FLOOR = config.VALIDATION_WINDOW_PROFITABLE_FRACTION_FLOOR
+# A verdict on a thin sample is meaningless — resampling one winning trade makes
+# prob_profitable 1.0. Require a minimum OOS sample before trusting the verdict.
+MIN_OOS_TRADES = config.VALIDATION_MIN_OOS_TRADES
+MIN_OOS_DAYS = config.VALIDATION_MIN_OOS_DAYS
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -62,13 +69,18 @@ def _trade_pnls(result: dict) -> np.ndarray:
 def _daily_returns(result: dict) -> np.ndarray:
     """Extract the daily portfolio return series from an engine equity curve."""
     curve = result.get("equity_curve") or []
+    # Test for None, not truthiness: a legitimate portfolio value of exactly 0.0
+    # must be kept, or the surrounding points get differenced across the gap.
     values = np.array(
-        [float(p["portfolio_value"]) for p in curve if p.get("portfolio_value")],
+        [float(p["portfolio_value"]) for p in curve if p.get("portfolio_value") is not None],
         dtype=float,
     )
     if values.size < 2:
         return np.array([], dtype=float)
-    rets = np.diff(values) / values[:-1]
+    # A zero prior value yields inf/nan; that seam is intentionally dropped by
+    # the finite filter below (so silence the expected divide warning).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = np.diff(values) / values[:-1]
     return rets[np.isfinite(rets)]
 
 
@@ -149,7 +161,11 @@ def bootstrap_trade_metrics(
         total_return[i] = sample.sum() / initial_capital * 100 if initial_capital else np.nan
         profit_factor[i] = (gross_profit / gross_loss) if gross_loss > 0 else np.nan
         win_rate[i] = (sample > 0).mean() * 100
-        max_dd[i] = _max_drawdown_pct(initial_capital + np.cumsum(sample))
+        # Start the equity path at initial_capital (the true opening peak) so a
+        # first-trade loss is counted in the drawdown, not hidden by treating the
+        # post-first-trade balance as the peak.
+        equity_path = np.concatenate(([initial_capital], initial_capital + np.cumsum(sample)))
+        max_dd[i] = _max_drawdown_pct(equity_path)
 
     prob_profitable = float((total_return > 0).mean())
     return {
@@ -269,7 +285,10 @@ def walk_forward(
         "n_windows": len(windows),
         "n_windows_with_trades": n_eval,
         "windows_profitable": profitable,
-        "windows_profitable_fraction": round(profitable / n_eval, 3) if n_eval else 0.0,
+        # Denominator is ALL configured windows, not just windows that traded —
+        # a strategy that fires in one of four windows has NOT demonstrated
+        # persistence, even if that lone window was profitable.
+        "windows_profitable_fraction": round(profitable / len(windows), 3) if windows else 0.0,
         "windows_accepted": sum(1 for w in evaluated if w["acceptance_pass"]),
         "sharpe_mean": round(float(sharpes.mean()), 3) if sharpes.size else None,
         "sharpe_std": round(float(sharpes.std()), 3) if sharpes.size else None,
@@ -286,7 +305,10 @@ def _split_oos(start: str, end: str, oos_fraction: float) -> tuple[str, str, str
     """Return (is_start, is_end, oos_start, oos_end) held-out split by time."""
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     total_days = (end_ts - start_ts).days
-    oos_days = int(round(total_days * oos_fraction))
+    if total_days < 2:
+        raise ValueError(f"date range {start}→{end} is too short to hold out an OOS split")
+    # Clamp so the split is never degenerate/inverted: at least 1 day each side.
+    oos_days = max(1, min(total_days - 1, round(total_days * oos_fraction)))
     boundary = end_ts - pd.Timedelta(days=oos_days)
     return (
         start_ts.strftime("%Y-%m-%d"),
@@ -338,8 +360,13 @@ def validate_strategy(
     boot_sharpe_p05 = (oos_return_ci.get("sharpe_ratio") or {}).get("p05")
     prob_profitable = oos_trade_ci.get("prob_profitable")
     windows_frac = wf["stability"]["windows_profitable_fraction"]
+    oos_trades = int(oos.get("total_trades", 0) or 0)
+    oos_days = max(0, len(oos.get("equity_curve") or []) - 1)
 
     checks = {
+        # Gate on sample size FIRST — a verdict on a handful of trades is noise,
+        # and resampling one winning trade would otherwise show prob_profitable 1.0.
+        "sufficient_sample_ok": oos_trades >= MIN_OOS_TRADES and oos_days >= MIN_OOS_DAYS,
         "oos_sharpe_ok": oos_sharpe is not None and oos_sharpe >= OOS_SHARPE_FLOOR,
         "oos_acceptance_ok": oos_accept,
         "bootstrap_sharpe_p05_ok": boot_sharpe_p05 is not None and boot_sharpe_p05 > BOOTSTRAP_SHARPE_P05_FLOOR,

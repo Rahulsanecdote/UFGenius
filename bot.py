@@ -449,6 +449,29 @@ def _positive_account_size(value: str) -> float:
     return size
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for --windows / --bootstrap: reject non-positive counts at
+    the CLI (a negative count blows up np.empty deep in the harness)."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _oos_fraction(value: str) -> float:
+    """argparse type for --oos-fraction: must leave usable data on both sides."""
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
+    if not 0.05 <= parsed <= 0.9:
+        raise argparse.ArgumentTypeError("must be between 0.05 and 0.9")
+    return parsed
+
+
 def main() -> None:
     print(DISCLAIMER)
 
@@ -461,12 +484,14 @@ Modes:
   paper     Run on schedule, log signals only (no live alerts)
   live      Run on schedule with Telegram/email alerts
   backtest  Historical simulation
+  validate  Walk-forward + held-out OOS + bootstrap edge check (P0.1)
   portfolio View Alpaca portfolio (read-only)
 
 Examples:
   python bot.py --mode scan --ticker AAPL
   python bot.py --mode scan --account-size 25000
   python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
+  python bot.py --mode validate --start 2022-01-01 --end 2023-12-31
   python bot.py --mode paper
         """,
     )
@@ -485,14 +510,15 @@ Examples:
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")
     parser.add_argument("--json",         action="store_true", help="Also output raw JSON")
     # --mode validate (upgrade plan P0.1): walk-forward + held-out OOS + bootstrap
-    parser.add_argument("--windows",      type=int, default=4,
+    from src.backtest.validation import DEFAULT_SEED
+    parser.add_argument("--windows",      type=_positive_int, default=4,
                         help="validate: number of walk-forward windows (default 4)")
-    parser.add_argument("--bootstrap",    type=int, default=1000,
+    parser.add_argument("--bootstrap",    type=_positive_int, default=1000,
                         help="validate: bootstrap resamples for CIs (default 1000)")
-    parser.add_argument("--oos-fraction", type=float, default=0.30, dest="oos_fraction",
-                        help="validate: held-out out-of-sample fraction (default 0.30)")
-    parser.add_argument("--seed",         type=int, default=12345,
-                        help="validate: RNG seed for reproducible bootstrap (default 12345)")
+    parser.add_argument("--oos-fraction", type=_oos_fraction, default=0.30, dest="oos_fraction",
+                        help="validate: held-out out-of-sample fraction 0.05-0.9 (default 0.30)")
+    parser.add_argument("--seed",         type=int, default=DEFAULT_SEED,
+                        help=f"validate: RNG seed for reproducible bootstrap (default {DEFAULT_SEED})")
     parser.add_argument(
         "--execute",
         action="store_true",

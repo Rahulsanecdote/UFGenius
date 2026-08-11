@@ -78,6 +78,18 @@ monitor_interval_min: 5  # How often (minutes) to poll order fills during market
 # Backtest realism
 commission_pct: 0.001  # Per-side commission as a fraction of notional (0.001 = 0.1%)
 slippage_pct: 0.001    # Per-side adverse slippage as a fraction of notional
+
+# Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
+# An edge is only VALIDATED when it clears ALL of these on HELD-OUT out-of-sample
+# data — the point is to reject noise, not to flatter. Tighten before trusting a
+# strategy with capital.
+validation:
+  oos_sharpe_floor: 1.0                 # OOS point Sharpe must clear this
+  bootstrap_sharpe_p05_floor: 0.0       # 5th-pct bootstrap Sharpe must stay above this
+  prob_profitable_floor: 0.60           # ≥ this fraction of bootstrap resamples profitable
+  window_profitable_fraction_floor: 0.60  # edge profitable in ≥ this fraction of ALL walk windows
+  min_oos_trades: 20                    # reject verdicts on statistically thin OOS samples
+  min_oos_days: 30                      # minimum OOS daily observations before a verdict counts
 # Optional point-in-time universe membership JSON (audit M11). When a valid
 # file loads, the backtest adds the file's tickers to the candidate set and
 # only enters tickers that were universe members on the entry date. An invalid
