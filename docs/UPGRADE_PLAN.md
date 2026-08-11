@@ -230,10 +230,26 @@ then an optional intelligence layer. Every phase makes the edge more
       `python bot.py --mode intraday-scan`. Discovery only — sizing/gating/orders
       stay in P1.3 + RiskGuard. Config-driven (`config.yaml` `continuous_scan:`);
       18 offline tests (`tests/test_candidate_queue.py`, `tests/test_intraday_scan.py`).
-- [ ] **P1.3 — Intraday signal + entry/exit logic**: VWAP / opening-range /
+- [x] **P1.3 — Intraday signal + entry/exit logic**: VWAP / opening-range /
       relative-volume features, **intraday ATR** stops, and entry triggers tied
       to **breakout confirmation + volume** (not a once-daily composite). Keep
       the deterministic scoring model; add an intraday variant.
+      **Delivered:** `src/technical/intraday_features.py` (session-anchored VWAP,
+      opening range, relative volume, intraday ATR — pure, sliced to the latest
+      session so they don't bleed across days). `src/signals/intraday_signal.py`
+      — `evaluate_intraday_entry` is a **deterministic** trigger: STRONG_BUY on
+      VWAP-hold + opening-range breakout + volume confirmation, BUY on VWAP +
+      volume without the ORB, else HOLD; `build_intraday_plan` reuses
+      `generate_trade_plan` with the **intraday frame**, so the stop is sized off
+      intraday ATR and sizing/targets/RiskGuard gating are shared with the daily
+      path. `src/scanner/intraday_consumer.py` — `IntradayConsumer` drains the
+      P1.2 queue (per-cycle cap), evaluates each candidate on fresh intraday
+      bars, and emits entry plans to a pluggable sink (default: log). Wired into
+      `python bot.py --mode intraday-scan` as producer→consumer (discovery +
+      planning; no orders placed — execution reuses the gated executor once the
+      edge is validated). Config-driven (`config.yaml` `intraday_signal:`); 23
+      offline tests (`tests/test_intraday_features.py`,
+      `tests/test_intraday_signal.py`, `tests/test_intraday_consumer.py`).
 - [ ] **P1.4 — Catalyst gating**: a real **earnings calendar** (upgrade the
       best-effort earnings block to calendar-backed) plus optional news /
       Polymarket catalyst tags that **bias or veto** entries — never a naked buy.

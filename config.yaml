@@ -68,6 +68,17 @@ continuous_scan:
   premarket_start_et: "07:00"  # scan window opens here (ET) so gappers surface before the open
   min_gap_pct: 5.0             # daily-boundary gap threshold for gap candidates
 
+# Intraday signal + entry/exit logic (upgrade plan P1.3). Deterministic intraday
+# entry: reclaim/hold above VWAP + opening-range breakout + volume confirmation,
+# with an intraday-ATR stop. Consumes the P1.2 candidate queue.
+intraday_signal:
+  opening_range_minutes: 30    # session opening-range window (high/low) for breakouts
+  min_rel_volume: 1.5          # current-bar volume vs session average to confirm participation
+  require_above_vwap: true     # entries must be trading above session VWAP
+  atr_period: 14               # bars for the intraday ATR stop
+  min_session_bars: 6          # minimum current-session bars before an entry can fire
+  consumer_max_per_cycle: 20   # candidates evaluated per consumer drain (cost guard)
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

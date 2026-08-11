@@ -91,12 +91,19 @@ class CandidateQueue:
         for k in stale:
             self._last_seen.pop(k, None)
 
-    def drain(self) -> list[Candidate]:
-        """Atomically remove and return all queued candidates (FIFO order)."""
+    def drain(self, max_items: Optional[int] = None) -> list[Candidate]:
+        """Atomically remove and return queued candidates (FIFO order).
+
+        ``max_items`` caps how many are popped this call (a consumer cost guard);
+        the rest stay queued for the next drain. None drains everything.
+        """
         with self._lock:
-            out = list(self._items)
-            self._items.clear()
-            return out
+            if max_items is None or int(max_items) >= len(self._items):
+                out = list(self._items)
+                self._items.clear()
+                return out
+            n = max(0, int(max_items))
+            return [self._items.popleft() for _ in range(n)]
 
     def snapshot(self) -> list[Candidate]:
         """Return the current candidates without removing them."""
