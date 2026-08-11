@@ -79,6 +79,7 @@ python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
 python bot.py --mode validate --start 2022-01-01 --end 2023-12-31  # walk-forward + OOS + bootstrap edge check (P0.1)
 python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31  # in-sample grid search + overfitting haircut + OOS confirm (P0.2)
 python bot.py --mode portfolio                  # read-only Alpaca portfolio
+python bot.py --mode intraday-scan              # continuous intraday candidate scan → queue (P1.2)
 ```
 
 Execution safety: `--execute` targets the **paper** account and refuses to run
