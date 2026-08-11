@@ -20,4 +20,5 @@ alpaca-py
 lxml
 flask
 gunicorn
+openai
 pytest

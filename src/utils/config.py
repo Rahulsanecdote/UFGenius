@@ -233,6 +233,20 @@ ALPACA_API_KEY: str = env("ALPACA_API_KEY")
 ALPACA_SECRET_KEY: str = env("ALPACA_SECRET_KEY")
 ALPACA_PAPER: bool = env_bool("ALPACA_PAPER", True)
 
+# LLM (optional) — provider-agnostic, OpenAI-compatible chat endpoint.
+# Powers plain-English explanations of signals; entirely optional and OFF unless
+# LLM_API_KEY is set (like the NewsAPI / Reddit paths, it degrades to a neutral
+# no-op). Defaults target NVIDIA's hosted Nemotron, but any OpenAI-compatible
+# base URL works (OpenAI, OpenRouter, Together, a local vLLM server, …) — just
+# change LLM_BASE_URL / LLM_MODEL. Get the exact model id from your provider's
+# catalog; the default below is NVIDIA's current top-tier Nemotron.
+LLM_API_KEY: str = env("LLM_API_KEY")
+LLM_BASE_URL: str = env("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+LLM_MODEL: str = env("LLM_MODEL", "nvidia/llama-3.1-nemotron-ultra-253b-v1")
+LLM_TIMEOUT_SEC: float = env_float("LLM_TIMEOUT_SEC", 20.0)
+LLM_MAX_TOKENS: int = env_int("LLM_MAX_TOKENS", 400)
+LLM_TEMPERATURE: float = env_float("LLM_TEMPERATURE", 0.3)
+
 # Network hardening
 REQUEST_TIMEOUT_SEC: float = env_float("REQUEST_TIMEOUT_SEC", 10.0)
 REQUEST_CONNECT_TIMEOUT_SEC: float = env_float("REQUEST_CONNECT_TIMEOUT_SEC", 5.0)

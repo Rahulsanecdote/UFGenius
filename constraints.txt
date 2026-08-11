@@ -23,6 +23,9 @@ praw==7.8.1
 fredapi==0.5.2
 alpaca-py==0.43.1
 
+# LLM (optional feature; graceful no-op when unused)
+openai==2.53.0
+
 # Analysis stack
 vaderSentiment==3.3.2
 matplotlib==3.9.2
