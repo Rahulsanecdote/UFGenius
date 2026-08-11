@@ -132,6 +132,45 @@ def test_multiple_tranche_exits_aggregate_into_one_trade(tracker):
     assert trades[0]["pnl"] == pytest.approx(100.0)  # 30 + 80 - 10
 
 
+def test_live_outcomes_excluded_from_paper_scorecard(tracker, monkeypatch):
+    # A trade closed on the paper account and one on the live account.
+    monkeypatch.setattr(cfg, "ALPACA_PAPER", True)
+    tracker.add_position(_plan(ticker="AAA"), "oid1")
+    tracker.mark_entry_filled("AAA", 100.0, 10)
+    tracker.mark_closed("AAA", "STOP", realized_pnl=-30.0)
+
+    monkeypatch.setattr(cfg, "ALPACA_PAPER", False)  # graduated to real money
+    tracker.add_position(_plan(ticker="BBB"), "oid2")
+    tracker.mark_entry_filled("BBB", 100.0, 10)
+    tracker.mark_closed("BBB", "STOP", realized_pnl=-500.0)
+
+    assert len(tracker.get_trades()) == 2
+    paper = tracker.get_trades(paper_only=True)
+    assert len(paper) == 1 and paper[0]["ticker"] == "AAA"
+    # The live −$500 loss must not enter the paper graduation scorecard.
+    card = scorecard_from_tracker(tracker, initial_capital=10_000, n_bootstrap=100)
+    assert card["n_trades"] == 1
+    assert card["total_pnl"] == -30.0
+
+
+def test_legacy_open_position_backfills_realized_pnl_on_load(tracker, tmp_path):
+    # Simulate a pre-P0.4 in-flight position: a booked partial exit exists in the
+    # realized ledger, but the position record's realized_pnl is stale at 0.
+    tracker.add_position(_plan(), "oid1")
+    tracker.mark_entry_filled("AAA", 100.0, 10)
+    tracker.mark_target_hit("AAA", "t1", realized_pnl=45.0)  # books +45 to the ledger
+    tracker._positions["AAA"].realized_pnl = 0.0  # corrupt as a legacy record would be
+    tracker.save()
+
+    reloaded = PositionTracker(store_path=str(tmp_path / "pos.json"))
+    reloaded.load()
+    assert reloaded._positions["AAA"].realized_pnl == pytest.approx(45.0)  # backfilled
+
+    # And the final close now includes the pre-upgrade P&L in the trade outcome.
+    reloaded.mark_closed("AAA", "STOP", realized_pnl=-15.0)
+    assert reloaded.get_trades()[0]["pnl"] == pytest.approx(30.0)  # 45 − 15
+
+
 # ── live-performance gate ─────────────────────────────────────────────────────
 
 def test_gate_disabled_returns_pass(tracker, monkeypatch):

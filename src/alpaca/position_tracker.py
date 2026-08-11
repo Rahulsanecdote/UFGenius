@@ -314,6 +314,7 @@ class PositionTracker:
             if skipped:
                 log.warning(f"Position store: skipped {skipped} unreadable record(s)")
             self._prune_stale_closed()
+            self._backfill_open_realized_locked()
 
             # Backfill today's entry count from records (covers legacy stores and
             # keeps the counter >= records opened today), and drop other days so
@@ -326,6 +327,33 @@ class PositionTracker:
             self._daily_entries = {today: count_today} if count_today else {}
 
             log.info(f"Loaded {len(self._positions)} position(s) from {self._path}")
+
+    def _backfill_open_realized_locked(self) -> None:
+        """Reconstruct each OPEN position's running realized_pnl from the ledger.
+
+        The per-exit `realized` ledger is the source of truth. Recomputing the
+        running total for open positions on load (a) migrates legacy pre-P0.4
+        records that predate the `realized_pnl` field — which would otherwise
+        load as 0 and under-count the trade at its final close — and (b) is a
+        no-op for current records (booked P&L is in `realized` too). Only OPEN
+        positions matter: closed ones already recorded their trade outcome. A
+        ticker has at most one open position, so its ledger entries at/after
+        opened_at belong to that position. Caller holds the lock.
+        """
+        for pos in self._positions.values():
+            if pos.status == "closed":
+                continue
+            opened = _parse_iso(pos.opened_at)
+            if opened is None:
+                continue
+            total = 0.0
+            for e in self._realized:
+                if str(e.get("ticker", "")) != pos.ticker:
+                    continue
+                ts = _parse_iso(e.get("ts"))
+                if ts is not None and ts >= opened:
+                    total += float(e.get("pnl", 0.0))
+            pos.realized_pnl = total
 
     def _prune_stale_closed(self) -> None:
         """Drop closed positions not opened today (bounds store growth)."""
@@ -596,6 +624,10 @@ class PositionTracker:
             "pnl": pnl,
             "return_pct": return_pct,
             "reason": str(reason),
+            # Account mode at close, so the paper graduation scorecard can
+            # exclude real-money outcomes — a live loss must not retroactively
+            # lower the paper metrics and block later live entries.
+            "paper": bool(getattr(config, "ALPACA_PAPER", True)),
         })
         # Bound growth: keep the most recent trades (the scorecard is a rolling
         # performance record, and the store must not grow without limit).
@@ -668,10 +700,19 @@ class PositionTracker:
         with self._lock:
             return _parse_iso(self._trading_since)
 
-    def get_trades(self) -> list[dict]:
-        """Return a copy of the closed-trade outcome ledger (P0.4 scorecard)."""
+    def get_trades(self, paper_only: bool = False) -> list[dict]:
+        """Return a copy of the closed-trade outcome ledger (P0.4 scorecard).
+
+        ``paper_only`` keeps just paper-account outcomes — what the graduation
+        scorecard uses, so real-money trades can't skew it. Records with no
+        ``paper`` flag are treated as paper (the ledger before live graduation
+        is paper by construction).
+        """
         with self._lock:
-            return [dict(t) for t in self._trades]
+            trades = [dict(t) for t in self._trades]
+        if paper_only:
+            trades = [t for t in trades if t.get("paper", True)]
+        return trades
 
     def remove(self, ticker: str) -> None:
         """Permanently remove a position from the tracker."""

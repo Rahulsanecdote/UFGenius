@@ -140,8 +140,15 @@ def compute_scorecard(
 
 
 def scorecard_from_tracker(tracker: Any, *, initial_capital: float, **kwargs) -> dict:
-    """Convenience: compute the scorecard from a PositionTracker's ledger."""
-    return compute_scorecard(tracker.get_trades(), initial_capital=initial_capital, **kwargs)
+    """Convenience: compute the PAPER scorecard from a PositionTracker's ledger.
+
+    Paper-only by construction: this is the graduation scorecard, so real-money
+    outcomes are excluded — a live loss must not retroactively lower the paper
+    metrics and block later live entries.
+    """
+    return compute_scorecard(
+        tracker.get_trades(paper_only=True), initial_capital=initial_capital, **kwargs
+    )
 
 
 def meets_live_performance_gate(
