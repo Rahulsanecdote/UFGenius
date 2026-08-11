@@ -93,6 +93,16 @@ catalysts:
     - GOING_CONCERN
     - BANKRUPTCY
 
+# Execution-quality measurement (upgrade plan P2.1). Records expected vs realized
+# fill per order → implementation shortfall / realized slippage, and can feed the
+# measured slippage back into the backtest cost model so simulated edge tracks
+# reality instead of a static estimate.
+execution_quality:
+  ledger_path: "data/execution_quality.json"   # per-fill quality ledger (bounded)
+  max_fills_retained: 5000                       # cap on retained fill records
+  use_measured_slippage: false                   # backtest uses measured slippage when enough fills exist
+  min_fills_for_measured: 20                     # trust measured slippage only after this many fills
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

@@ -59,6 +59,17 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _record_execution_quality(ticker, side, kind, expected, fill, shares, order=None) -> None:
+    """Record one fill's expected-vs-realized quality (P2.1). Never raises."""
+    try:
+        from src.alpaca.execution_quality import record_fill
+
+        record_fill(ticker, side, kind, expected, fill, shares,
+                    order_id=getattr(order, "id", None))
+    except Exception as exc:  # accounting must never break execution
+        log.debug(f"{ticker}: execution-quality record ({kind}) failed: {exc}")
+
+
 def _lookup_days_to_earnings(ticker: str):
     """Calendar-backed earnings-date lookup for plans that arrived without one (P1.4).
 
@@ -585,6 +596,8 @@ def _finalize_entry_fill(ticker: str, order, tracker: PositionTracker) -> None:
         tracker.mark_closed(ticker, "UNFILLED")
         return
 
+    # Execution quality: expected = the planned entry limit, realized = the fill.
+    _record_execution_quality(ticker, "buy", "entry", pos.entry_price, fill_price, filled_qty, order)
     tracker.mark_entry_filled(ticker, fill_price, filled_qty)
     pos = tracker.get(ticker)  # Reload after mutation
     if pos is None:
@@ -629,6 +642,7 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
         # the order's ACTUAL average fill (falling back to the stop level) —
         # a stop that gapped through fills worse than its trigger price.
         stop_fill = _order_fill_price(stop_order, pos.stop_price)
+        _record_execution_quality(ticker, "sell", "stop", pos.stop_price, stop_fill, pos.shares_open, stop_order)
         stop_pnl = _exit_pnl(ticker, pos, stop_fill, pos.shares_open)
         for level in ("t1", "t2", "t3"):
             oid = getattr(pos, f"{level}_order_id")
@@ -656,6 +670,10 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
         if tgt_order is not None:
             # Realized P&L from the actual fill (falls back to the target level).
             tgt_fill = _order_fill_price(tgt_order, getattr(pos, f"{level}_price"))
+            _record_execution_quality(
+                ticker, "sell", "target", getattr(pos, f"{level}_price"),
+                tgt_fill, getattr(pos, f"{level}_shares"), tgt_order,
+            )
             tgt_pnl = _exit_pnl(ticker, pos, tgt_fill, getattr(pos, f"{level}_shares"))
             tracker.mark_target_hit(ticker, level, realized_pnl=tgt_pnl)
             pos = tracker.get(ticker)  # Reload after mutation

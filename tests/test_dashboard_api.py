@@ -106,6 +106,13 @@ def test_paper_scorecard_endpoint(client, monkeypatch, tmp_path):
     assert payload["acceptance"]["all_pass"] is False
 
 
+def test_execution_quality_endpoint(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard.config, "EXEC_QUALITY_LEDGER_PATH", str(tmp_path / "eq.json"))
+    response = client.get("/api/execution-quality")
+    assert response.status_code == 200
+    assert response.get_json()["n_fills"] == 0
+
+
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")

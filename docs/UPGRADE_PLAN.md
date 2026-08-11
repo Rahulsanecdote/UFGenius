@@ -270,10 +270,22 @@ then an optional intelligence layer. Every phase makes the edge more
       RiskGuard veto tests). **P1 real-time core complete.**
 
 ### P2 — Execution quality & observability
-- [ ] **P2.1 — Execution-quality measurement**: record expected vs. realized fill
+- [x] **P2.1 — Execution-quality measurement**: record expected vs. realized fill
       per order → **implementation shortfall / realized slippage**, and feed the
       **measured** slippage back into the backtest cost model so simulated edge
       tracks reality.
+      **Delivered:** `src/alpaca/execution_quality.py` — an `ExecutionQualityLedger`
+      (JSON-persisted, atomic, bounded) records every executor fill's expected vs
+      realized price as signed **adverse slippage (bps)** and **implementation
+      shortfall ($)**. Wired into the executor at all three fill points (entry
+      limit, stop, target). `measured_slippage_pct()` averages the adverse
+      slippage (floored at 0, gated on a minimum fill count) and the backtest
+      engine consumes it when `execution_quality.use_measured_slippage` is on —
+      `cost_model.slippage_source` reports `measured` vs `configured`, so
+      simulated frictions track reality instead of a static guess. Surfaced via
+      `GET /api/execution-quality` and `python bot.py --mode portfolio`.
+      Config-driven (`config.yaml` `execution_quality:`); 15 offline tests
+      (`tests/test_execution_quality.py`).
 - [ ] **P2.2 — Smart order handling**: marketable-limit / peg logic and
       partial-fill handling tuned to measured slippage (extends existing
       cancel-replace stops and partial exits to the **entry** side).
