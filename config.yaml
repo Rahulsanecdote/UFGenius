@@ -79,6 +79,20 @@ intraday_signal:
   min_session_bars: 6          # minimum current-session bars before an entry can fire
   consumer_max_per_cycle: 20   # candidates evaluated per consumer drain (cost guard)
 
+# Catalyst gating (upgrade plan P1.4). A calendar-backed earnings source (used
+# by the RiskGuard earnings-week block) plus an optional catalyst-tag veto so
+# entries carrying a hard catalyst (halt, fraud, investigation, …) are refused —
+# never a naked buy into a known catalyst.
+catalysts:
+  earnings_calendar_path: "data/earnings_calendar.json"  # {"AAPL": "2026-02-01", ...} (ISO dates)
+  enable_catalyst_gate: true          # RiskGuard vetoes entries carrying a veto catalyst tag
+  veto_tags:                          # tags that hard-veto an entry (case-insensitive)
+    - TRADING_HALT
+    - SEC_INVESTIGATION
+    - FRAUD
+    - GOING_CONCERN
+    - BANKRUPTCY
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

@@ -250,9 +250,24 @@ then an optional intelligence layer. Every phase makes the edge more
       edge is validated). Config-driven (`config.yaml` `intraday_signal:`); 23
       offline tests (`tests/test_intraday_features.py`,
       `tests/test_intraday_signal.py`, `tests/test_intraday_consumer.py`).
-- [ ] **P1.4 — Catalyst gating**: a real **earnings calendar** (upgrade the
+- [x] **P1.4 — Catalyst gating**: a real **earnings calendar** (upgrade the
       best-effort earnings block to calendar-backed) plus optional news /
       Polymarket catalyst tags that **bias or veto** entries — never a naked buy.
+      **Delivered:** `src/catalysts/earnings_calendar.py` — an `EarningsCalendar`
+      (`{ticker: date}` JSON file, auditable and pre-buildable via
+      `python bot.py --mode earnings-calendar`, with a per-ticker yfinance
+      fallback). RiskGuard's earnings-week block now reads `days_to_earnings`
+      from it (via the upgraded `_lookup_days_to_earnings`), so the block is
+      calendar-backed instead of a single best-effort field.
+      `src/catalysts/catalyst_gate.py` — a deterministic `CatalystGate` that
+      **vetoes** an entry carrying a hard catalyst tag (trading halt / fraud /
+      SEC investigation / going-concern / bankruptcy). Tags ride on the plan
+      (`catalyst_tags`), so any upstream news/insider/prediction-market source
+      can attach them without a network dependency here; wired as a RiskGuard
+      gate (config `catalysts.enable_catalyst_gate` + `veto_tags`). Config-driven
+      (`config.yaml` `catalysts:`); 18 offline tests
+      (`tests/test_earnings_calendar.py`, `tests/test_catalyst_gate.py`, +
+      RiskGuard veto tests). **P1 real-time core complete.**
 
 ### P2 — Execution quality & observability
 - [ ] **P2.1 — Execution-quality measurement**: record expected vs. realized fill

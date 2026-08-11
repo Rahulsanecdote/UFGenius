@@ -80,6 +80,7 @@ python bot.py --mode validate --start 2022-01-01 --end 2023-12-31  # walk-forwar
 python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31  # in-sample grid search + overfitting haircut + OOS confirm (P0.2)
 python bot.py --mode portfolio                  # read-only Alpaca portfolio
 python bot.py --mode intraday-scan              # continuous intraday candidate scan → queue (P1.2)
+python bot.py --mode earnings-calendar          # build/refresh the earnings calendar (P1.4)
 ```
 
 Execution safety: `--execute` targets the **paper** account and refuses to run
@@ -126,7 +127,9 @@ pytest --cov=src       # coverage
   that breach `safety_rules` — max positions, single-position cap, cash reserve,
   per-trade risk, daily trade count, bear-market, duplicate-ticker,
   `stop_loss_required`, daily/weekly realized-loss limits, post-loss cooldown,
-  earnings-week (best-effort, when `days_to_earnings` is known),
+  earnings-week (P1.4 **calendar-backed** via `src/catalysts/earnings_calendar.py`,
+  yfinance fallback), the **P1.4 catalyst-tag veto** (`src/catalysts/catalyst_gate.py`
+  — blocks entries whose `catalyst_tags` hit `catalysts.veto_tags`),
   `paper_trade_days_required` (live only — **P0.4** upgraded this from a tenure
   check to tenure **plus** a paper-scorecard performance gate: the realized
   paper trades must clear configured floors before real money), and the
@@ -205,8 +208,8 @@ network-exposed (see Dashboard security above).
 `filter_*` (disqualifier thresholds), and `safety_rules` (max positions,
 loss/exposure limits, cooldowns) — `RiskGuard` enforces the position/exposure/
 trade-count/bear-market/duplicate rules, plus stop-required, daily/weekly
-realized-loss limits, post-loss cooldown, earnings-week (best-effort), and
-paper-trading-tenure (live only).
+realized-loss limits, post-loss cooldown, earnings-week (P1.4 calendar-backed),
+the P1.4 catalyst-tag veto (`catalysts:`), and paper-trading-tenure (live only).
 
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env).

@@ -141,6 +141,36 @@ def test_paper_days_required_ignored_on_paper_account(tracker, monkeypatch):
     assert ok, reason
 
 
+# ── catalyst-tag veto (P1.4) ────────────────────────────────────────────────
+def test_catalyst_veto_blocks_entry_with_hard_tag(tracker, monkeypatch):
+    monkeypatch.setattr(cfg, "SAFETY", {})
+    monkeypatch.setattr(cfg, "CATALYST_ENABLE_GATE", True)
+    monkeypatch.setattr(cfg, "CATALYST_VETO_TAGS", ["FRAUD", "TRADING_HALT"])
+    plan = _plan()
+    plan["catalyst_tags"] = ["FRAUD"]
+    ok, reason = RiskGuard().check(plan, _portfolio(), tracker)
+    assert not ok and "catalyst veto" in reason.lower()
+
+
+def test_catalyst_gate_allows_clean_plan(tracker, monkeypatch):
+    monkeypatch.setattr(cfg, "SAFETY", {})
+    monkeypatch.setattr(cfg, "CATALYST_ENABLE_GATE", True)
+    monkeypatch.setattr(cfg, "CATALYST_VETO_TAGS", ["FRAUD"])
+    plan = _plan()
+    plan["catalyst_tags"] = ["EARNINGS_BEAT"]
+    ok, reason = RiskGuard().check(plan, _portfolio(), tracker)
+    assert ok, reason
+
+
+def test_catalyst_gate_disabled_ignores_tags(tracker, monkeypatch):
+    monkeypatch.setattr(cfg, "SAFETY", {})
+    monkeypatch.setattr(cfg, "CATALYST_ENABLE_GATE", False)
+    plan = _plan()
+    plan["catalyst_tags"] = ["FRAUD"]
+    ok, reason = RiskGuard().check(plan, _portfolio(), tracker)
+    assert ok, reason
+
+
 # ── realized-P&L ledger + persistence ───────────────────────────────────────
 def test_realized_ledger_queries_and_persist(tmp_path):
     p = str(tmp_path / "pos.json")

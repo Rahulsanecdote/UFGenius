@@ -26,6 +26,15 @@ def _load_yaml() -> dict:
 _cfg: dict = _load_yaml()
 
 
+def _resolve_root(path: str) -> str:
+    """Resolve a relative configured path against the project root.
+
+    Absolute paths pass through. Keeps a service and a manually-run command from
+    reading/writing different files when launched from different working dirs.
+    """
+    return path if os.path.isabs(path) else str(_ROOT / path)
+
+
 def get(key: str, default: Any = None) -> Any:
     """Dot-notation access into config, e.g. get('safety_rules.max_positions')."""
     parts = key.split(".")
@@ -192,6 +201,24 @@ INTRADAY_CONSUMER_MAX_PER_CYCLE: int = env_int(
     "INTRADAY_CONSUMER_MAX_PER_CYCLE", _as_int(_INTRADAY_SIGNAL.get("consumer_max_per_cycle", 20), 20)
 )
 
+# Catalyst gating (upgrade plan P1.4): calendar-backed earnings + catalyst-tag veto.
+_CATALYSTS: dict = get("catalysts", {})
+_ecal_path = env(
+    "CATALYST_EARNINGS_CALENDAR_PATH",
+    _CATALYSTS.get("earnings_calendar_path") or str(_ROOT / "data" / "earnings_calendar.json"),
+)
+# Resolve a relative configured path against the project root, so a service and a
+# manually-run `--mode earnings-calendar` refresh don't read/write different files
+# when launched from different working directories.
+CATALYST_EARNINGS_CALENDAR_PATH: str = _resolve_root(_ecal_path)
+CATALYST_ENABLE_GATE: bool = env_bool(
+    "CATALYST_ENABLE_GATE", bool(_CATALYSTS.get("enable_catalyst_gate", True))
+)
+_DEFAULT_VETO_TAGS = ["TRADING_HALT", "SEC_INVESTIGATION", "FRAUD", "GOING_CONCERN", "BANKRUPTCY"]
+CATALYST_VETO_TAGS: list = [
+    str(t).upper() for t in (_CATALYSTS.get("veto_tags") or _DEFAULT_VETO_TAGS)
+]
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",
@@ -307,10 +334,10 @@ CIRCUIT_BROKER_ERROR_WINDOW_SECONDS: float = env_float(
 )
 # JSON state file (manual halt flag + recent broker-error timestamps). Shared
 # across processes — the dashboard writes the halt flag, the executor reads it.
-CIRCUIT_STATE_PATH: str = env(
+CIRCUIT_STATE_PATH: str = _resolve_root(env(
     "CIRCUIT_STATE_PATH",
     _CIRCUIT.get("state_path") or str(_ROOT / "data" / "circuit_breaker.json"),
-)
+))
 
 # Paper-trading scorecard gates (upgrade plan P0.4). The scorecard computes the
 # same trade-level metrics as the backtest from realized paper trades; when the
