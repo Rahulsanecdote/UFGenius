@@ -280,7 +280,11 @@ class RiskGuard:
                     "supplied an earnings timestamp)."
                 )
 
-        # 15. Require a minimum paper-trading tenure before real-money trading.
+        # 15. Paper-trading graduation gate before real-money trading. Two parts,
+        #     both on the live path only (ALPACA_PAPER=false):
+        #     (a) tenure — a minimum number of days of trading history, and
+        #     (b) P0.4 performance — the paper scorecard must clear its floors,
+        #         so we go live on a *validated* paper edge, not just elapsed time.
         req_days = safety.get("paper_trade_days_required")
         if req_days and not config.ALPACA_PAPER:
             since = tracker.trading_since()
@@ -289,6 +293,20 @@ class RiskGuard:
                 return False, (
                     f"paper_trade_days_required: need {req_days} days of trading "
                     f"history before live (have {max(elapsed_days, 0)})"
+                )
+
+        if not config.ALPACA_PAPER:
+            from src.alpaca.scorecard import meets_live_performance_gate
+
+            passes, card = meets_live_performance_gate(tracker, initial_capital=equity)
+            if not passes and card is not None:
+                n = card.get("n_trades", 0)
+                pp = card.get("prob_profitable")
+                pf = card.get("profit_factor")
+                return False, (
+                    "paper scorecard has not met the live-performance floors "
+                    f"(trades={n}, profit_factor={pf}, prob_profitable={pp}); "
+                    "keep paper trading before enabling real money"
                 )
 
         return True, ""

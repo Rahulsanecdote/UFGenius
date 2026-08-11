@@ -422,6 +422,42 @@ def cmd_portfolio(args) -> None:
     print(f"\n  ⚠️  {data.get('note', '')}")
     print(f"{'='*60}\n")
 
+    _print_paper_scorecard()
+
+
+def _print_paper_scorecard() -> None:
+    """Print the P0.4 paper-trading scorecard from the local trade ledger."""
+    try:
+        from src.alpaca.position_tracker import PositionTracker
+        from src.alpaca.scorecard import scorecard_from_tracker
+
+        tracker = PositionTracker()
+        tracker.load()
+        card = scorecard_from_tracker(tracker, initial_capital=config.ACCOUNT_SIZE)
+    except Exception as exc:  # never let the scorecard break the portfolio view
+        log.debug(f"scorecard unavailable: {exc}")
+        return
+
+    print(f"{'='*60}")
+    print("  PAPER-TRADING SCORECARD (P0.4)")
+    print(f"{'='*60}")
+    if card.get("n_trades", 0) == 0:
+        print(f"  {card.get('summary', 'No closed paper trades yet.')}")
+        print(f"{'='*60}\n")
+        return
+    acc = card.get("acceptance", {})
+    print(f"  Closed trades:      {card['n_trades']}  "
+          f"(W {card['wins']} / L {card['losses']}, win rate {card['win_rate_pct']}%)")
+    print(f"  Profit factor:      {card['profit_factor']}")
+    print(f"  Expectancy/trade:   ${card['expectancy_per_trade']}")
+    print(f"  Total realized P&L: ${card['total_pnl']}  ({card['total_return_pct']}%)")
+    print(f"  Prob. profitable:   {card['prob_profitable']} (bootstrap)")
+    banner = "✅ MEETS live-performance floors" if acc.get("all_pass") else "❌ BELOW floors"
+    print(f"\n  {banner}")
+    print(f"  {card.get('summary', '')}")
+    print(f"  ⚠️  {card.get('disclaimer', '')}")
+    print(f"{'='*60}\n")
+
 
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 

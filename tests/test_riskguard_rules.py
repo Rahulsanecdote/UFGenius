@@ -127,6 +127,8 @@ def test_paper_days_required_blocks_live_without_history(tracker, monkeypatch):
 def test_paper_days_required_allows_with_tenure(tracker, monkeypatch):
     monkeypatch.setattr(cfg, "SAFETY", {"paper_trade_days_required": 30})
     monkeypatch.setattr(cfg, "ALPACA_PAPER", False)
+    # Isolate the tenure rule from the orthogonal P0.4 performance gate.
+    monkeypatch.setattr(cfg, "PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED", False)
     tracker._trading_since = (_utcnow() - timedelta(days=40)).isoformat()
     ok, reason = RiskGuard().check(_plan(), _portfolio(), tracker)
     assert ok, reason

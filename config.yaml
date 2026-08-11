@@ -29,6 +29,18 @@ circuit_breakers:
   broker_error_window_seconds: 300  # rolling window for the broker-error count
   state_path: "data/circuit_breaker.json"  # shared halt flag + broker-error ledger
 
+# Paper-trading scorecard (upgrade plan P0.4). Computes the SAME trade-level
+# metrics as the backtest validation from realized paper trades, so paper
+# results are directly comparable to the backtest. When performance_gate_enabled
+# is true, going live (ALPACA_PAPER=false) requires the paper scorecard to clear
+# these floors — not just paper_trade_days_required tenure.
+paper_scorecard:
+  min_trades: 20                  # need at least this many closed paper trades before a verdict
+  profit_factor_floor: 1.2        # gross profit / gross loss must clear this
+  prob_profitable_floor: 0.55     # bootstrap fraction of profitable resamples
+  require_positive_expectancy: true  # mean per-trade P&L must be > 0
+  performance_gate_enabled: true  # gate live trading on scorecard performance, not just tenure
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

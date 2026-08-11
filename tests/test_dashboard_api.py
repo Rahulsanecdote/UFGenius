@@ -97,6 +97,15 @@ def test_breaker_rejects_bad_action(client, monkeypatch, tmp_path):
     assert "action" in response.get_json()["error"].lower()
 
 
+def test_paper_scorecard_endpoint(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard.config, "LIVE_POSITION_STORE_PATH", str(tmp_path / "pos.json"))
+    response = client.get("/api/paper-scorecard")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["n_trades"] == 0
+    assert payload["acceptance"]["all_pass"] is False
+
+
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")

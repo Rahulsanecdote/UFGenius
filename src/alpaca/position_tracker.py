@@ -42,6 +42,10 @@ _DEFAULT_STORE_PATH = str(
     Path(__file__).parent.parent.parent / "data" / "live_positions.json"
 )
 
+# Cap on retained closed-trade outcome records (P0.4 scorecard) — bounds the
+# store while keeping a long-enough rolling window for stable statistics.
+_MAX_TRADE_LEDGER = 5000
+
 
 @dataclass
 class LivePosition:
@@ -88,6 +92,12 @@ class LivePosition:
     # extra broker poll. Trailing default keeps old records loadable.
     stop_shares: int = 0
 
+    # Decision context + running realized total, for the paper-trading scorecard
+    # (P0.4). Trailing defaults keep pre-P0.4 records loadable.
+    signal: str = ""            # the signal label that triggered this entry
+    composite_score: float = 0.0  # composite score at entry (per-signal attribution)
+    realized_pnl: float = 0.0   # running sum of booked exit P&L for this position
+
 
 def _coerce_daily_entries(raw: dict) -> dict[str, int]:
     """Keep only str->non-negative-int pairs; drop anything unreadable.
@@ -102,6 +112,15 @@ def _coerce_daily_entries(raw: dict) -> dict[str, int]:
         except (TypeError, ValueError):
             log.warning(f"Position store: dropping unreadable daily count {key!r}")
     return clean
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """Coerce to a finite float, falling back to ``default`` on garbage/NaN/inf."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return v if math.isfinite(v) else default
 
 
 def _parse_iso(value) -> Optional[datetime]:
@@ -133,6 +152,32 @@ def _coerce_realized(raw) -> list[dict]:
             continue
         if isinstance(ts, str):
             clean.append({"ts": ts, "ticker": str(item.get("ticker", "")), "pnl": pnl})
+    return clean
+
+
+def _coerce_trades(raw) -> list[dict]:
+    """Keep only well-formed closed-trade outcome records (P0.4 scorecard).
+
+    A trade needs at minimum a finite ``pnl`` and a close timestamp; other
+    fields are best-effort. A malformed record skips only itself.
+    """
+    if not isinstance(raw, list):
+        return []
+    clean: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            pnl = float(item.get("pnl"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(pnl):
+            continue
+        if not isinstance(item.get("closed_at"), str):
+            continue
+        rec = dict(item)
+        rec["pnl"] = pnl
+        clean.append(rec)
     return clean
 
 
@@ -179,6 +224,11 @@ class PositionTracker:
         # ISO timestamp of the first tracked entry (paper or live), used by the
         # paper_trade_days_required gate.
         self._trading_since: Optional[str] = None
+        # Closed-trade outcome ledger: one record per fully-closed FILLED
+        # position (P0.4 scorecard). Distinct from `_realized` (per-exit-tranche
+        # events): these are per-TRADE round trips, so their metrics line up with
+        # the backtest's trade-level metrics. Bounded to the most recent entries.
+        self._trades: list[dict] = []
         # Reentrant: mutators call save() while holding the lock, and the monitor
         # thread mutates the same instance as the main thread (audit: tracker
         # thread-safety). RLock lets a thread re-acquire without deadlocking.
@@ -213,6 +263,7 @@ class PositionTracker:
                 self._daily_entries = {}
                 self._realized = []
                 self._trading_since = None
+                self._trades = []
                 return
 
             # A valid-JSON-but-non-object store (e.g. a list) must fail safe, not
@@ -226,6 +277,7 @@ class PositionTracker:
                 self._daily_entries = {}
                 self._realized = []
                 self._trading_since = None
+                self._trades = []
                 return
 
             # v2 wraps positions + daily entry counts; legacy is a flat
@@ -242,11 +294,13 @@ class PositionTracker:
                 self._realized = _coerce_realized(raw_realized)
                 ts = data.get("trading_since")
                 self._trading_since = ts if isinstance(ts, str) else None
+                self._trades = _coerce_trades(data.get("trades"))
             else:
                 raw_positions = data
                 self._daily_entries = {}
                 self._realized = []
                 self._trading_since = None
+                self._trades = []
 
             positions: dict[str, LivePosition] = {}
             skipped = 0
@@ -299,6 +353,7 @@ class PositionTracker:
                     "daily_entries": dict(self._daily_entries),
                     "realized": list(self._realized),
                     "trading_since": self._trading_since,
+                    "trades": list(self._trades),
                 }
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
@@ -362,6 +417,8 @@ class PositionTracker:
             opened_at=_utcnow().isoformat(),
             status="pending_fill",
             trades_today_date=date.today().isoformat(),
+            signal=str(plan.get("signal", "") or ""),
+            composite_score=_safe_float(plan.get("composite_score"), 0.0),
         )
         with self._lock:
             # Re-check the duplicate guard INSIDE the critical section so a
@@ -471,6 +528,7 @@ class PositionTracker:
             pos.shares_open = 0
             pos.status = "closed"
             self._append_realized_locked(ticker, realized_pnl)
+            self._record_trade_outcome_locked(pos, reason)
             self.save()
         log.info(f"{ticker}: position closed (reason={reason})")
 
@@ -505,7 +563,44 @@ class PositionTracker:
             return False
         ts = (now or _utcnow()).isoformat()
         self._realized.append({"ts": ts, "ticker": ticker, "pnl": value})
+        # Accumulate the running per-trade total so the scorecard can record one
+        # trade-level outcome when the position finally closes.
+        pos = self._positions.get(ticker)
+        if pos is not None:
+            pos.realized_pnl += value
         return True
+
+    def _record_trade_outcome_locked(
+        self, pos: LivePosition, reason: str, now: Optional[datetime] = None
+    ) -> None:
+        """Append one closed-TRADE outcome to the scorecard ledger (P0.4).
+
+        Only records positions that were actually FILLED (a real entry→exit
+        round trip). Unfilled/expired/cancelled entries never traded, so they
+        must not pollute the win-rate / profit-factor / expectancy metrics.
+        Caller holds the lock.
+        """
+        if pos.fill_price is None or pos.shares_initial <= 0:
+            return
+        basis = float(pos.fill_price) * int(pos.shares_initial)
+        pnl = _safe_float(pos.realized_pnl, 0.0)
+        return_pct = round(pnl / basis * 100, 4) if basis > 0 else None
+        self._trades.append({
+            "ticker": pos.ticker,
+            "signal": pos.signal,
+            "composite_score": pos.composite_score,
+            "opened_at": pos.opened_at,
+            "closed_at": (now or _utcnow()).isoformat(),
+            "shares": int(pos.shares_initial),
+            "entry_price": float(pos.fill_price),
+            "pnl": pnl,
+            "return_pct": return_pct,
+            "reason": str(reason),
+        })
+        # Bound growth: keep the most recent trades (the scorecard is a rolling
+        # performance record, and the store must not grow without limit).
+        if len(self._trades) > _MAX_TRADE_LEDGER:
+            self._trades = self._trades[-_MAX_TRADE_LEDGER:]
 
     # ------------------------------------------------------------------ #
     # Queries                                                              #
@@ -572,6 +667,11 @@ class PositionTracker:
         """When trading (paper or live) first began on this store, or None."""
         with self._lock:
             return _parse_iso(self._trading_since)
+
+    def get_trades(self) -> list[dict]:
+        """Return a copy of the closed-trade outcome ledger (P0.4 scorecard)."""
+        with self._lock:
+            return [dict(t) for t in self._trades]
 
     def remove(self, ticker: str) -> None:
         """Permanently remove a position from the tracker."""
