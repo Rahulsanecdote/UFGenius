@@ -76,6 +76,7 @@ python bot.py --mode live --execute             # + submit orders to the PAPER a
 python bot.py --mode live --live-execute        # + REAL-MONEY orders (needs ALPACA_PAPER=false)
 python bot.py --mode live --execute --dry-run   # preview orders, submit nothing
 python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
+python bot.py --mode validate --start 2022-01-01 --end 2023-12-31  # walk-forward + OOS + bootstrap edge check (P0.1)
 python bot.py --mode portfolio                  # read-only Alpaca portfolio
 ```
 

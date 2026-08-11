@@ -122,13 +122,21 @@ then an optional intelligence layer. Every phase makes the edge more
       matches the **validated backtest** within an agreed tolerance.
 
 ### P0 — Prove the edge & harden the gates *(do first; leverages what exists)*
-- [ ] **P0.1 — Walk-forward + out-of-sample harness** around the existing
+- [x] **P0.1 — Walk-forward + out-of-sample harness** around the existing
       backtest engine: rolling train/validate windows, a held-out final period
       never used for tuning, and a **bootstrap/monte-carlo** pass resampling
       trades to produce **confidence intervals** on Sharpe / profit-factor /
       max-drawdown. Make `minimum_acceptance` run on **OOS only**.
       *(Highest-value item — converts "reported metrics" into "validated edge".
       Moderate effort: engine, cost model, and survivorship fix already exist.)*
+      **Delivered:** `src/backtest/validation.py` (`validate_strategy`,
+      `walk_forward`, `bootstrap_trade_metrics`, `bootstrap_return_metrics`) +
+      `python bot.py --mode validate` (flags `--windows/--bootstrap/--oos-fraction/--seed`).
+      Verdict is `validated` only when the edge clears the OOS Sharpe floor, the
+      OOS minimum-acceptance gate, a bootstrap 5th-pct Sharpe > 0,
+      `prob_profitable ≥ 0.60`, and persistence across a majority of
+      walk-forward windows. Seeded/reproducible; 13 offline tests
+      (`tests/test_validation.py`).
 - [ ] **P0.2 — Parameter-selection discipline**: coarse grid/search scored
       **only** on validation folds, with an explicit overfitting penalty
       (deflated Sharpe / trial count). Prevents curve-fitting the `config.yaml`
