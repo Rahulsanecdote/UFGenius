@@ -157,12 +157,27 @@ then an optional intelligence layer. Every phase makes the edge more
       honest verdict is *do not deploy*. Grid size is capped (`MAX_CANDIDATES`)
       because a wide search overfits by construction; seeded/reproducible; 9
       offline tests (`tests/test_optimize.py`).
-- [ ] **P0.3 — Circuit-breaker completeness**: add a **data-staleness** breaker
+- [x] **P0.3 — Circuit-breaker completeness**: add a **data-staleness** breaker
       (halt new entries when quotes are stale > N seconds), a **broker-error**
       breaker (halt on repeated broker failures), and a single **global
       "halt trading" switch** surfaced in the dashboard and enforced in
       `RiskGuard`. *(Builds on existing daily/weekly loss kill-switches +
       cooldown.)*
+      **Delivered:** `src/alpaca/circuit_breaker.py` (`CircuitBreaker`,
+      JSON-persisted with atomic writes, shared across the dashboard and CLI
+      processes). Three breakers block **new entries only** (never exits, so a
+      halt can't strand an open position without its stop), checked
+      highest-priority-first as check #0 in `RiskGuard`: (1) an operator
+      **global halt** flipped from the dashboard; (2) a **broker-error** breaker
+      that trips after N failures within a rolling window (the execution path
+      records failed portfolio reads and order submits; it clears as errors age
+      out, deliberately *not* on a single success); (3) a **data-staleness**
+      breaker — every plan carries `quote_as_of` (its latest-bar timestamp) and
+      entries built on data older than the limit are refused (unknown age fails
+      open). Dashboard: `GET /api/breaker-state`, `POST /api/breaker`
+      (halt/resume), and a "Circuit Breakers & Kill Switch" panel. Thresholds
+      are config-driven (`config.yaml` `circuit_breakers:` + `CIRCUIT_*` env);
+      19 offline tests (`tests/test_circuit_breaker.py` + dashboard route tests).
 - [ ] **P0.4 — Paper-trading scorecard**: persist every paper decision + realized
       outcome to a ledger and compute the **same validated metrics** live, so
       paper results are directly comparable to the backtest. Upgrade

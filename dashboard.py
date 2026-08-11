@@ -1870,6 +1870,28 @@ HTML = '''
               <p id="healthNarrative" class="health-note">The dashboard will tell you whether missing data came from provider issues or market rules.</p>
             </div>
           </section>
+
+          <section class="panel health-shell" id="breakerPanel" aria-labelledby="breakerTitle">
+            <div class="panel-heading">
+              <div>
+                <h3 id="breakerTitle">Circuit Breakers &amp; Kill Switch</h3>
+                <p>Global halt plus data-staleness and broker-error breakers that stop new entries.</p>
+              </div>
+            </div>
+            <div class="health-list" id="breakerList">
+              <div class="health-item">
+                <strong>Breaker state pending</strong>
+                <span>Loading circuit-breaker and kill-switch status…</span>
+              </div>
+            </div>
+            <div class="health-actions" style="padding: 0 24px;">
+              <button id="haltButton" class="summary-action" type="button">Halt trading</button>
+              <button id="resumeButton" class="summary-action" type="button">Resume trading</button>
+            </div>
+            <div style="padding: 18px 24px 0;">
+              <p id="breakerNarrative" class="health-note">The global halt blocks all new entries in RiskGuard until resumed. Open positions and their stops are never affected.</p>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -3219,6 +3241,7 @@ HTML = '''
       }
       state.providerHealthTimer = window.setInterval(() => {
         loadProviderHealth();
+        loadBreakerState();
       }, PROVIDER_HEALTH_REFRESH_MS);
     }
 
@@ -3332,6 +3355,53 @@ HTML = '''
       }
     }
 
+    function renderBreakerState(st) {
+      const list = $('breakerList');
+      if (!list) return;
+      if (!st) {
+        list.innerHTML = '<div class="health-item"><strong>Breaker state unavailable</strong><span>Could not load circuit-breaker status.</span></div>';
+        return;
+      }
+      const halted = !!st.manual_halt;
+      const brokerTripped = !!st.broker_breaker_tripped;
+      const blocked = !!st.entries_blocked;
+      const window_s = Math.round(Number(st.broker_error_window_seconds) || 0);
+      const stale_s = Math.round(Number(st.data_staleness_max_seconds) || 0);
+      const items = [
+        `<div class="health-item"><strong>New entries: ${blocked ? '⛔ BLOCKED' : '✅ allowed'}</strong><span>${blocked ? 'A circuit breaker is stopping new entries.' : 'No global breaker active. Per-plan data-staleness is still checked at entry.'}</span></div>`,
+        `<div class="health-item"><strong>Global halt: ${halted ? 'ON' : 'off'}</strong><span>${halted ? escapeHtml(st.manual_halt_reason || 'Halted by operator.') : 'Trading is not manually halted.'}</span></div>`,
+        `<div class="health-item"><strong>Broker breaker: ${brokerTripped ? 'TRIPPED' : 'ok'}</strong><span>${Number(st.broker_error_count) || 0} broker error(s) in the last ${window_s}s (trips at ${Number(st.broker_error_threshold) || 0}).</span></div>`,
+        `<div class="health-item"><strong>Data-staleness limit</strong><span>${stale_s > 0 ? `Entries refused when plan data is older than ${stale_s}s.` : 'Disabled.'}</span></div>`
+      ];
+      list.innerHTML = items.join('');
+    }
+
+    async function loadBreakerState() {
+      try {
+        renderBreakerState(await apiFetchJson('/api/breaker-state'));
+      } catch (error) {
+        renderBreakerState(null);
+      }
+    }
+
+    async function toggleBreaker(action) {
+      try {
+        const body = { action };
+        if (action === 'halt') {
+          body.reason = window.prompt('Reason for halting trading (optional):', '') || '';
+        }
+        const res = await apiFetchJson('/api/breaker', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        showToast(action === 'halt' ? 'Trading halted — new entries are blocked.' : 'Trading resumed.', action === 'halt' ? 'warning' : 'success');
+        renderBreakerState(res && res.state ? res.state : null);
+      } catch (error) {
+        showToast(error.message, 'error', true);
+      }
+    }
+
     function viewTickerFromScan(ticker) {
       $('tickerInput').value = ticker;
       updateFormState();
@@ -3410,6 +3480,8 @@ HTML = '''
     });
     $('refreshHealthButton').addEventListener('click', loadProviderHealth);
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);
+    $('haltButton').addEventListener('click', () => toggleBreaker('halt'));
+    $('resumeButton').addEventListener('click', () => toggleBreaker('resume'));
     $('clearFiltersButton').addEventListener('click', resetFilters);
     $('clearFiltersInlineButton').addEventListener('click', resetFilters);
     $('expandFactorsButton').addEventListener('click', () => {
@@ -3511,6 +3583,7 @@ HTML = '''
     loadRegime();
     loadProviderHealth();
     startProviderHealthPolling();
+    loadBreakerState();
   </script>
 </body>
 </html>
@@ -3763,6 +3836,44 @@ def api_clear_cache():
     except Exception:
         log.exception("Clear cache error")
         return jsonify({"error": "Failed to clear cache"}), 500
+
+
+@app.route("/api/breaker-state")
+def api_breaker_state():
+    """Current circuit-breaker / kill-switch state (P0.3)."""
+    try:
+        from src.alpaca.circuit_breaker import CircuitBreaker
+
+        return jsonify(CircuitBreaker.load_default().state())
+    except Exception:
+        log.exception("Breaker state endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/breaker", methods=["POST"])
+def api_breaker():
+    """Flip the global halt switch (P0.3). Body: {"action": "halt"|"resume", "reason": "..."}.
+
+    'halt' blocks all new entries in RiskGuard until 'resume', which also clears
+    the broker-error trail. Exits are never affected.
+    """
+    try:
+        from src.alpaca.circuit_breaker import CircuitBreaker
+
+        body = request.get_json(silent=True) or {}
+        action = str(body.get("action", "")).strip().lower()
+        breaker = CircuitBreaker.load_default()
+        if action == "halt":
+            reason = str(body.get("reason", "") or "")[:200]
+            breaker.halt(reason)
+        elif action == "resume":
+            breaker.resume()
+        else:
+            return _error_response("action must be 'halt' or 'resume'", 400)
+        return jsonify({"status": "ok", "state": breaker.state()})
+    except Exception:
+        log.exception("Breaker toggle endpoint error")
+        return _error_response("Internal server error", 500)
 
 
 @app.route("/api/price-history")

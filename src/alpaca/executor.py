@@ -35,6 +35,7 @@ from src.alpaca.orders import (
     place_limit_sell,
     place_stop_order,
 )
+from src.alpaca.circuit_breaker import CircuitBreaker
 from src.alpaca.portfolio import get_portfolio_data
 from src.alpaca.position_tracker import PositionTracker
 from src.utils import config
@@ -95,9 +96,16 @@ class RiskGuard:
         plan: dict,
         portfolio: dict,
         tracker: PositionTracker,
+        breaker: "CircuitBreaker | None" = None,
     ) -> tuple[bool, str]:
         """
         Validate a trade plan against current portfolio state and risk limits.
+
+        ``breaker`` supplies the P0.3 circuit breakers (global halt / broker
+        errors / data staleness). When supplied it is checked FIRST — an
+        operator halt or a broken broker must stop new entries regardless of
+        anything else. It is optional so direct callers/tests keep the 3-arg
+        form; the money path (``execute_trade_plan``) always supplies one.
 
         Returns:
             (True, "")           — approved, proceed with execution.
@@ -107,6 +115,13 @@ class RiskGuard:
         signal = plan.get("signal", "")
         ticker = plan.get("ticker", "")
         position_info = plan.get("position", {})
+
+        # 0. Circuit breakers — highest priority (global halt / repeated broker
+        #    failures / stale market data). Blocks NEW entries only.
+        if breaker is not None:
+            blocked, why = breaker.blocks_entry(plan)
+            if blocked:
+                return False, why
 
         # 1. Signal must be actionable
         if signal not in _EXECUTABLE_SIGNALS:
@@ -325,7 +340,15 @@ def execute_trade_plan(
         }
 
     portfolio = get_portfolio_data()
-    ok, reason = RiskGuard().check(plan, portfolio, tracker)
+    # Fresh read each call so a halt flipped from the dashboard (a separate
+    # process) is picked up immediately.
+    breaker = CircuitBreaker.load_default()
+    if isinstance(portfolio, dict) and "error" in portfolio:
+        # A failed portfolio read is a broker failure — feed the broker breaker
+        # so a run of them halts new entries (RiskGuard also rejects this plan
+        # outright below via the portfolio-unavailable check).
+        breaker.record_broker_error(f"portfolio read: {portfolio['error']}")
+    ok, reason = RiskGuard().check(plan, portfolio, tracker, breaker)
     if not ok:
         log.warning(f"[{ticker}] Trade rejected by RiskGuard: {reason}")
         return {
@@ -357,6 +380,8 @@ def execute_trade_plan(
         order = place_entry_order(ticker, int(shares), float(entry_price))
         order_id = str(order.id)
     except OrderError as exc:
+        # Broker submit failure — count it toward the broker-error breaker.
+        breaker.record_broker_error(f"entry submit {ticker}: {exc}")
         log.error(f"[{ticker}] Order placement failed: {exc}", exc_info=True)
         return {
             "ok": False,

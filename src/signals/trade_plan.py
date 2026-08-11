@@ -19,6 +19,7 @@ Expected Value (45% win rate, 2.5:1 avg R:R):
 """
 
 import math
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -36,6 +37,21 @@ AVG_RR    = 2.5
 # below and targets above. Handing that to a SELL/HOLD signal invites buying
 # into a downtrend (audit M3) — those signals get an explicit skip instead.
 _LONG_SIGNALS = {"STRONG_BUY", "BUY", "WEAK_BUY"}
+
+
+def _observed_at() -> str:
+    """Naive-UTC ISO wall-clock time this plan's market view was captured.
+
+    Feeds the P0.3 data-staleness breaker. Deliberately the *observation*
+    (fetch/build) time, NOT the last bar's index label: on daily (`1d`) frames
+    the bar label is the session date (midnight/open), which would make every
+    intraday plan look hours old and get rejected. The plan is built straight
+    after the data is fetched during a scan, so 'now' is the honest capture
+    time — and it is interval-agnostic, so it carries over unchanged when P1
+    adds intraday bars. Measures how old the data is by execution time, which
+    is what the breaker needs to guard against acting on a stale/queued plan.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def generate_trade_plan(
@@ -206,6 +222,9 @@ def generate_trade_plan(
         "confidence":      signal.get("confidence", "N/A"),
         "composite_score": signal.get("score", 0.0),
         "days_to_earnings": days_to_earnings,
+        # Wall-clock time this plan's market view was captured; the P0.3
+        # data-staleness circuit breaker refuses entries executed too long after.
+        "quote_as_of":     _observed_at(),
 
         "entry": {
             "type":  "LIMIT",

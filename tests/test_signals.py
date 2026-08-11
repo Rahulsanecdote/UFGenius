@@ -168,6 +168,18 @@ class TestTradePlan:
         for key in ["entry", "stop_loss", "targets", "position", "expected_value"]:
             assert key in plan, f"Missing key: {key}"
 
+    def test_quote_as_of_is_capture_time_not_bar_label(self, mock_signal, sample_df):
+        # Regression (PR #32 review): quote_as_of must be the observation/build
+        # wall-clock, not the daily bar's index label — otherwise every plan
+        # built from 1d bars looks hours old and the staleness breaker rejects
+        # every entry. A freshly-built plan must be at most seconds old.
+        from datetime import datetime, timezone
+
+        plan = generate_trade_plan("TEST", mock_signal, account_size=10_000, df=sample_df)
+        as_of = datetime.fromisoformat(plan["quote_as_of"])
+        age = (datetime.now(timezone.utc).replace(tzinfo=None) - as_of).total_seconds()
+        assert 0 <= age < 60, f"quote_as_of should be ~now, was {age:.0f}s old"
+
     def test_stop_below_entry(self, mock_signal, sample_df):
         plan = generate_trade_plan("TEST", mock_signal, account_size=10_000, df=sample_df)
         entry = plan["entry"]["price"]

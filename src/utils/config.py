@@ -199,6 +199,41 @@ SAFETY: dict = get("safety_rules", {
     "trade_in_bear_market": False,
 })
 
+# Circuit breakers (upgrade plan P0.3). Halt NEW entries when market data is
+# stale, when the broker has failed repeatedly, or when an operator flips the
+# global halt switch. These sit in RiskGuard alongside the loss kill-switches
+# and are surfaced/toggled from the dashboard. Enforced on the money path only;
+# they never touch exits (a halt must not strand an open position without its
+# stop). Env overrides win over config.yaml so an operator can retune fast.
+_CIRCUIT: dict = get("circuit_breakers", {})
+# Block new entries when a plan's market view (its `quote_as_of` capture time)
+# is older than this many seconds at execution. 0/negative disables the
+# staleness breaker; plans with no timestamp fail OPEN (the gate can only fire
+# on a known age). Default 900s (15 min) is a coarse daily-bar guard: it must
+# comfortably exceed a full-universe scan (60-120s) so normal scan→execute flow
+# never trips, while still catching a stuck/queued/overnight plan. P1 (intraday
+# bars) will tighten this to a seconds-scale real-time freshness check.
+CIRCUIT_DATA_STALENESS_MAX_SECONDS: float = env_float(
+    "CIRCUIT_DATA_STALENESS_MAX_SECONDS",
+    float(_CIRCUIT.get("data_staleness_max_seconds", 900)),
+)
+# Trip the broker breaker after this many broker failures within the rolling
+# window below. <=0 disables it.
+CIRCUIT_BROKER_ERROR_THRESHOLD: int = env_int(
+    "CIRCUIT_BROKER_ERROR_THRESHOLD",
+    _as_int(_CIRCUIT.get("broker_error_threshold", 3), 3),
+)
+CIRCUIT_BROKER_ERROR_WINDOW_SECONDS: float = env_float(
+    "CIRCUIT_BROKER_ERROR_WINDOW_SECONDS",
+    float(_CIRCUIT.get("broker_error_window_seconds", 300)),
+)
+# JSON state file (manual halt flag + recent broker-error timestamps). Shared
+# across processes — the dashboard writes the halt flag, the executor reads it.
+CIRCUIT_STATE_PATH: str = env(
+    "CIRCUIT_STATE_PATH",
+    _CIRCUIT.get("state_path") or str(_ROOT / "data" / "circuit_breaker.json"),
+)
+
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 _VALIDATION: dict = get("validation", {})
 VALIDATION_OOS_SHARPE_FLOOR: float = float(_VALIDATION.get("oos_sharpe_floor", 1.0))
