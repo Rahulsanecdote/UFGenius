@@ -272,8 +272,16 @@ class ContinuousScanner:
         """Signal the loop to exit after the current cycle."""
         self._stop.set()
 
-    def run_forever(self, window_check: Callable[[], bool] = is_scan_window) -> None:
-        """Loop until ``stop()``: scan each interval during the scan window only."""
+    def run_forever(
+        self,
+        window_check: Callable[[], bool] = is_scan_window,
+        on_cycle: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Loop until ``stop()``: scan each interval during the scan window only.
+
+        ``on_cycle`` runs after each scan pass (during the window) — the hook the
+        P1.3 consumer uses to drain the queue in the same loop.
+        """
         log.info(
             f"Continuous intraday scanner started: {len(self.universe)} tickers "
             f"(<= {self._cap}/cycle), every {self.interval_sec}s, "
@@ -283,6 +291,8 @@ class ContinuousScanner:
             try:
                 if window_check():
                     self.run_once()
+                    if on_cycle is not None:
+                        on_cycle()
                 else:
                     log.debug("Intraday scan idle: outside scan window")
             except Exception as exc:

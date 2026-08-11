@@ -460,31 +460,46 @@ def _print_paper_scorecard() -> None:
 
 
 def cmd_intraday_scan(args) -> None:
-    """Run the continuous intraday scan loop (upgrade plan P1.2).
+    """Run the continuous intraday scan + entry pipeline (upgrade plan P1.2/P1.3).
 
-    Fans the unusual-volume / momentum / breakout scanners over live intraday
-    bars on a short interval, emitting deduped candidates into a queue and
-    logging each cycle. This is candidate DISCOVERY only — turning candidates
-    into risk-gated orders is P1.3 + the existing executor path.
+    Producer (P1.2): fans the unusual-volume / momentum / breakout / gap scanners
+    over live intraday bars on a short interval into a deduped queue.
+    Consumer (P1.3): drains the queue, runs the deterministic intraday entry
+    evaluator (VWAP reclaim + opening-range breakout + volume confirmation) and
+    logs the resulting intraday trade plan (intraday-ATR stop) for each entry.
+
+    Discovery + planning only — it logs entry plans, it does not place orders.
+    The consumer's sink is pluggable, so routing plans through the existing
+    RiskGuard/executor path is a one-line change once the edge is validated.
     """
     from src.data.universe import get_universe
+    from src.scanner.candidate_queue import CandidateQueue
+    from src.scanner.intraday_consumer import IntradayConsumer
     from src.scanner.intraday_scan import ContinuousScanner
 
     universe_name = args.universe or config.SCAN_UNIVERSE
     tickers = [args.ticker.upper()] if args.ticker else get_universe(universe_name)
-    scanner = ContinuousScanner(tickers)
+    account_size = args.account_size or config.ACCOUNT_SIZE
+
+    queue = CandidateQueue(
+        maxlen=int(config.CONTINUOUS_SCAN_QUEUE_MAX),
+        dedup_ttl_sec=float(config.CONTINUOUS_SCAN_DEDUP_TTL_SEC),
+    )
+    scanner = ContinuousScanner(tickers, queue=queue)
+    consumer = IntradayConsumer(queue, account_size=account_size)
 
     print(f"\n{'='*60}")
-    print("  CONTINUOUS INTRADAY SCANNER (P1.2)")
+    print("  CONTINUOUS INTRADAY SCAN + ENTRY (P1.2 / P1.3)")
     print(f"{'='*60}")
     print(f"  Universe:  {len(scanner.universe)} tickers ({universe_name}), <= {scanner._cap}/cycle")
     print(f"  Interval:  every {scanner.interval_sec}s on {config.CONTINUOUS_SCAN_INTERVAL} bars")
-    print("  Emitting candidates to an in-process queue (consumer = P1.3).")
-    print("  Market-hours only. Press Ctrl+C to stop.")
+    print("  Producer scans → queue → consumer evaluates VWAP/ORB/volume entries.")
+    print("  Logs intraday entry plans (discovery only; no orders placed).")
+    print("  Scan window (incl. pre-market) only. Press Ctrl+C to stop.")
     print(f"{'='*60}\n")
 
     try:
-        scanner.run_forever()
+        scanner.run_forever(on_cycle=consumer.drain_once)
     except KeyboardInterrupt:
         scanner.stop()
         print("\n  Scanner stopped.\n")

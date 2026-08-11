@@ -171,6 +171,27 @@ CONTINUOUS_SCAN_MIN_GAP_PCT: float = env_float(
     "CONTINUOUS_SCAN_MIN_GAP_PCT", float(_CONTINUOUS_SCAN.get("min_gap_pct", 5.0))
 )
 
+# Intraday signal + entry/exit logic (upgrade plan P1.3).
+_INTRADAY_SIGNAL: dict = get("intraday_signal", {})
+INTRADAY_OPENING_RANGE_MINUTES: int = env_int(
+    "INTRADAY_OPENING_RANGE_MINUTES", _as_int(_INTRADAY_SIGNAL.get("opening_range_minutes", 30), 30)
+)
+INTRADAY_MIN_REL_VOLUME: float = env_float(
+    "INTRADAY_MIN_REL_VOLUME", float(_INTRADAY_SIGNAL.get("min_rel_volume", 1.5))
+)
+INTRADAY_REQUIRE_ABOVE_VWAP: bool = env_bool(
+    "INTRADAY_REQUIRE_ABOVE_VWAP", bool(_INTRADAY_SIGNAL.get("require_above_vwap", True))
+)
+INTRADAY_ATR_PERIOD: int = env_int(
+    "INTRADAY_ATR_PERIOD", _as_int(_INTRADAY_SIGNAL.get("atr_period", 14), 14)
+)
+INTRADAY_MIN_SESSION_BARS: int = env_int(
+    "INTRADAY_MIN_SESSION_BARS", _as_int(_INTRADAY_SIGNAL.get("min_session_bars", 6), 6)
+)
+INTRADAY_CONSUMER_MAX_PER_CYCLE: int = env_int(
+    "INTRADAY_CONSUMER_MAX_PER_CYCLE", _as_int(_INTRADAY_SIGNAL.get("consumer_max_per_cycle", 20), 20)
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

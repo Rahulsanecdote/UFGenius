@@ -145,6 +145,15 @@ pytest --cov=src       # coverage
   (order/dedupe, drop future-labelled bars, `as_of` clamp, stale-frame check).
   Use it (not `fetch_ohlcv`) for anything real-time; daily bars still use
   `fetch_ohlcv`. Knobs live under `config.yaml` `intraday:` / `INTRADAY_*`.
+- **Intraday scan → entry pipeline (P1.2/P1.3):** `--mode intraday-scan` runs a
+  `ContinuousScanner` (`src/scanner/intraday_scan.py`) that scores live intraday
+  bars for volume/momentum/breakout/gap and pushes deduped hits into a
+  `CandidateQueue` (`candidate_queue.py`); an `IntradayConsumer`
+  (`intraday_consumer.py`) drains it and runs the deterministic intraday entry
+  evaluator (`src/signals/intraday_signal.py`: VWAP + opening-range breakout +
+  volume, intraday-ATR stop via `src/technical/intraday_features.py`). Discovery
+  + planning only — plans go to a pluggable sink (default log); execution reuses
+  the gated `execute_trade_plan` path. Config: `continuous_scan:` / `intraday_signal:`.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
