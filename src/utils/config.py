@@ -206,12 +206,16 @@ SAFETY: dict = get("safety_rules", {
 # they never touch exits (a halt must not strand an open position without its
 # stop). Env overrides win over config.yaml so an operator can retune fast.
 _CIRCUIT: dict = get("circuit_breakers", {})
-# Block new entries when the market data behind a plan is older than this many
-# seconds. 0/negative disables the staleness breaker. Plans that carry no data
-# timestamp fail OPEN (documented) — the gate can only fire on a known age.
+# Block new entries when a plan's market view (its `quote_as_of` capture time)
+# is older than this many seconds at execution. 0/negative disables the
+# staleness breaker; plans with no timestamp fail OPEN (the gate can only fire
+# on a known age). Default 900s (15 min) is a coarse daily-bar guard: it must
+# comfortably exceed a full-universe scan (60-120s) so normal scan→execute flow
+# never trips, while still catching a stuck/queued/overnight plan. P1 (intraday
+# bars) will tighten this to a seconds-scale real-time freshness check.
 CIRCUIT_DATA_STALENESS_MAX_SECONDS: float = env_float(
     "CIRCUIT_DATA_STALENESS_MAX_SECONDS",
-    float(_CIRCUIT.get("data_staleness_max_seconds", 120)),
+    float(_CIRCUIT.get("data_staleness_max_seconds", 900)),
 )
 # Trip the broker breaker after this many broker failures within the rolling
 # window below. <=0 disables it.

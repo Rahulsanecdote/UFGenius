@@ -86,6 +86,21 @@ def test_broker_errors_age_out_of_window(breaker):
     assert breaker.broker_breaker_tripped(now=later) is False
 
 
+def test_concurrent_error_does_not_clobber_a_halt_from_another_instance(tmp_path):
+    # Two independent CircuitBreaker instances (as the dashboard and executor
+    # processes would be) sharing one state file. The dashboard halts; an
+    # executor that loaded the pre-halt state then records a broker error must
+    # NOT overwrite the halt back to false (interprocess reload-under-lock).
+    path = str(tmp_path / "cb.json")
+    executor_view = CircuitBreaker(path=path).load()  # loaded before the halt
+    dashboard_view = CircuitBreaker(path=path)
+    dashboard_view.halt("operator stop")
+
+    executor_view.record_broker_error("submit failed")  # stale in-memory halt=False
+
+    assert CircuitBreaker(path=path).load().manual_halt is True  # halt survived
+
+
 def test_resume_clears_broker_error_trail(breaker):
     t = _now()
     for i in range(3):

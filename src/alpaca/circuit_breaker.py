@@ -12,16 +12,21 @@ open position without its protective stop):
    a threshold, new entries are blocked until the failures age out of the
    window (the broker has recovered). Deliberately *not* cleared on a single
    success: a healthy read must not mask a stream of failing order submits.
-3. **Data-staleness breaker** — a plan carries `quote_as_of` (the timestamp of
-   the market data it was built from). If that data is older than the configured
-   limit, RiskGuard refuses the entry rather than trade on stale quotes. Plans
-   with no timestamp fail **open** (the gate can only fire on a known age).
+3. **Data-staleness breaker** — a plan carries `quote_as_of` (the wall-clock
+   time its market view was captured). If that is older than the configured
+   limit at execution, RiskGuard refuses the entry rather than trade on a stale
+   or queued plan. Plans with no timestamp fail **open** (the gate can only fire
+   on a known age).
 
 State (the manual-halt flag + the recent broker-error timestamps) is persisted
-as JSON with atomic writes, so it survives restarts and is shared across
-processes — the dashboard (gunicorn) writes the halt flag and the CLI executor
-reads it. Reads are fresh (`load_default()`), mirroring how RiskGuard reads the
-current portfolio and the realized-P&L ledger on every check.
+as JSON. Because the dashboard (gunicorn) and the CLI executor are separate
+processes that both mutate this file, every mutation runs as a
+reload→modify→save transaction under an **interprocess file lock** (`flock`),
+so concurrent writers cannot lose each other's updates — e.g. an executor
+recording a broker error can never clobber a halt the dashboard just set. Reads
+are fresh (`load_default()`), mirroring how RiskGuard reads the current
+portfolio and the realized-P&L ledger on every check. On a platform without
+`flock` the transaction degrades to the in-process lock only (logged once).
 
 Thresholds/paths are config-driven (`config.CIRCUIT_*`, `config.yaml`
 `circuit_breakers:`), never hardcoded.
@@ -33,6 +38,7 @@ import json
 import os
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -40,7 +46,14 @@ from typing import Optional
 from src.utils import config
 from src.utils.logger import get_logger
 
+try:  # POSIX interprocess lock; absent on non-POSIX platforms.
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None  # type: ignore[assignment]
+
 log = get_logger(__name__)
+
+_WARNED_NO_FLOCK = False
 
 
 def _utcnow() -> datetime:
@@ -140,28 +153,64 @@ class CircuitBreaker:
                 except OSError:
                     pass
 
+    @contextmanager
+    def _exclusive(self):
+        """Interprocess-serialized reload→mutate→save transaction.
+
+        Holds the in-process lock and an exclusive ``flock`` on a sidecar lock
+        file, RELOADS the current on-disk state under the lock, yields for the
+        mutation, then atomically saves. Reloading inside the lock is what makes
+        each mutation a true read-modify-write: a concurrent process's halt or
+        broker error is merged in rather than clobbered. Degrades to the
+        in-process lock (with a one-time warning) where ``flock`` is missing.
+        """
+        global _WARNED_NO_FLOCK
+        with self._lock:
+            if fcntl is None:
+                if not _WARNED_NO_FLOCK:
+                    log.warning(
+                        "flock unavailable on this platform; circuit-breaker "
+                        "updates are only serialized within this process."
+                    )
+                    _WARNED_NO_FLOCK = True
+                self.load()
+                yield
+                self._save_locked()
+                return
+            p = Path(self._path)
+            os.makedirs(p.parent, exist_ok=True)
+            lock_file = open(str(p) + ".lock", "w", encoding="utf-8")
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                self.load()          # reload freshest on-disk state under lock
+                yield
+                self._save_locked()
+            finally:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
+
     # ── manual global halt ───────────────────────────────────────────────────
 
     def halt(self, reason: str = "") -> None:
         """Engage the global halt switch (blocks all new entries)."""
-        with self._lock:
+        with self._exclusive():
             self._manual_halt = True
             self._manual_halt_reason = str(reason or "")
             self._manual_halt_at = _utcnow().isoformat()
-            self._save_locked()
 
     def resume(self) -> None:
         """Release the halt switch and clear the broker-error trail.
 
         Resuming is a deliberate operator action acknowledging all-clear, so it
-        also resets the broker breaker in the same atomic write.
+        also resets the broker breaker in the same transaction.
         """
-        with self._lock:
+        with self._exclusive():
             self._manual_halt = False
             self._manual_halt_reason = ""
             self._manual_halt_at = None
             self._broker_errors = []
-            self._save_locked()
 
     @property
     def manual_halt(self) -> bool:
@@ -170,14 +219,18 @@ class CircuitBreaker:
     # ── broker-error breaker ─────────────────────────────────────────────────
 
     def record_broker_error(self, context: str = "", now: Optional[datetime] = None) -> None:
-        """Record one broker failure and prune the window."""
-        with self._lock:
+        """Record one broker failure and prune the window.
+
+        Runs under the interprocess transaction so a concurrent halt (or another
+        process's broker errors) is preserved, and simultaneous failures don't
+        collapse into one.
+        """
+        with self._exclusive():
             now = now or _utcnow()
             self._broker_errors.append(
                 {"at": now.isoformat(), "context": str(context or "")[:200]}
             )
             self._prune_locked(now)
-            self._save_locked()
 
     def _prune_locked(self, now: datetime) -> None:
         window = float(config.CIRCUIT_BROKER_ERROR_WINDOW_SECONDS)

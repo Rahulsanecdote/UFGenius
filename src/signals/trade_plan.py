@@ -19,6 +19,7 @@ Expected Value (45% win rate, 2.5:1 avg R:R):
 """
 
 import math
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -38,20 +39,19 @@ AVG_RR    = 2.5
 _LONG_SIGNALS = {"STRONG_BUY", "BUY", "WEAK_BUY"}
 
 
-def _bar_as_of(df: pd.DataFrame | None) -> str | None:
-    """Naive-UTC ISO timestamp of the latest bar, for the P0.3 data-staleness
-    breaker. The OHLCV index is a naive-UTC DatetimeIndex (see data/fetcher);
-    its last value is the 'as of' time of the data this plan was built from.
-    Returns None when unavailable so the breaker fails open on unknown age."""
-    try:
-        if df is None or df.empty:
-            return None
-        ts = pd.Timestamp(df.index[-1])
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert("UTC").tz_localize(None)
-        return ts.to_pydatetime().isoformat()
-    except Exception:
-        return None
+def _observed_at() -> str:
+    """Naive-UTC ISO wall-clock time this plan's market view was captured.
+
+    Feeds the P0.3 data-staleness breaker. Deliberately the *observation*
+    (fetch/build) time, NOT the last bar's index label: on daily (`1d`) frames
+    the bar label is the session date (midnight/open), which would make every
+    intraday plan look hours old and get rejected. The plan is built straight
+    after the data is fetched during a scan, so 'now' is the honest capture
+    time — and it is interval-agnostic, so it carries over unchanged when P1
+    adds intraday bars. Measures how old the data is by execution time, which
+    is what the breaker needs to guard against acting on a stale/queued plan.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def generate_trade_plan(
@@ -222,9 +222,9 @@ def generate_trade_plan(
         "confidence":      signal.get("confidence", "N/A"),
         "composite_score": signal.get("score", 0.0),
         "days_to_earnings": days_to_earnings,
-        # Timestamp of the market data behind this plan; the P0.3 data-staleness
-        # circuit breaker refuses entries built on data older than the limit.
-        "quote_as_of":     _bar_as_of(df),
+        # Wall-clock time this plan's market view was captured; the P0.3
+        # data-staleness circuit breaker refuses entries executed too long after.
+        "quote_as_of":     _observed_at(),
 
         "entry": {
             "type":  "LIMIT",
