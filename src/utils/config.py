@@ -199,6 +199,19 @@ SAFETY: dict = get("safety_rules", {
     "trade_in_bear_market": False,
 })
 
+# Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
+_VALIDATION: dict = get("validation", {})
+VALIDATION_OOS_SHARPE_FLOOR: float = float(_VALIDATION.get("oos_sharpe_floor", 1.0))
+VALIDATION_BOOTSTRAP_SHARPE_P05_FLOOR: float = float(
+    _VALIDATION.get("bootstrap_sharpe_p05_floor", 0.0)
+)
+VALIDATION_PROB_PROFITABLE_FLOOR: float = float(_VALIDATION.get("prob_profitable_floor", 0.60))
+VALIDATION_WINDOW_PROFITABLE_FRACTION_FLOOR: float = float(
+    _VALIDATION.get("window_profitable_fraction_floor", 0.60)
+)
+VALIDATION_MIN_OOS_TRADES: int = int(_VALIDATION.get("min_oos_trades", 20))
+VALIDATION_MIN_OOS_DAYS: int = int(_VALIDATION.get("min_oos_days", 30))
+
 # API keys
 NEWSAPI_KEY: str = env("NEWSAPI_KEY")
 ALPHA_VANTAGE_KEY: str = env("ALPHA_VANTAGE_KEY")

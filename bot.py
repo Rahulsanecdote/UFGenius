@@ -269,6 +269,74 @@ def cmd_backtest(args) -> None:
         _print_json(result)
 
 
+def cmd_validate(args) -> None:
+    """Validate the strategy edge out-of-sample (upgrade plan P0.1).
+
+    Runs walk-forward across the in-sample span, a held-out out-of-sample
+    backtest, and bootstrap confidence intervals, then prints a pass/fail
+    verdict. A NOT VALIDATED result means: do not deploy capital.
+    """
+    from src.backtest.validation import validate_strategy
+
+    start = args.start or "2022-01-01"
+    end   = args.end   or "2023-12-31"
+    tickers = (
+        [args.ticker.upper()] if args.ticker
+        else get_universe(args.universe or "SP500")[:50]
+    )
+    capital = args.account_size or config.ACCOUNT_SIZE
+
+    log.info(
+        f"Validating {len(tickers)} tickers {start}→{end} "
+        f"(windows={args.windows}, bootstrap={args.bootstrap}, oos={args.oos_fraction})"
+    )
+    result = validate_strategy(
+        tickers, start, end,
+        initial_capital=capital,
+        n_windows=args.windows,
+        n_bootstrap=args.bootstrap,
+        oos_fraction=args.oos_fraction,
+        seed=args.seed,
+    )
+
+    split = result["split"]
+    oos = result["out_of_sample"]
+    wf = result["walk_forward"]["stability"]
+    boot = result["bootstrap_out_of_sample"]["return_level"].get("sharpe_ratio", {})
+    trade_boot = result["bootstrap_out_of_sample"]["trade_level"]
+    verdict = result["verdict"]
+
+    print(f"\n{'='*64}")
+    print("  STRATEGY EDGE VALIDATION (P0.1)")
+    print(f"{'='*64}")
+    print(f"  In-sample:      {split['in_sample']}")
+    print(f"  Held-out OOS:   {split['out_of_sample']}")
+    print("\n  Walk-forward (in-sample windows):")
+    print(f"    Windows profitable:  {wf['windows_profitable']}/{wf['n_windows_with_trades']}"
+          f"  (accepted: {wf['windows_accepted']})")
+    print(f"    Sharpe mean/min:     {wf['sharpe_mean']} / {wf['sharpe_min']}")
+    print("\n  Out-of-sample (held out):")
+    print(f"    Sharpe:              {oos['sharpe_ratio']}")
+    print(f"    Total return:        {oos['total_return_pct']}%")
+    print(f"    Max drawdown:        {oos['max_drawdown_pct']}%")
+    print(f"    Trades:              {oos['total_trades']}")
+    print("\n  Bootstrap CIs (out-of-sample):")
+    print(f"    Sharpe p05/p50/p95:  {boot.get('p05')} / {boot.get('p50')} / {boot.get('p95')}")
+    print(f"    Prob. profitable:    {trade_boot.get('prob_profitable')}")
+    print("\n  Verdict checks:")
+    for k, v in verdict["checks"].items():
+        status = "✅" if v else "❌"
+        print(f"    {status} {k.replace('_ok', '').replace('_', ' ').title()}")
+    banner = "✅ VALIDATED" if verdict["validated"] else "❌ NOT VALIDATED"
+    print(f"\n  {banner}")
+    print(f"  {verdict['summary']}")
+    print(f"\n  ⚠️  {verdict['disclaimer']}")
+    print(f"{'='*64}\n")
+
+    if args.json:
+        _print_json(result)
+
+
 def cmd_portfolio(args) -> None:
     """Display Alpaca portfolio (read-only)."""
     data = get_portfolio_data()
@@ -381,6 +449,29 @@ def _positive_account_size(value: str) -> float:
     return size
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for --windows / --bootstrap: reject non-positive counts at
+    the CLI (a negative count blows up np.empty deep in the harness)."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _oos_fraction(value: str) -> float:
+    """argparse type for --oos-fraction: must leave usable data on both sides."""
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
+    if not 0.05 <= parsed <= 0.9:
+        raise argparse.ArgumentTypeError("must be between 0.05 and 0.9")
+    return parsed
+
+
 def main() -> None:
     print(DISCLAIMER)
 
@@ -393,18 +484,20 @@ Modes:
   paper     Run on schedule, log signals only (no live alerts)
   live      Run on schedule with Telegram/email alerts
   backtest  Historical simulation
+  validate  Walk-forward + held-out OOS + bootstrap edge check (P0.1)
   portfolio View Alpaca portfolio (read-only)
 
 Examples:
   python bot.py --mode scan --ticker AAPL
   python bot.py --mode scan --account-size 25000
   python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
+  python bot.py --mode validate --start 2022-01-01 --end 2023-12-31
   python bot.py --mode paper
         """,
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "paper", "live", "backtest", "portfolio"],
+        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "portfolio"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -416,6 +509,16 @@ Examples:
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")
     parser.add_argument("--json",         action="store_true", help="Also output raw JSON")
+    # --mode validate (upgrade plan P0.1): walk-forward + held-out OOS + bootstrap
+    from src.backtest.validation import DEFAULT_SEED
+    parser.add_argument("--windows",      type=_positive_int, default=4,
+                        help="validate: number of walk-forward windows (default 4)")
+    parser.add_argument("--bootstrap",    type=_positive_int, default=1000,
+                        help="validate: bootstrap resamples for CIs (default 1000)")
+    parser.add_argument("--oos-fraction", type=_oos_fraction, default=0.30, dest="oos_fraction",
+                        help="validate: held-out out-of-sample fraction 0.05-0.9 (default 0.30)")
+    parser.add_argument("--seed",         type=int, default=DEFAULT_SEED,
+                        help=f"validate: RNG seed for reproducible bootstrap (default {DEFAULT_SEED})")
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -487,6 +590,8 @@ Examples:
         _schedule_scan(args)
     elif args.mode == "backtest":
         cmd_backtest(args)
+    elif args.mode == "validate":
+        cmd_validate(args)
     elif args.mode == "portfolio":
         cmd_portfolio(args)
     else:
