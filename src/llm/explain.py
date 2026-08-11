@@ -39,15 +39,23 @@ def _format_scores(scores: dict) -> str:
 
 
 def build_prompt(signal: dict, *, risk_profile: str = "standard") -> str:
-    """Compose the user prompt from a signal dict. Public for testing/inspection."""
+    """Compose the user prompt from a signal dict. Public for testing/inspection.
+
+    Accepts either the raw ``generate_signal`` dict (``score`` / ``reasons`` /
+    ``current_price``) or the augmented trade plan the scanner returns
+    (``composite_score`` / ``reasoning``, price under ``entry.price``), so the
+    dashboard can hand its result object straight through.
+    """
     reasons = signal.get("reasons") or signal.get("reasoning") or []
     reason_lines = "\n".join(f"- {r}" for r in reasons[:10]) or "- (none provided)"
+    score = signal.get("score", signal.get("composite_score", "?"))
+    price = signal.get("current_price") or (signal.get("entry") or {}).get("price", "?")
     return (
         f"Ticker: {signal.get('ticker', '?')}\n"
         f"Signal: {signal.get('signal', '?')}  "
         f"(confidence: {signal.get('confidence', '?')})\n"
-        f"Composite score: {signal.get('score', '?')} / 100\n"
-        f"Current price: {signal.get('current_price', '?')}\n"
+        f"Composite score: {score} / 100\n"
+        f"Current price: {price}\n"
         f"Factor scores (0-100): {_format_scores(signal.get('scores', {}))}\n"
         f"Reader risk profile: {risk_profile}\n"
         f"Contributing reasons:\n{reason_lines}\n\n"

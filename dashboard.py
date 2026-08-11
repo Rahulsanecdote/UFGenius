@@ -838,6 +838,30 @@ HTML = '''
       background: rgba(7, 17, 27, 0.66);
     }
 
+    .ai-explain {
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(58, 77, 105, 0.62);
+      background: rgba(7, 17, 27, 0.66);
+      font-size: 14px;
+      line-height: 21px;
+    }
+
+    .ai-explain .ai-explain-label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 8px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted, #8b97a8);
+      font-weight: 600;
+    }
+
+    .ai-explain.is-error { border-color: rgba(207, 74, 74, 0.55); }
+    .ai-explain.is-loading { color: var(--muted, #8b97a8); }
+
     .explain-card strong {
       display: block;
       margin-bottom: 6px;
@@ -1791,6 +1815,7 @@ HTML = '''
             <button id="rawButton" class="summary-action" type="button" disabled>View raw data</button>
             <button id="saveButton" class="summary-action" type="button" disabled>Save result</button>
             <button id="summaryCompareButton" class="summary-action" type="button" disabled>Compare</button>
+            <button id="aiExplainButton" class="summary-action" type="button" disabled>Explain with AI</button>
           </div>
 
           <div class="explain-panel">
@@ -1799,6 +1824,7 @@ HTML = '''
               <span id="explainChevron" aria-hidden="true">+</span>
             </button>
             <div id="explainContent" hidden></div>
+            <div id="aiExplainOutput" class="ai-explain" hidden aria-live="polite"></div>
           </div>
           <div id="resultsLive" class="sr-only" aria-live="polite"></div>
         </section>
@@ -2605,9 +2631,16 @@ HTML = '''
       $('retryButton').disabled = actionDisabled;
       $('rawButton').disabled = actionDisabled;
       $('saveButton').disabled = actionDisabled;
+      $('aiExplainButton').disabled = actionDisabled;
       const compareDisabled = !result && state.recentAnalyses.length < 2;
       $('summaryCompareButton').disabled = compareDisabled;
       $('compareButton').disabled = compareDisabled;
+
+      // A fresh result invalidates any previous AI explanation.
+      const aiOut = $('aiExplainOutput');
+      aiOut.hidden = true;
+      aiOut.classList.remove('is-error', 'is-loading');
+      aiOut.innerHTML = '';
 
       announceResult(`${presentation.badge}. ${presentation.headline} ${presentation.nextAction}`);
     }
@@ -2619,6 +2652,39 @@ HTML = '''
       content.hidden = open;
       toggle.setAttribute('aria-expanded', String(!open));
       $('explainChevron').textContent = open ? '+' : '-';
+    }
+
+    async function explainWithAI() {
+      if (!state.currentResult) return;
+      const out = $('aiExplainOutput');
+      const button = $('aiExplainButton');
+      out.hidden = false;
+      out.classList.remove('is-error');
+      out.classList.add('is-loading');
+      out.innerHTML = '<div class="ai-explain-label"><span>AI explanation</span></div>Generating…';
+      button.disabled = true;
+      try {
+        const payload = await apiFetchJson('/api/explain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            signal: state.currentResult,
+            risk_profile: $('riskProfile').value,
+          }),
+        });
+        out.classList.remove('is-loading');
+        out.innerHTML =
+          '<div class="ai-explain-label"><span>AI explanation</span></div>' +
+          escapeHtml(payload.explanation || '');
+      } catch (error) {
+        out.classList.remove('is-loading');
+        out.classList.add('is-error');
+        out.innerHTML =
+          '<div class="ai-explain-label"><span>AI explanation unavailable</span></div>' +
+          escapeHtml(error.message || 'Could not generate an explanation.');
+      } finally {
+        button.disabled = !state.currentResult;
+      }
     }
 
     function renderMarketOverview(regime) {
@@ -3402,6 +3468,7 @@ HTML = '''
     $('retryButton').addEventListener('click', retryCurrentAnalysis);
     $('rawButton').addEventListener('click', openRawDataDrawer);
     $('saveButton').addEventListener('click', saveCurrentResult);
+    $('aiExplainButton').addEventListener('click', explainWithAI);
     $('helpButton').addEventListener('click', openHelpDrawer);
     $('settingsButton').addEventListener('click', openSettingsDrawer);
     $('statusBadge').addEventListener('click', () => {
@@ -3808,6 +3875,42 @@ def api_scan_ticker():
         return jsonify(_clean(plan))
     except Exception:
         log.exception("Scan ticker endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/explain", methods=["POST"])
+def api_explain():
+    """Return a plain-English, LLM-generated rationale for an analysis result.
+
+    Accepts the result object the client already holds (POST JSON: the signal/
+    plan dict directly, or wrapped as {"signal": {...}, "risk_profile": "..."}),
+    so no re-scan is needed. Requires LLM_API_KEY to be configured.
+    """
+    from src.llm import client
+    from src.llm.explain import explain_signal
+
+    if not client.is_enabled():
+        return _error_response(
+            "AI explanations are not configured. Set LLM_API_KEY to enable them.", 503
+        )
+
+    payload = request.get_json(silent=True) or {}
+    signal = payload.get("signal") if isinstance(payload.get("signal"), dict) else payload
+    if not isinstance(signal, dict) or not signal.get("ticker"):
+        return _error_response("A result object with a ticker is required.", 400)
+
+    _, ticker_err = _parse_ticker(str(signal.get("ticker")))
+    if ticker_err:
+        return _error_response(ticker_err, 400)
+
+    risk_profile = str(payload.get("risk_profile", "standard"))[:32]
+    try:
+        explanation = explain_signal(signal, risk_profile=risk_profile)
+        if not explanation:
+            return _error_response("The model returned no explanation. Try again.", 502)
+        return jsonify({"explanation": explanation})
+    except Exception:
+        log.exception("Explain endpoint error")
         return _error_response("Internal server error", 500)
 
 
