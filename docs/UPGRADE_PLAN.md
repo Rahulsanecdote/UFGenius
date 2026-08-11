@@ -139,10 +139,24 @@ then an optional intelligence layer. Every phase makes the edge more
       handful of trades can't validate). Thresholds are config-driven
       (`config.yaml` `validation:`); seeded/reproducible; 18 offline tests
       (`tests/test_validation.py`).
-- [ ] **P0.2 — Parameter-selection discipline**: coarse grid/search scored
+- [x] **P0.2 — Parameter-selection discipline**: coarse grid/search scored
       **only** on validation folds, with an explicit overfitting penalty
       (deflated Sharpe / trial count). Prevents curve-fitting the `config.yaml`
       knobs (`signal_weights`, thresholds, `atr_stop_multiplier`, R:R ladder).
+      **Delivered:** `src/backtest/optimize.py` (`grid_candidates`,
+      `expected_max_sharpe`, `parameter_search`) + `python bot.py --mode optimize`.
+      The engine strategy is now parameterized (`StrategyParams` +
+      `strategy_params(...)` context manager in `src/backtest/engine.py`), so a
+      grid actually varies entry band / stop / target / sizing. Selection scores
+      every candidate by walk-forward on the **in-sample span only**, ranks by
+      mean fold Sharpe, then applies the Bailey & López de Prado
+      **expected-maximum-Sharpe-under-the-null** haircut for the trial count and
+      **re-confirms the winner on the untouched OOS tail** (bootstrap CIs + the
+      P0.1 gates). `selection.trustworthy` is True only when the winner beats the
+      false-strategy threshold **and** validates out-of-sample — otherwise the
+      honest verdict is *do not deploy*. Grid size is capped (`MAX_CANDIDATES`)
+      because a wide search overfits by construction; seeded/reproducible; 9
+      offline tests (`tests/test_optimize.py`).
 - [ ] **P0.3 — Circuit-breaker completeness**: add a **data-staleness** breaker
       (halt new entries when quotes are stale > N seconds), a **broker-error**
       breaker (halt on repeated broker failures), and a single **global
