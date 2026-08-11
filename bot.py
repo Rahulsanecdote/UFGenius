@@ -477,7 +477,7 @@ def cmd_intraday_scan(args) -> None:
     print(f"\n{'='*60}")
     print("  CONTINUOUS INTRADAY SCANNER (P1.2)")
     print(f"{'='*60}")
-    print(f"  Universe:  {len(scanner.tickers)} tickers ({universe_name})")
+    print(f"  Universe:  {len(scanner.universe)} tickers ({universe_name}), <= {scanner._cap}/cycle")
     print(f"  Interval:  every {scanner.interval_sec}s on {config.CONTINUOUS_SCAN_INTERVAL} bars")
     print("  Emitting candidates to an in-process queue (consumer = P1.3).")
     print("  Market-hours only. Press Ctrl+C to stop.")

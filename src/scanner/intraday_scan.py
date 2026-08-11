@@ -28,7 +28,9 @@ from typing import Callable, Optional
 import pandas as pd
 
 from src.data.fetcher import fetch_intraday
+from src.data.lookahead import is_stale
 from src.scanner.candidate_queue import Candidate, CandidateQueue
+from src.scanner.gap_scanner import scan_for_gaps
 from src.utils import config
 from src.utils.logger import get_logger
 
@@ -54,6 +56,32 @@ def is_market_hours(now_et: Optional[datetime] = None) -> bool:
         if now.weekday() >= 5:
             return False
         return dtime(9, 30) <= now.time() <= dtime(16, 0)
+    except Exception:
+        return True
+
+
+def _premarket_start() -> dtime:
+    """Configured pre-market scan-window start (ET), tolerant of a bad value."""
+    raw = str(config.CONTINUOUS_SCAN_PREMARKET_START_ET or "07:00")
+    try:
+        hh, mm = raw.split(":")
+        return dtime(int(hh), int(mm))
+    except (ValueError, TypeError):
+        return dtime(7, 0)
+
+
+def is_scan_window(now_et: Optional[datetime] = None) -> bool:
+    """True during the scan window: pre-market start through the regular close.
+
+    Wider than ``is_market_hours`` so the pre-market gapper can surface gaps
+    before the open (the plan explicitly includes the pre-market gapper). Fails
+    OPEN on timezone errors.
+    """
+    try:
+        now = now_et or datetime.now(ZoneInfo("America/New_York"))
+        if now.weekday() >= 5:
+            return False
+        return _premarket_start() <= now.time() <= dtime(16, 0)
     except Exception:
         return True
 
@@ -132,16 +160,50 @@ def scan_intraday(
     """
     now = now or _utcnow()
     interval = config.CONTINUOUS_SCAN_INTERVAL
+    max_stale = float(config.INTRADAY_MAX_STALENESS_INTERVALS)
     out: list[Candidate] = []
     for ticker in tickers:
         try:
             df = fetch(ticker, interval=interval)
+            # Reject stale frames: fetch_intraday can hand back a stale-cache
+            # fallback when an upstream refresh fails. Scoring it would stamp a
+            # historical spike with the current cycle time and emit it as a live
+            # candidate every cycle, poisoning the shortlist.
+            if is_stale(df, interval, max_staleness_intervals=max_stale, now=now):
+                log.debug(f"{ticker}: intraday frame stale — skipping")
+                continue
             metrics = score_intraday_frame(df)
             if metrics is None:
                 continue
             out.extend(_candidates_from_metrics(str(ticker).upper(), metrics, now))
         except Exception as exc:  # never let one symbol break the cycle
             log.debug(f"{ticker}: intraday scan error: {exc}")
+    return out
+
+
+def scan_gaps(
+    tickers: list[str],
+    now: datetime | None = None,
+    scan: Callable[..., list[dict]] = scan_for_gaps,
+) -> list[Candidate]:
+    """Emit ``gap`` candidates from the daily-boundary pre-market gapper.
+
+    Wraps the existing ``scan_for_gaps`` (today's open vs prior close on daily
+    bars) and keeps only gaps with real volume participation — consistent with
+    the breakout fakeout guard, and the whole point of a *tradable* gap.
+    """
+    now = now or _utcnow()
+    out: list[Candidate] = []
+    try:
+        gaps = scan(tickers, min_gap_pct=float(config.CONTINUOUS_SCAN_MIN_GAP_PCT))
+    except Exception as exc:
+        log.debug(f"gap scan error: {exc}")
+        return out
+    ts = now.isoformat()
+    for g in gaps:
+        if not g.get("high_volume"):
+            continue  # thin-volume gap → skip (fakeout guard)
+        out.append(Candidate(str(g["ticker"]).upper(), "gap", float(g["gap_pct"]), ts, dict(g)))
     return out
 
 
@@ -158,22 +220,48 @@ class ContinuousScanner:
         queue: Optional[CandidateQueue] = None,
         interval_sec: Optional[int] = None,
         fetch: Callable[..., pd.DataFrame] = fetch_intraday,
+        gap_scan: Callable[..., list[Candidate]] = scan_gaps,
     ) -> None:
-        cap = max(1, int(config.CONTINUOUS_SCAN_UNIVERSE_CAP))
-        self.tickers = [str(t).upper() for t in tickers][:cap]
-        self.queue = queue or CandidateQueue(
+        # Retain the FULL universe and rotate through it in capped batches, so a
+        # universe larger than the per-cycle cap is fully covered over successive
+        # cycles rather than the first N being scanned forever.
+        self.universe = [str(t).upper() for t in tickers]
+        self._cap = max(1, int(config.CONTINUOUS_SCAN_UNIVERSE_CAP))
+        self._offset = 0
+        # `is not None`, not truthiness: a fresh CandidateQueue is falsy (len 0),
+        # so `queue or CandidateQueue()` would silently discard a caller's shared
+        # queue and strand the consumer.
+        self.queue = queue if queue is not None else CandidateQueue(
             maxlen=int(config.CONTINUOUS_SCAN_QUEUE_MAX),
             dedup_ttl_sec=float(config.CONTINUOUS_SCAN_DEDUP_TTL_SEC),
         )
         req = interval_sec if interval_sec is not None else config.CONTINUOUS_SCAN_INTERVAL_SEC
         self.interval_sec = max(_MIN_INTERVAL_SEC, int(req))
         self._fetch = fetch
+        self._gap_scan = gap_scan
         self._stop = threading.Event()
 
+    def next_batch(self) -> list[str]:
+        """Return the next capped batch of the universe, advancing the cursor."""
+        n = len(self.universe)
+        if n == 0:
+            return []
+        cap = min(self._cap, n)
+        start = self._offset % n
+        batch = [self.universe[(start + i) % n] for i in range(cap)]
+        self._offset = (start + cap) % n
+        return batch
+
     def run_once(self, now: Optional[datetime] = None) -> int:
-        """Run one scan cycle; enqueue candidates. Returns the number enqueued."""
+        """Run one scan cycle over the next batch; enqueue candidates.
+
+        Runs the intraday unusual-volume/momentum/breakout scanners AND the
+        daily-boundary gapper on the batch. Returns the number enqueued.
+        """
         now = now or _utcnow()
-        candidates = scan_intraday(self.tickers, now=now, fetch=self._fetch)
+        batch = self.next_batch()
+        candidates = scan_intraday(batch, now=now, fetch=self._fetch)
+        candidates += self._gap_scan(batch, now=now)
         enqueued = sum(1 for c in candidates if self.queue.push(c, now=now))
         if enqueued:
             log.info(f"Intraday scan: {enqueued} new candidate(s) queued "
@@ -184,19 +272,19 @@ class ContinuousScanner:
         """Signal the loop to exit after the current cycle."""
         self._stop.set()
 
-    def run_forever(self, market_hours_check: Callable[[], bool] = is_market_hours) -> None:
-        """Loop until ``stop()``: scan each interval during market hours only."""
+    def run_forever(self, window_check: Callable[[], bool] = is_scan_window) -> None:
+        """Loop until ``stop()``: scan each interval during the scan window only."""
         log.info(
-            f"Continuous intraday scanner started: {len(self.tickers)} tickers, "
-            f"every {self.interval_sec}s, interval={config.CONTINUOUS_SCAN_INTERVAL} "
-            "(market hours only). Ctrl+C to stop."
+            f"Continuous intraday scanner started: {len(self.universe)} tickers "
+            f"(<= {self._cap}/cycle), every {self.interval_sec}s, "
+            f"interval={config.CONTINUOUS_SCAN_INTERVAL}. Ctrl+C to stop."
         )
         while not self._stop.is_set():
             try:
-                if market_hours_check():
+                if window_check():
                     self.run_once()
                 else:
-                    log.debug("Intraday scan idle: market closed")
+                    log.debug("Intraday scan idle: outside scan window")
             except Exception as exc:
                 log.error(f"Continuous scan cycle error: {exc}", exc_info=True)
             # Interruptible sleep so stop() takes effect promptly.

@@ -65,6 +65,8 @@ continuous_scan:
   momentum_lookback_bars: 6    # bars used for the intraday momentum measure
   breakout_lookback_bars: 20   # bars used for the intraday high (breakout) measure
   min_bars: 10                 # minimum intraday bars required before scoring a ticker
+  premarket_start_et: "07:00"  # scan window opens here (ET) so gappers surface before the open
+  min_gap_pct: 5.0             # daily-boundary gap threshold for gap candidates
 
 schedule:
   pre_market: "06:00"

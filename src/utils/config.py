@@ -164,6 +164,12 @@ CONTINUOUS_SCAN_BREAKOUT_LOOKBACK_BARS: int = env_int(
 CONTINUOUS_SCAN_MIN_BARS: int = env_int(
     "CONTINUOUS_SCAN_MIN_BARS", _as_int(_CONTINUOUS_SCAN.get("min_bars", 10), 10)
 )
+CONTINUOUS_SCAN_PREMARKET_START_ET: str = env(
+    "CONTINUOUS_SCAN_PREMARKET_START_ET", _CONTINUOUS_SCAN.get("premarket_start_et", "07:00")
+)
+CONTINUOUS_SCAN_MIN_GAP_PCT: float = env_float(
+    "CONTINUOUS_SCAN_MIN_GAP_PCT", float(_CONTINUOUS_SCAN.get("min_gap_pct", 5.0))
+)
 
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
