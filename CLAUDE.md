@@ -145,7 +145,10 @@ pytest --cov=src       # coverage
   P2.1 execution-quality ledger (`src/alpaca/execution_quality.py`) as adverse
   slippage + implementation shortfall; with `execution_quality:
   use_measured_slippage` the backtest cost model uses that **measured** slippage.
-  Live trading needs an explicit flag + `ALPACA_PAPER=false`.
+  P2.2 smart order handling (`src/alpaca/smart_orders.py`, config `smart_orders:`,
+  default off) prices the entry as a marketable limit crossing the market by an
+  offset tuned to that measured slippage. Live trading needs an explicit flag +
+  `ALPACA_PAPER=false`.
 - **Intraday data (P1.1):** `fetch_intraday()` (`src/data/fetcher.py`) is the
   entry point for 1m/5m/… bars — same provider abstraction as daily, but with an
   interval-scaled cache TTL and the look-ahead guards in `src/data/lookahead.py`

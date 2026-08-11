@@ -381,6 +381,32 @@ def execute_trade_plan(
             "dry_run": dry_run,
         }
 
+    # P2.2 smart order handling: compute the MARKETABLE limit up front (crossing
+    # the market, capped vs the plan price), so RiskGuard gates on the true
+    # worst-case exposure and the dry-run preview reflects what would actually be
+    # submitted. The plan's price stays the accounting benchmark. Default off →
+    # submit_price == the plan price (unchanged behavior).
+    from src.alpaca.smart_orders import smart_entry_price
+
+    reference_price = entry.get("reference_price") or entry_price
+    submit_price = smart_entry_price(float(reference_price), accounting_price=float(entry_price))
+
+    # Size the risk check at the price we might actually pay (not the discounted
+    # plan price): a marketable fill up to the cap above the plan price must not
+    # slip past the single-position / cash-reserve / per-trade-risk limits.
+    risk_plan = plan
+    if submit_price > float(entry_price):
+        pos_info = dict(plan.get("position", {}))
+        stop_px = (plan.get("stop_loss") or {}).get("price")
+        try:
+            sh = int(shares)
+            pos_info["position_value"] = round(submit_price * sh, 2)
+            if stop_px is not None:
+                pos_info["risk_dollars"] = round(max(0.0, submit_price - float(stop_px)) * sh, 2)
+            risk_plan = {**plan, "position": pos_info}
+        except (TypeError, ValueError):
+            risk_plan = plan
+
     portfolio = get_portfolio_data()
     # Fresh read each call so a halt flipped from the dashboard (a separate
     # process) is picked up immediately.
@@ -390,7 +416,7 @@ def execute_trade_plan(
         # so a run of them halts new entries (RiskGuard also rejects this plan
         # outright below via the portfolio-unavailable check).
         breaker.record_broker_error(f"portfolio read: {portfolio['error']}")
-    ok, reason = RiskGuard().check(plan, portfolio, tracker, breaker)
+    ok, reason = RiskGuard().check(risk_plan, portfolio, tracker, breaker)
     if not ok:
         log.warning(f"[{ticker}] Trade rejected by RiskGuard: {reason}")
         return {
@@ -399,13 +425,13 @@ def execute_trade_plan(
             "ticker": ticker,
             "order_id": None,
             "shares": int(shares),
-            "limit_price": float(entry_price),
+            "limit_price": submit_price,
             "dry_run": dry_run,
         }
 
     if dry_run:
         log.info(
-            f"[DRY RUN] Would place: {ticker} x{shares} LIMIT @ ${float(entry_price):.2f}"
+            f"[DRY RUN] Would place: {ticker} x{shares} LIMIT @ ${submit_price:.2f}"
             f" | stop={plan.get('stop_loss', {}).get('price')}"
         )
         return {
@@ -414,12 +440,12 @@ def execute_trade_plan(
             "ticker": ticker,
             "order_id": None,
             "shares": int(shares),
-            "limit_price": float(entry_price),
+            "limit_price": submit_price,
             "dry_run": True,
         }
 
     try:
-        order = place_entry_order(ticker, int(shares), float(entry_price))
+        order = place_entry_order(ticker, int(shares), submit_price)
         order_id = str(order.id)
     except OrderError as exc:
         # Broker submit failure — count it toward the broker-error breaker.
@@ -431,7 +457,7 @@ def execute_trade_plan(
             "ticker": ticker,
             "order_id": None,
             "shares": int(shares),
-            "limit_price": float(entry_price),
+            "limit_price": submit_price,
             "dry_run": False,
         }
 
@@ -465,7 +491,7 @@ def execute_trade_plan(
             "ticker": ticker,
             "order_id": order_id,
             "shares": int(shares),
-            "limit_price": float(entry_price),
+            "limit_price": submit_price,
             "dry_run": False,
         }
 
@@ -476,7 +502,7 @@ def execute_trade_plan(
         "ticker": ticker,
         "order_id": order_id,
         "shares": int(shares),
-        "limit_price": float(entry_price),
+        "limit_price": submit_price,
         "dry_run": False,
     }
 

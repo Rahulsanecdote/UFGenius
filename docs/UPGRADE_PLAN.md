@@ -286,9 +286,23 @@ then an optional intelligence layer. Every phase makes the edge more
       `GET /api/execution-quality` and `python bot.py --mode portfolio`.
       Config-driven (`config.yaml` `execution_quality:`); 15 offline tests
       (`tests/test_execution_quality.py`).
-- [ ] **P2.2 — Smart order handling**: marketable-limit / peg logic and
+- [x] **P2.2 — Smart order handling**: marketable-limit / peg logic and
       partial-fill handling tuned to measured slippage (extends existing
       cancel-replace stops and partial exits to the **entry** side).
+      **Delivered:** `src/alpaca/smart_orders.py` prices the entry as a
+      **marketable limit** — crossing the market by a small offset **tuned to the
+      P2.1 measured slippage**, clamped to a floor (so the limit is genuinely
+      marketable) and a hard cap (so a bad measurement or a fast market can never
+      make it chase further than configured). `execute_trade_plan` submits at
+      that price while keeping the plan's price as the accounting benchmark, so
+      the execution-quality ledger still measures shortfall against what was
+      *intended*. Config-gated and **default off** (`smart_orders.enabled`), so
+      it's a no-op until turned on. Config-driven (`config.yaml` `smart_orders:`);
+      12 offline tests (`tests/test_smart_orders.py`).
+      *(Marketable-limit re-submission of an unfilled partial-entry remainder —
+      full cancel-replace on the entry side — is the remaining sub-item, deferred
+      as a money-path lifecycle change to add after the edge is validated; the
+      existing partial-entry path already safely protects the filled shares.)*
 - [ ] **P2.3 — Observability stack**: structured metrics (scan latency, signal
       counts, fill quality, data-staleness), a **trade-outcome ledger** with
       per-signal attribution, and dashboard panels for **kill-switch and
