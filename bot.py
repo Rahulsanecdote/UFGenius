@@ -337,6 +337,67 @@ def cmd_validate(args) -> None:
         _print_json(result)
 
 
+def cmd_optimize(args) -> None:
+    """Parameter search with anti-overfitting discipline (upgrade plan P0.2).
+
+    Scores a coarse grid in-sample only, applies the false-strategy
+    (multiple-testing) haircut, and confirms the winner on the held-out OOS
+    tail. NOT TRUSTWORTHY means the best config is likely curve-fit — do not
+    deploy it.
+    """
+    from src.backtest.optimize import DEFAULT_GRID, parameter_search
+
+    start = args.start or "2022-01-01"
+    end   = args.end   or "2023-12-31"
+    tickers = (
+        [args.ticker.upper()] if args.ticker
+        else get_universe(args.universe or "SP500")[:50]
+    )
+    capital = args.account_size or config.ACCOUNT_SIZE
+
+    log.info(
+        f"Parameter search over {len(tickers)} tickers {start}→{end} "
+        f"(grid={DEFAULT_GRID}, windows={args.windows}, oos={args.oos_fraction})"
+    )
+    result = parameter_search(
+        tickers, start, end, DEFAULT_GRID,
+        initial_capital=capital,
+        n_windows=args.windows,
+        n_bootstrap=args.bootstrap,
+        oos_fraction=args.oos_fraction,
+        seed=args.seed,
+    )
+
+    sel = result["selection"]
+    print(f"\n{'='*64}")
+    print("  PARAMETER SELECTION (P0.2)")
+    print(f"{'='*64}")
+    print(f"  In-sample:   {result['split']['in_sample']}")
+    print(f"  Held-out:    {result['split']['out_of_sample']}")
+    print(f"  Candidates:  {result['n_candidates']} (rankable: {result['n_rankable']})")
+    print(f"  False-strategy threshold (E[max Sharpe]): {result['false_strategy_threshold']}")
+    print("\n  Top in-sample candidates:")
+    for i, cand in enumerate(result["ranking"][:5], 1):
+        print(f"    {i}. sharpe_mean={cand['insample_sharpe_mean']}  {cand['params']}")
+    if sel["params"]:
+        print("\n  Selected parameters:")
+        print(f"    {sel['params']}")
+        print(f"    in-sample sharpe_mean:      {sel['insample_sharpe_mean']}")
+        print(f"    beats false-strategy thr.:  {sel['beats_false_strategy_threshold']}")
+        oos = sel["out_of_sample"]
+        if oos:
+            print(f"    OOS sharpe / prob-profit:   {oos['sharpe_ratio']} / {oos['prob_profitable']}")
+            print(f"    OOS confirmed:              {oos['confirmed']}")
+    banner = "✅ TRUSTWORTHY" if sel["trustworthy"] else "❌ NOT TRUSTWORTHY"
+    print(f"\n  {banner}")
+    print(f"  {sel['summary']}")
+    print(f"\n  ⚠️  {result['disclaimer']}")
+    print(f"{'='*64}\n")
+
+    if args.json:
+        _print_json(result)
+
+
 def cmd_portfolio(args) -> None:
     """Display Alpaca portfolio (read-only)."""
     data = get_portfolio_data()
@@ -485,6 +546,7 @@ Modes:
   live      Run on schedule with Telegram/email alerts
   backtest  Historical simulation
   validate  Walk-forward + held-out OOS + bootstrap edge check (P0.1)
+  optimize  Parameter search scored in-sample only, OOS-confirmed (P0.2)
   portfolio View Alpaca portfolio (read-only)
 
 Examples:
@@ -492,12 +554,13 @@ Examples:
   python bot.py --mode scan --account-size 25000
   python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
   python bot.py --mode validate --start 2022-01-01 --end 2023-12-31
+  python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31
   python bot.py --mode paper
         """,
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "portfolio"],
+        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "optimize", "portfolio"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -592,6 +655,8 @@ Examples:
         cmd_backtest(args)
     elif args.mode == "validate":
         cmd_validate(args)
+    elif args.mode == "optimize":
+        cmd_optimize(args)
     elif args.mode == "portfolio":
         cmd_portfolio(args)
     else:

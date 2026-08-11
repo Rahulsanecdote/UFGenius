@@ -4,7 +4,8 @@ Backtesting engine — portfolio-level simulation with daily mark-to-market acco
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -24,11 +25,56 @@ TARGET_RR = [1.5, 2.5, 4.0]
 TARGET_EXIT_PCTS = [0.30, 0.40, 0.30]
 RISK_PER_TRADE = 0.01
 MAX_POSITION_PCT = 0.10
+# Entry-signal RSI band (promoted from inline literals so it is tunable).
+ENTRY_RSI_MIN = 45.0
+ENTRY_RSI_MAX = 65.0
 
 # Cost model (audit H5): commission + slippage on every fill so reported
 # returns are net of frictions rather than optimistically gross.
 COMMISSION_PCT = config.BACKTEST_COMMISSION_PCT
 SLIPPAGE_PCT = config.BACKTEST_SLIPPAGE_PCT
+
+
+@dataclass(frozen=True)
+class StrategyParams:
+    """The backtest's tunable knobs (upgrade plan P0.2 parameter search).
+
+    Defaults reproduce the historical hardcoded behaviour exactly, so running
+    without an explicit params object is a byte-for-byte no-op. The parameter
+    search activates candidates via ``strategy_params(...)``.
+    """
+    entry_rsi_min: float = ENTRY_RSI_MIN
+    entry_rsi_max: float = ENTRY_RSI_MAX
+    atr_stop_mult: float = ATR_STOP_MULT
+    target_rr: tuple[float, ...] = field(default_factory=lambda: tuple(TARGET_RR))
+    target_exit_pcts: tuple[float, ...] = field(default_factory=lambda: tuple(TARGET_EXIT_PCTS))
+    risk_per_trade: float = RISK_PER_TRADE
+    max_position_pct: float = MAX_POSITION_PCT
+
+
+# Active parameters the engine reads. The backtest is single-threaded (tickers
+# are prepared and simulated sequentially), so swapping a module-level holder is
+# safe and avoids threading a params object through every helper.
+_ACTIVE_PARAMS = StrategyParams()
+
+
+@contextmanager
+def strategy_params(params: "StrategyParams | None"):
+    """Temporarily activate ``params`` for the enclosed backtest run.
+
+    Restores the previous params on exit. ``None`` is a no-op (keeps defaults).
+    Use around a ``backtest_signal_system`` call to score a candidate.
+    """
+    global _ACTIVE_PARAMS
+    if params is None:
+        yield _ACTIVE_PARAMS
+        return
+    prev = _ACTIVE_PARAMS
+    _ACTIVE_PARAMS = params
+    try:
+        yield params
+    finally:
+        _ACTIVE_PARAMS = prev
 
 
 def _buy_fill(price: float) -> float:
@@ -177,7 +223,7 @@ def backtest_signal_system(
                     continue
                 # Geometry (stop/targets/sizing) keys off the entry reference;
                 # the fill adds slippage and the entry pays commission (H5).
-                stop_price = entry_ref - ATR_STOP_MULT * atr
+                stop_price = entry_ref - _ACTIVE_PARAMS.atr_stop_mult * atr
                 shares = _position_size(
                     cash=cash,
                     equity=equity_before_entries,
@@ -200,9 +246,9 @@ def backtest_signal_system(
                     shares_initial=shares,
                     shares_open=shares,
                     stop_price=stop_price,
-                    t1=entry_ref + TARGET_RR[0] * risk,
-                    t2=entry_ref + TARGET_RR[1] * risk,
-                    t3=entry_ref + TARGET_RR[2] * risk,
+                    t1=entry_ref + _ACTIVE_PARAMS.target_rr[0] * risk,
+                    t2=entry_ref + _ACTIVE_PARAMS.target_rr[1] * risk,
+                    t3=entry_ref + _ACTIVE_PARAMS.target_rr[2] * risk,
                     realized_pnl=-entry_commission,  # commission booked at entry
                     last_price=buy_fill,
                 )
@@ -331,8 +377,8 @@ def _position_size(cash: float, equity: float, entry_price: float, stop_price: f
     risk_per_share = entry_price - stop_price
     if risk_per_share <= 0:
         return 0
-    risk_budget = max(equity, 0.0) * RISK_PER_TRADE
-    max_position_value = min(cash, max(equity, 0.0) * MAX_POSITION_PCT)
+    risk_budget = max(equity, 0.0) * _ACTIVE_PARAMS.risk_per_trade
+    max_position_value = min(cash, max(equity, 0.0) * _ACTIVE_PARAMS.max_position_pct)
     shares_by_risk = int(risk_budget / risk_per_share)
     shares_by_cap = int(max_position_value / entry_price) if entry_price > 0 else 0
     return max(min(shares_by_risk, shares_by_cap), 0)
@@ -364,13 +410,13 @@ def _apply_position_exits(
             _book_sell(qty, min(close_price, pos.stop_price), "STOP")
     else:
         if (not pos.t1_hit) and close_price >= pos.t1 and pos.shares_open > 0:
-            qty = _partial_qty(pos, TARGET_EXIT_PCTS[0])
+            qty = _partial_qty(pos, _ACTIVE_PARAMS.target_exit_pcts[0])
             if qty > 0:
                 _book_sell(qty, pos.t1, "T1")
             pos.t1_hit = True
 
         if (not pos.t2_hit) and close_price >= pos.t2 and pos.shares_open > 0:
-            qty = _partial_qty(pos, TARGET_EXIT_PCTS[1])
+            qty = _partial_qty(pos, _ACTIVE_PARAMS.target_exit_pcts[1])
             if qty > 0:
                 _book_sell(qty, pos.t2, "T2")
             pos.t2_hit = True
@@ -466,8 +512,8 @@ def _prepare_ticker_history(
     df["entry_signal"] = (
         (df["Close"] > df["SMA_50"])
         & (df["SMA_50"] > df["SMA_200"])
-        & (df["RSI_14"] >= 45)
-        & (df["RSI_14"] <= 65)
+        & (df["RSI_14"] >= _ACTIVE_PARAMS.entry_rsi_min)
+        & (df["RSI_14"] <= _ACTIVE_PARAMS.entry_rsi_max)
         & (df["ATR_14"] > 0)
     ).fillna(False)
     # Shift BEFORE slicing so a signal on the bar just before start_date still
