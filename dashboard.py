@@ -1964,6 +1964,27 @@ HTML = '''
               <p id="attributionNarrative" class="health-note">Win rate and average return per signal label. A grade with negative expectancy shows exactly that — labels are not assumed to pay off.</p>
             </div>
           </section>
+
+          <section class="panel health-shell" id="aiNarrativePanel" aria-labelledby="aiNarrativeTitle">
+            <div class="panel-heading">
+              <div>
+                <h3 id="aiNarrativeTitle">AI Explanation <span style="font-size:0.7em;opacity:0.7;">(optional)</span></h3>
+                <p>A plain-English bull/bear read of the current ticker's verified signal.</p>
+              </div>
+            </div>
+            <div class="health-list" id="aiNarrativeList">
+              <div class="health-item">
+                <strong>Explanation on demand</strong>
+                <span>Analyze a ticker, then request an AI explanation of its signal.</span>
+              </div>
+            </div>
+            <div class="health-actions" style="padding: 0 24px;">
+              <button id="aiNarrativeButton" class="summary-action" type="button">Explain current ticker</button>
+            </div>
+            <div style="padding: 18px 24px 0;">
+              <p id="aiNarrativeNote" class="health-note">Advisory only — an explanation of the quant signal, NOT financial advice, and the trading system never acts on it. Disabled unless the operator turns it on.</p>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -3608,6 +3629,38 @@ HTML = '''
       }
     }
 
+    function renderAiNarrative(data) {
+      const list = $('aiNarrativeList');
+      if (!list) return;
+      if (!data) {
+        list.innerHTML = '<div class="health-item"><strong>Explanation unavailable</strong><span>Could not fetch an AI explanation.</span></div>';
+        return;
+      }
+      if (!data.available) {
+        list.innerHTML = `<div class="health-item"><strong>Not available</strong><span>${escapeHtml(data.reason || 'The explainability layer is off or not configured.')}</span></div>`;
+        return;
+      }
+      list.innerHTML =
+        `<div class="health-item"><strong>${escapeHtml(data.ticker || '')} — AI read (${escapeHtml(String(data.model || ''))})</strong>` +
+        `<span style="white-space:pre-wrap;">${escapeHtml(data.narrative || '')}</span></div>` +
+        `<div class="health-item"><span>${escapeHtml(data.disclaimer || '')}</span></div>`;
+    }
+
+    async function loadAiNarrative() {
+      const ticker = state.currentResult && state.currentResult.ticker;
+      const list = $('aiNarrativeList');
+      if (!ticker) {
+        if (list) list.innerHTML = '<div class="health-item"><strong>No ticker analyzed</strong><span>Run a single-ticker analysis first, then request an explanation.</span></div>';
+        return;
+      }
+      if (list) list.innerHTML = '<div class="health-item"><strong>Requesting explanation…</strong><span>Scanning the ticker and asking the model.</span></div>';
+      try {
+        renderAiNarrative(await apiFetchJson(`/api/explain?ticker=${encodeURIComponent(ticker)}`));
+      } catch (error) {
+        renderAiNarrative(null);
+      }
+    }
+
     function viewTickerFromScan(ticker) {
       $('tickerInput').value = ticker;
       updateFormState();
@@ -3688,6 +3741,7 @@ HTML = '''
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);
     $('haltButton').addEventListener('click', () => toggleBreaker('halt'));
     $('resumeButton').addEventListener('click', () => toggleBreaker('resume'));
+    $('aiNarrativeButton').addEventListener('click', loadAiNarrative);
     $('clearFiltersButton').addEventListener('click', resetFilters);
     $('clearFiltersInlineButton').addEventListener('click', resetFilters);
     $('expandFactorsButton').addEventListener('click', () => {
@@ -4191,6 +4245,39 @@ def api_scan_ticker():
         return jsonify(_clean(plan))
     except Exception:
         log.exception("Scan ticker endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/explain")
+def api_explain():
+    """Optional LLM bull/bear narrative for a ticker's verified snapshot (P3.1).
+
+    Advisory only — never gates or places an order. Returns 200 with
+    ``{"available": false, ...}`` when the explainability layer is disabled or
+    not configured, so the UI degrades gracefully.
+    """
+    ticker, ticker_err = _parse_ticker(request.args.get("ticker"))
+    if ticker_err:
+        return _error_response(ticker_err, 400)
+    account_size, account_err = _parse_account_size(request.args.get("account_size"))
+    if account_err:
+        return _error_response(account_err, 400)
+
+    try:
+        if not config.EXPLAIN_ENABLED:
+            return jsonify({"available": False,
+                            "reason": "Explainability layer is disabled (explain.enabled)."})
+        from src.explain.narrative import explain as _explain
+
+        plan = scan_single_ticker(ticker, account_size=float(account_size))
+        regime = (plan or {}).get("market_regime")
+        narrative = _explain(plan=plan, regime=regime)
+        if not narrative:
+            return jsonify({"available": False,
+                            "reason": "No narrative (not configured, daily cap reached, or unavailable)."})
+        return jsonify({"available": True, **narrative})
+    except Exception:
+        log.exception("Explain endpoint error")
         return _error_response("Internal server error", 500)
 
 

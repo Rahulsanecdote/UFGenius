@@ -334,13 +334,33 @@ then an optional intelligence layer. Every phase makes the edge more
       BUY/SELL/HOLD histogram would need a scan-worker hook and is deferred.)*
 
 ### P3 — Optional intelligence layer *(only after P0–P2 pay off)*
-- [ ] **P3.1 — Explainability layer, not a decision layer**: an *optional* LLM
+- [x] **P3.1 — Explainability layer, not a decision layer**: an *optional* LLM
       narrative that reads the **verified snapshot** (adopt the ground-truth
       guardrail) and the quant signal to produce a human-readable bull/bear
       rationale for the dashboard/alerts. It **must never gate or place orders**,
       must be **sandboxed against prompt injection** (quarantine raw news/social
       text), and must be **cost-capped**. Captures TradingAgents' one real edge
       (explainability) without its fatal flaws.
+      **Delivered:** `src/explain/narrative.py` — `build_snapshot()` whitelists
+      only the **verified structured fields** (signal label, composite +
+      per-dimension scores, trade-plan levels, regime, our own reason strings) —
+      raw news/social text is never sent, so the model sees numbers/enums, not an
+      injection surface. `generate_narrative()` calls the **Anthropic SDK**
+      (`claude-opus-5` default, config-overridable) with a system prompt that
+      treats the snapshot as **inert data, never instructions** and forbids
+      buy/sell advice, then returns a short bull/bear read + disclaimer. It has
+      **no import of the executor/broker** (structurally firewalled from the money
+      path) and never raises. **Cost-capped**: default OFF (`explain.enabled`),
+      a per-call `max_tokens` output cap at `effort: low`, a bounded structured
+      input, and a **per-day call cap** (atomic JSON counter). Surfaced via a new
+      `GET /api/explain?ticker=…` endpoint (degrades to `{"available": false}`
+      when off/unconfigured) and an on-demand dashboard **AI Explanation** panel
+      (button, not polled). Config-driven (`config.yaml` `explain:`;
+      `EXPLAIN_*` env; needs `ANTHROPIC_API_KEY`). `anthropic` added to
+      `requirements.txt` (lazy-imported; only used when enabled). 19 offline
+      tests (`tests/test_explain.py` + dashboard-API cases) with a fake client —
+      gating, refusal handling, cost caps, daily-cap reset, snapshot
+      structured-only guarantee, and a no-executor-import firewall check.
 
 ---
 

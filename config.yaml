@@ -128,6 +128,19 @@ observability:
   alerts:
     enabled: false                           # operational alerts (breaker trips, data gaps) — opt-in
 
+# Explainability layer (upgrade plan P3.1). An OPTIONAL LLM narrative that reads
+# the verified quant snapshot and writes a human-readable bull/bear rationale for
+# the dashboard/alerts. Advisory ONLY — it never gates, sizes, or places an order,
+# is sandboxed against prompt injection (structured data only), and is cost-capped.
+# Default OFF; needs ANTHROPIC_API_KEY when enabled.
+explain:
+  enabled: false             # master switch — a no-op until turned on
+  model: "claude-opus-5"     # any Claude model id; use a cheaper one (e.g. claude-haiku-4-5) to cut cost
+  max_tokens: 1000           # hard per-call output cap (cost guard)
+  timeout_seconds: 30
+  daily_call_cap: 50         # max narrations per day (cost guard); <=0 disables the cap
+  call_ledger_path: "data/explain_calls.json"
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

@@ -20,4 +20,5 @@ alpaca-py
 lxml
 flask
 gunicorn
+anthropic                 # optional LLM explainability layer (P3.1); only used when explain.enabled
 pytest
