@@ -219,6 +219,22 @@ CATALYST_VETO_TAGS: list = [
     str(t).upper() for t in (_CATALYSTS.get("veto_tags") or _DEFAULT_VETO_TAGS)
 ]
 
+# Execution-quality measurement (upgrade plan P2.1).
+_EXEC_QUALITY: dict = get("execution_quality", {})
+EXEC_QUALITY_LEDGER_PATH: str = _resolve_root(env(
+    "EXEC_QUALITY_LEDGER_PATH",
+    _EXEC_QUALITY.get("ledger_path") or str(_ROOT / "data" / "execution_quality.json"),
+))
+EXEC_QUALITY_MAX_FILLS: int = env_int(
+    "EXEC_QUALITY_MAX_FILLS", _as_int(_EXEC_QUALITY.get("max_fills_retained", 5000), 5000)
+)
+EXEC_QUALITY_USE_MEASURED_SLIPPAGE: bool = env_bool(
+    "EXEC_QUALITY_USE_MEASURED_SLIPPAGE", bool(_EXEC_QUALITY.get("use_measured_slippage", False))
+)
+EXEC_QUALITY_MIN_FILLS_FOR_MEASURED: int = env_int(
+    "EXEC_QUALITY_MIN_FILLS_FOR_MEASURED", _as_int(_EXEC_QUALITY.get("min_fills_for_measured", 20), 20)
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

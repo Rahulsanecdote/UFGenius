@@ -34,6 +34,31 @@ ENTRY_RSI_MAX = 65.0
 COMMISSION_PCT = config.BACKTEST_COMMISSION_PCT
 SLIPPAGE_PCT = config.BACKTEST_SLIPPAGE_PCT
 
+# Effective slippage the fills use. Defaults to the static estimate; a run may
+# swap in measured live slippage (P2.1) via `_resolve_slippage()`. Single-threaded
+# backtest, so a module-level holder is safe (same pattern as _ACTIVE_PARAMS).
+_ACTIVE_SLIPPAGE = SLIPPAGE_PCT
+
+
+def _resolve_slippage() -> float:
+    """Pick the slippage for this run: measured (P2.1) when enabled + trusted.
+
+    When `execution_quality.use_measured_slippage` is on and enough real fills
+    exist, use the measured adverse slippage so the backtest's cost model tracks
+    reality; otherwise keep the configured static estimate.
+    """
+    try:
+        if getattr(config, "EXEC_QUALITY_USE_MEASURED_SLIPPAGE", False):
+            from src.alpaca.execution_quality import measured_slippage_pct
+
+            measured = measured_slippage_pct()
+            if measured is not None:
+                log.info(f"Backtest using MEASURED slippage {measured:.4%} (P2.1)")
+                return float(measured)
+    except Exception as exc:
+        log.debug(f"measured-slippage resolution failed, using static: {exc}")
+    return SLIPPAGE_PCT
+
 
 @dataclass(frozen=True)
 class StrategyParams:
@@ -79,12 +104,12 @@ def strategy_params(params: "StrategyParams | None"):
 
 def _buy_fill(price: float) -> float:
     """Effective buy price after adverse slippage."""
-    return price * (1 + SLIPPAGE_PCT)
+    return price * (1 + _ACTIVE_SLIPPAGE)
 
 
 def _sell_fill(price: float) -> float:
     """Effective sell price after adverse slippage."""
-    return price * (1 - SLIPPAGE_PCT)
+    return price * (1 - _ACTIVE_SLIPPAGE)
 
 
 def _commission(notional: float) -> float:
@@ -127,6 +152,11 @@ def backtest_signal_system(
     """
     if not tickers:
         return {"error": "No tickers supplied"}
+
+    # Resolve the slippage this run will apply (measured live slippage when
+    # enabled + trusted, else the static estimate). Single-threaded backtest.
+    global _ACTIVE_SLIPPAGE
+    _ACTIVE_SLIPPAGE = _resolve_slippage()
 
     if universe_history is None:
         universe_history = load_universe_history(config.BACKTEST_UNIVERSE_HISTORY_PATH)
@@ -600,7 +630,10 @@ def _compute_metrics(
         "final_capital": round(final_value, 2),
         "cost_model": {
             "commission_pct": COMMISSION_PCT,
-            "slippage_pct": SLIPPAGE_PCT,
+            "slippage_pct": _ACTIVE_SLIPPAGE,
+            "slippage_source": (
+                "measured" if abs(_ACTIVE_SLIPPAGE - SLIPPAGE_PCT) > 1e-12 else "configured"
+            ),
             "note": "Per-side commission + slippage applied to every fill; "
                     "entries fill at the NEXT bar's open after a signal; "
                     "stops fill at min(close, stop) to reflect gap-through.",

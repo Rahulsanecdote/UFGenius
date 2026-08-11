@@ -3915,6 +3915,18 @@ def api_paper_scorecard():
         return _error_response("Internal server error", 500)
 
 
+@app.route("/api/execution-quality")
+def api_execution_quality():
+    """Execution-quality summary: realized slippage / implementation shortfall (P2.1)."""
+    try:
+        from src.alpaca.execution_quality import ExecutionQualityLedger
+
+        return jsonify(ExecutionQualityLedger().load().summary())
+    except Exception:
+        log.exception("Execution-quality endpoint error")
+        return _error_response("Internal server error", 500)
+
+
 @app.route("/api/breaker", methods=["POST"])
 def api_breaker():
     """Flip the global halt switch (P0.3). Body: {"action": "halt"|"resume", "reason": "..."}.

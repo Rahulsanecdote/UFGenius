@@ -18,3 +18,16 @@ def _isolate_circuit_breaker_state(tmp_path, monkeypatch):
     fresh, isolated state file. Individual tests may still override this path.
     """
     monkeypatch.setattr(cfg, "CIRCUIT_STATE_PATH", str(tmp_path / "circuit_breaker.json"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_execution_quality_ledger(tmp_path, monkeypatch):
+    """Point the P2.1 execution-quality ledger at a per-test temp path.
+
+    The executor records every fill to ``config.EXEC_QUALITY_LEDGER_PATH`` via a
+    lazy singleton; isolate the path AND reset the singleton so execution tests
+    never write to the real ``data/execution_quality.json`` or leak across tests.
+    """
+    import src.alpaca.execution_quality as _eq
+    monkeypatch.setattr(cfg, "EXEC_QUALITY_LEDGER_PATH", str(tmp_path / "execution_quality.json"))
+    monkeypatch.setattr(_eq, "_default", None)

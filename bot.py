@@ -423,6 +423,33 @@ def cmd_portfolio(args) -> None:
     print(f"{'='*60}\n")
 
     _print_paper_scorecard()
+    _print_execution_quality()
+
+
+def _print_execution_quality() -> None:
+    """Print the P2.1 execution-quality summary from the local fill ledger."""
+    try:
+        from src.alpaca.execution_quality import ExecutionQualityLedger
+
+        summary = ExecutionQualityLedger().load().summary()
+    except Exception as exc:
+        log.debug(f"execution-quality summary unavailable: {exc}")
+        return
+
+    print(f"{'='*60}")
+    print("  EXECUTION QUALITY (P2.1)")
+    print(f"{'='*60}")
+    if summary.get("n_fills", 0) == 0:
+        print("  No fills recorded yet.")
+        print(f"{'='*60}\n")
+        return
+    print(f"  Fills recorded:       {summary['n_fills']}")
+    print(f"  Avg slippage:         {summary['avg_slippage_bps']} bps "
+          f"(entry {summary['avg_entry_slippage_bps']} / exit {summary['avg_exit_slippage_bps']})")
+    print(f"  Implementation short.: ${summary['total_implementation_shortfall']}")
+    measured = summary.get("measured_slippage_pct")
+    print(f"  Measured slippage:    {measured if measured is not None else 'n/a (too few fills)'}")
+    print(f"{'='*60}\n")
 
 
 def _print_paper_scorecard() -> None:

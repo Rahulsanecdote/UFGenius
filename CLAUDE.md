@@ -141,7 +141,11 @@ pytest --cov=src       # coverage
   turns into backtest-comparable metrics for the live performance gate; the
   circuit-breaker state (halt flag + broker-error trail) is a JSON file shared
   between the dashboard and CLI (`src/alpaca/circuit_breaker.py`, config
-  `circuit_breakers:`). Live trading needs an explicit flag + `ALPACA_PAPER=false`.
+  `circuit_breakers:`). Every fill's expected-vs-realized price is recorded to the
+  P2.1 execution-quality ledger (`src/alpaca/execution_quality.py`) as adverse
+  slippage + implementation shortfall; with `execution_quality:
+  use_measured_slippage` the backtest cost model uses that **measured** slippage.
+  Live trading needs an explicit flag + `ALPACA_PAPER=false`.
 - **Intraday data (P1.1):** `fetch_intraday()` (`src/data/fetcher.py`) is the
   entry point for 1m/5m/… bars — same provider abstraction as daily, but with an
   interval-scaled cache TTL and the look-ahead guards in `src/data/lookahead.py`
@@ -191,6 +195,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/scan-gaps` | Pre-market gap scan |
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
 | GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4) |
+| GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/clear-cache` | Clear the market-data cache |
