@@ -459,6 +459,37 @@ def _print_paper_scorecard() -> None:
     print(f"{'='*60}\n")
 
 
+def cmd_intraday_scan(args) -> None:
+    """Run the continuous intraday scan loop (upgrade plan P1.2).
+
+    Fans the unusual-volume / momentum / breakout scanners over live intraday
+    bars on a short interval, emitting deduped candidates into a queue and
+    logging each cycle. This is candidate DISCOVERY only — turning candidates
+    into risk-gated orders is P1.3 + the existing executor path.
+    """
+    from src.data.universe import get_universe
+    from src.scanner.intraday_scan import ContinuousScanner
+
+    universe_name = args.universe or config.SCAN_UNIVERSE
+    tickers = [args.ticker.upper()] if args.ticker else get_universe(universe_name)
+    scanner = ContinuousScanner(tickers)
+
+    print(f"\n{'='*60}")
+    print("  CONTINUOUS INTRADAY SCANNER (P1.2)")
+    print(f"{'='*60}")
+    print(f"  Universe:  {len(scanner.universe)} tickers ({universe_name}), <= {scanner._cap}/cycle")
+    print(f"  Interval:  every {scanner.interval_sec}s on {config.CONTINUOUS_SCAN_INTERVAL} bars")
+    print("  Emitting candidates to an in-process queue (consumer = P1.3).")
+    print("  Market-hours only. Press Ctrl+C to stop.")
+    print(f"{'='*60}\n")
+
+    try:
+        scanner.run_forever()
+    except KeyboardInterrupt:
+        scanner.stop()
+        print("\n  Scanner stopped.\n")
+
+
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 _DEFAULT_SCHEDULE = {
@@ -591,12 +622,13 @@ Examples:
   python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
   python bot.py --mode validate --start 2022-01-01 --end 2023-12-31
   python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31
+  python bot.py --mode intraday-scan                 # Continuous intraday candidate scan (P1.2)
   python bot.py --mode paper
         """,
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "optimize", "portfolio"],
+        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "optimize", "portfolio", "intraday-scan"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -695,6 +727,8 @@ Examples:
         cmd_optimize(args)
     elif args.mode == "portfolio":
         cmd_portfolio(args)
+    elif args.mode == "intraday-scan":
+        cmd_intraday_scan(args)
     else:
         parser.print_help()
         sys.exit(1)

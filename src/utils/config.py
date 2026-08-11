@@ -134,6 +134,43 @@ INTRADAY_FUTURE_BAR_TOLERANCE_SEC: float = env_float(
     "INTRADAY_FUTURE_BAR_TOLERANCE_SEC", float(_INTRADAY.get("future_bar_tolerance_sec", 5))
 )
 
+# Continuous intraday scan loop (upgrade plan P1.2).
+_CONTINUOUS_SCAN: dict = get("continuous_scan", {})
+CONTINUOUS_SCAN_INTERVAL_SEC: int = env_int(
+    "CONTINUOUS_SCAN_INTERVAL_SEC", _as_int(_CONTINUOUS_SCAN.get("interval_sec", 45), 45)
+)
+CONTINUOUS_SCAN_INTERVAL: str = env("CONTINUOUS_SCAN_INTERVAL", _CONTINUOUS_SCAN.get("interval", "5m"))
+CONTINUOUS_SCAN_UNIVERSE_CAP: int = env_int(
+    "CONTINUOUS_SCAN_UNIVERSE_CAP", _as_int(_CONTINUOUS_SCAN.get("universe_cap", 100), 100)
+)
+CONTINUOUS_SCAN_DEDUP_TTL_SEC: int = env_int(
+    "CONTINUOUS_SCAN_DEDUP_TTL_SEC", _as_int(_CONTINUOUS_SCAN.get("dedup_ttl_sec", 300), 300)
+)
+CONTINUOUS_SCAN_QUEUE_MAX: int = env_int(
+    "CONTINUOUS_SCAN_QUEUE_MAX", _as_int(_CONTINUOUS_SCAN.get("queue_max", 500), 500)
+)
+CONTINUOUS_SCAN_REL_VOLUME_THRESHOLD: float = env_float(
+    "CONTINUOUS_SCAN_REL_VOLUME_THRESHOLD", float(_CONTINUOUS_SCAN.get("rel_volume_threshold", 2.0))
+)
+CONTINUOUS_SCAN_MOMENTUM_PCT_THRESHOLD: float = env_float(
+    "CONTINUOUS_SCAN_MOMENTUM_PCT_THRESHOLD", float(_CONTINUOUS_SCAN.get("momentum_pct_threshold", 1.5))
+)
+CONTINUOUS_SCAN_MOMENTUM_LOOKBACK_BARS: int = env_int(
+    "CONTINUOUS_SCAN_MOMENTUM_LOOKBACK_BARS", _as_int(_CONTINUOUS_SCAN.get("momentum_lookback_bars", 6), 6)
+)
+CONTINUOUS_SCAN_BREAKOUT_LOOKBACK_BARS: int = env_int(
+    "CONTINUOUS_SCAN_BREAKOUT_LOOKBACK_BARS", _as_int(_CONTINUOUS_SCAN.get("breakout_lookback_bars", 20), 20)
+)
+CONTINUOUS_SCAN_MIN_BARS: int = env_int(
+    "CONTINUOUS_SCAN_MIN_BARS", _as_int(_CONTINUOUS_SCAN.get("min_bars", 10), 10)
+)
+CONTINUOUS_SCAN_PREMARKET_START_ET: str = env(
+    "CONTINUOUS_SCAN_PREMARKET_START_ET", _CONTINUOUS_SCAN.get("premarket_start_et", "07:00")
+)
+CONTINUOUS_SCAN_MIN_GAP_PCT: float = env_float(
+    "CONTINUOUS_SCAN_MIN_GAP_PCT", float(_CONTINUOUS_SCAN.get("min_gap_pct", 5.0))
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

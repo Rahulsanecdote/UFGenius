@@ -214,11 +214,22 @@ then an optional intelligence layer. Every phase makes the edge more
       deterministic guards reusable by the fetch path, backtest as-of reads, and
       the live loop. Config-driven (`config.yaml` `intraday:` + `INTRADAY_*`);
       19 offline tests (`tests/test_lookahead.py`, `tests/test_intraday_fetch.py`).
-- [ ] **P1.2 — Continuous scan loop**: replace the 6 fixed slots with a
+- [x] **P1.2 — Continuous scan loop**: replace the 6 fixed slots with a
       short-interval (≈30–60 s) intraday scanner running the existing
       **pre-market gapper**, **unusual-volume**, and **momentum/breakout**
       scanners on **live intraday bars**, emitting candidates into a queue.
       Rate-limit- and cost-aware.
+      **Delivered:** `ContinuousScanner` (`src/scanner/intraday_scan.py`) loops
+      on a floored short interval during market hours, scoring live intraday
+      bars (via P1.1 `fetch_intraday`) for **unusual volume / momentum /
+      breakout** (breakout requires volume participation — a fakeout guard) and
+      pushing hits into a thread-safe, bounded, de-duplicating `CandidateQueue`
+      (`src/scanner/candidate_queue.py`) for the P1.3 consumer to drain.
+      Rate/cost-aware: universe capped per cycle, bars served from the
+      interval-scaled cache, interval floored, market-hours gated. Run it with
+      `python bot.py --mode intraday-scan`. Discovery only — sizing/gating/orders
+      stay in P1.3 + RiskGuard. Config-driven (`config.yaml` `continuous_scan:`);
+      18 offline tests (`tests/test_candidate_queue.py`, `tests/test_intraday_scan.py`).
 - [ ] **P1.3 — Intraday signal + entry/exit logic**: VWAP / opening-range /
       relative-volume features, **intraday ATR** stops, and entry triggers tied
       to **breakout confirmation + volume** (not a once-daily composite). Keep
