@@ -229,6 +229,10 @@ def generate_trade_plan(
         "entry": {
             "type":  "LIMIT",
             "price": entry_price,
+            # The observed market price the entry was derived from (the plan
+            # price is a slight discount below it). P2.2 marketable-limit pricing
+            # crosses THIS, not the discounted limit, so it is genuinely marketable.
+            "reference_price": round(current_price, 2),
             "note":  "Set limit order — do NOT use market order",
         },
         "stop_loss": {

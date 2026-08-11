@@ -72,6 +72,24 @@ def test_smart_entry_reads_measured_slippage(monkeypatch):
     assert smart_entry_price(100.0) == 100.4
 
 
+def test_smart_entry_crosses_market_not_accounting():
+    # Crossing the *market* (100.0), not the discounted plan price (99.8). A
+    # limit derived from the discount (99.8 * 1.005 ≈ 100.30) would be less
+    # marketable than crossing the live market.
+    assert smart_entry_price(100.0, accounting_price=99.8, measured=0.005) == 100.5
+
+
+def test_smart_entry_cap_is_relative_to_accounting():
+    # Cap bounds the chase relative to the PLAN price, not the market: with a
+    # large measured slippage the market-cross (100 * 1.05 = 105) is clipped to
+    # accounting * (1 + cap) = 98 * 1.01 = 98.98.
+    assert smart_entry_price(100.0, accounting_price=98.0, measured=0.05) == 98.98
+
+
+def test_smart_entry_non_positive_market_falls_back_to_accounting():
+    assert smart_entry_price(0.0, accounting_price=99.8, measured=0.005) == 99.8
+
+
 # ── executor integration ──────────────────────────────────────────────────────
 
 def _plan():
@@ -127,3 +145,39 @@ def test_execute_submits_plain_limit_when_disabled(tmp_path, monkeypatch):
         with patch("src.alpaca.executor.place_entry_order", return_value=MagicMock(id="oid")) as submit:
             result = ex.execute_trade_plan(_plan(), tracker)
     assert submit.call_args.args[2] == 100.0  # plain plan price
+
+
+def test_riskguard_sees_position_sized_at_submit_price(tmp_path, monkeypatch):
+    # The money-path safety fix: RiskGuard must gate on the marketable submit
+    # price, not the discounted plan price, so a chase up to the cap cannot slip
+    # past the exposure/per-trade-risk limits.
+    from unittest.mock import MagicMock, patch
+
+    import src.alpaca.executor as ex
+    from src.alpaca.position_tracker import PositionTracker
+
+    monkeypatch.setattr(cfg, "SAFETY", {})
+    monkeypatch.setattr(cfg, "ALPACA_PAPER", True)
+    monkeypatch.setattr(ex, "_lookup_days_to_earnings", lambda _t: None)
+    import src.alpaca.execution_quality as eq
+    monkeypatch.setattr(eq, "measured_slippage_pct", lambda: 0.005)  # → submit 100.5
+
+    seen = {}
+
+    def _capture(self, plan, portfolio, tracker, breaker):
+        seen["plan"] = plan
+        return True, ""
+
+    monkeypatch.setattr(ex.RiskGuard, "check", _capture)
+
+    plan = _plan()  # entry price 100.0, stop 96.0, 10 shares
+    tracker = PositionTracker(store_path=str(tmp_path / "pos.json"))
+    with patch("src.alpaca.executor.get_portfolio_data", return_value=_portfolio()):
+        with patch("src.alpaca.executor.place_entry_order", return_value=MagicMock(id="oid")):
+            ex.execute_trade_plan(plan, tracker)
+
+    pos = seen["plan"]["position"]
+    assert pos["position_value"] == 1005.0                 # 100.5 × 10, not 1000
+    assert pos["risk_dollars"] == round((100.5 - 96.0) * 10, 2)  # 45.0, not 40
+    # Original plan dict is not mutated.
+    assert plan["position"]["position_value"] == 1000.0

@@ -68,15 +68,36 @@ def marketable_limit_price(side: str, reference: float, offset_pct: float) -> fl
     return round(priced, 2)
 
 
-def smart_entry_price(reference: float, measured: Optional[float] = None) -> float:
-    """The marketable-limit BUY price for an entry at ``reference``.
+def smart_entry_price(
+    market_price: float,
+    accounting_price: Optional[float] = None,
+    measured: Optional[float] = None,
+) -> float:
+    """The marketable-limit BUY price for an entry.
 
-    ``reference`` is the plan's intended entry price. When smart orders are
-    disabled this returns the reference unchanged (plain limit).
+    Crosses the **current market** (``market_price``, e.g. the plan's
+    ``reference_price``) by the measured-slippage offset, so the limit is
+    genuinely marketable — a plain limit set below the market never fills. The
+    result is then **capped relative to the accounting price** (the plan's
+    intended entry): we never chase more than ``entry_offset_cap_pct`` above what
+    we planned to pay. When smart orders are disabled, returns the accounting
+    price unchanged (plain limit at the plan price).
+
+    ``accounting_price`` defaults to ``market_price`` when not supplied.
     """
+    accounting = float(accounting_price if accounting_price is not None else market_price)
     if not bool(config.SMART_ORDERS_ENABLED):
-        return round(float(reference), 2)
+        return round(accounting, 2)
+    market = float(market_price)
+    if market <= 0:
+        return round(accounting, 2)
     off = entry_offset_pct(measured)
-    price = marketable_limit_price("buy", reference, off)
-    log.debug(f"smart entry: ref={reference} +{off:.4%} → marketable limit {price}")
+    crossed = marketable_limit_price("buy", market, off)      # cross the market
+    cap = max(0.0, float(config.SMART_ORDERS_ENTRY_OFFSET_CAP_PCT))
+    ceiling = round(accounting * (1 + cap), 2)                 # cap chase vs plan price
+    price = min(crossed, ceiling)
+    log.debug(
+        f"smart entry: market={market} +{off:.4%} → {crossed}, "
+        f"cap {ceiling} (acct {accounting}) → {price}"
+    )
     return price
