@@ -73,22 +73,30 @@ def _record_execution_quality(ticker, side, kind, expected, fill, shares, order=
 def _record_broker_error(breaker, context: str) -> None:
     """Feed the broker-error breaker and, if this error *trips* it (P2.3), alert.
 
-    Fires the operational alert only on the false→true transition so a single
-    trip notifies once, not on every subsequent error. Alerting is opt-in and
-    best-effort — it never affects the breaker or the execution path.
+    The record + trip check is one interprocess transaction inside the breaker
+    (``record_broker_error_and_check_trip``), so the operational alert fires at
+    most once per trip even with concurrent executor processes. Alerting is
+    opt-in and best-effort — it never affects the breaker or the execution path.
     """
+    tripped_now = False
     try:
-        was_tripped = breaker.broker_breaker_tripped()
-    except Exception:
-        was_tripped = False
-    breaker.record_broker_error(context)
-    try:
-        if not was_tripped and breaker.broker_breaker_tripped():
+        tripped_now = bool(breaker.record_broker_error_and_check_trip(context))
+    except Exception as exc:
+        # Never let breaker bookkeeping break execution — fall back to a plain
+        # record (no transition signal) and move on.
+        log.debug(f"atomic broker-error record failed ({exc}); recording plainly")
+        try:
+            breaker.record_broker_error(context)
+        except Exception:
+            pass
+        return
+    if tripped_now:
+        try:
             from src.observability.alerting import alert_breaker_trip
 
             alert_breaker_trip(breaker.state(), kind="broker_breaker")
-    except Exception as exc:  # alerting must never break execution
-        log.debug(f"breaker-trip alert skipped: {exc}")
+        except Exception as exc:  # alerting must never break execution
+            log.debug(f"breaker-trip alert skipped: {exc}")
 
 
 def _lookup_days_to_earnings(ticker: str):

@@ -81,7 +81,9 @@ def send_telegram_message(text: str, *, context: str = "message") -> bool:
         log.info(f"Telegram alert sent ({context})")
         return True
     except Exception as exc:
-        log.warning(f"Telegram alert failed ({context}): {exc}")
+        # Log only the exception TYPE, never the exception text: a requests
+        # error can embed the request URL, which carries TELEGRAM_BOT_TOKEN.
+        log.warning(f"Telegram alert failed ({context}): {type(exc).__name__}")
         return False
 
 

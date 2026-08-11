@@ -15,6 +15,7 @@ a label with a negative expectancy shows exactly that.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 
@@ -23,7 +24,9 @@ def _num(value: object) -> Optional[float]:
         f = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
-    return f if f == f else None  # NaN guard
+    # Reject NaN and ±inf: a non-finite pnl/return would poison every sum and
+    # serialize to invalid JSON on the attribution endpoint.
+    return f if math.isfinite(f) else None
 
 
 def signal_attribution(trades: list[dict]) -> dict:

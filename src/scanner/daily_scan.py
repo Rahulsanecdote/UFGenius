@@ -172,6 +172,16 @@ def run_daily_scan(
 
     if regime["regime"] == "BEAR_RISK_OFF" and not config.SAFETY.get("trade_in_bear_market", False):
         log.warning("BEAR MARKET DETECTED - no long positions recommended")
+        # This IS a completed scan — the regime check ran. Record it (zero
+        # signals) so the metrics ledger's last-scan timestamp stays fresh; a
+        # sustained bear regime must not read as a scanner outage / data gap.
+        _record_scan_metrics(
+            (datetime.now() - scan_start).total_seconds(),
+            total_scanned=0,
+            total_signals=0,
+            label_counts={"STRONG_BUY": 0, "BUY": 0, "WEAK_BUY": 0},
+            regime=regime["regime"],
+        )
         return {
             "scan_date": scan_start.isoformat(),
             "market_regime": regime["regime"],

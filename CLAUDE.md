@@ -171,9 +171,14 @@ pytest --cov=src       # coverage
   a stale-fallback path.
 - **Observability (P2.3):** `src/observability/` is pure telemetry — it never
   gates or places an order. `metrics.py` (`MetricsLedger`, singleton
-  `default_ledger()`) records one bounded JSON record per scan (latency,
-  scanned/signal counts, buy-side label histogram, regime) and its `summary()`
-  exposes avg/p95 latency and a **data-gap** flag (`observability.data_gap_seconds`).
+  `default_ledger()`, interprocess-`flock`ed writes like the breaker store)
+  records one bounded JSON record per scan (latency, scanned/signal counts,
+  buy-side label histogram, regime) and its `summary()` exposes avg/**p95**
+  (nearest-rank) latency and a **data-gap** flag. Gap detection
+  (`observability.data_gap_seconds`) is **default-disabled** — raw elapsed time
+  can't tell an outage from a normal quiet period (overnight/weekends), so it's
+  opt-in above the deployment's real cadence; active-outage detection is better
+  driven by an external watchdog polling `/api/metrics`.
   `attribution.py` turns the P0.4 trade-outcome ledger into a per-signal-label
   scorecard. `alerting.py` sends opt-in operational alerts (breaker trips, data
   gaps) via `send_text_alert` — **default off** (`observability.alerts.enabled`),

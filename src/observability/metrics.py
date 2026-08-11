@@ -17,17 +17,26 @@ the other file-backed ledgers.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX (e.g. Windows) — degrade to in-process lock
+    fcntl = None  # type: ignore[assignment]
 
 from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+_WARNED_NO_FLOCK = False
 
 # Buy-side labels the scanner buckets today (SELL/HOLD are filtered upstream and
 # never reach a scan result, so they are not counted here — see the P2.3 note in
@@ -47,16 +56,21 @@ def _parse_iso(ts: object) -> Optional[datetime]:
 
 
 def _percentile(sorted_xs: list[float], pct: float) -> Optional[float]:
-    """Nearest-rank percentile of an already-sorted list (empty → None)."""
+    """Nearest-rank percentile of an already-sorted list (empty → None).
+
+    Uses the nearest-rank method: rank = ceil(pct/100 · n), returning the value
+    at that 1-based rank (clamped into range). For P95 of ``1..10`` this is
+    ``10.0`` — an actually-observed latency, never an interpolated value that
+    never occurred.
+    """
     if not sorted_xs:
         return None
     if len(sorted_xs) == 1:
         return sorted_xs[0]
-    rank = pct / 100.0 * (len(sorted_xs) - 1)
-    lo = int(rank)
-    hi = min(lo + 1, len(sorted_xs) - 1)
-    frac = rank - lo
-    return sorted_xs[lo] + (sorted_xs[hi] - sorted_xs[lo]) * frac
+    n = len(sorted_xs)
+    rank = math.ceil(pct / 100.0 * n)
+    idx = min(max(rank, 1), n) - 1
+    return sorted_xs[idx]
 
 
 class MetricsLedger:
@@ -87,6 +101,45 @@ class MetricsLedger:
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self.load()
+
+    @contextmanager
+    def _exclusive(self):
+        """Interprocess-serialized reload→append→save transaction.
+
+        The bot and the dashboard are separate processes that both write scans;
+        an in-process ``RLock`` alone would let the last writer clobber the
+        other's record. Mirrors the circuit-breaker store: hold the in-process
+        lock plus an exclusive ``flock`` on a sidecar lock file, RELOAD the
+        current on-disk list under the lock, yield for the append, then save —
+        so a concurrent process's record is merged in, not lost. Degrades to the
+        in-process lock (one-time warning) where ``flock`` is unavailable.
+        """
+        global _WARNED_NO_FLOCK
+        with self._lock:
+            if fcntl is None:
+                if not _WARNED_NO_FLOCK:
+                    log.warning(
+                        "flock unavailable on this platform; metrics updates are "
+                        "only serialized within this process."
+                    )
+                    _WARNED_NO_FLOCK = True
+                self.load()
+                yield
+                self._save_locked()
+                return
+            p = Path(self._path)
+            os.makedirs(p.parent, exist_ok=True)
+            lock_file = open(str(p) + ".lock", "w", encoding="utf-8")
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                self.load()          # reload freshest on-disk state under lock
+                yield
+                self._save_locked()
+            finally:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
 
     def record_scan(
         self,
@@ -119,13 +172,11 @@ class MetricsLedger:
             "label_counts": counts,
             "regime": str(regime) if regime is not None else None,
         }
-        with self._lock:
-            self._ensure_loaded()
+        with self._exclusive():   # reloads under the interprocess lock
             self._scans.append(rec)
-            cap = max(1, int(getattr(config, "METRICS_MAX_SCANS", 2000)))
+            cap = max(1, int(config.METRICS_MAX_SCANS))
             if len(self._scans) > cap:
                 self._scans = self._scans[-cap:]
-            self._save_locked()
         return rec
 
     def _save_locked(self) -> None:
@@ -172,7 +223,7 @@ class MetricsLedger:
         )
         last = scans[-1]
         since = self.seconds_since_last_scan(now)
-        gap_threshold = max(0.0, float(getattr(config, "METRICS_DATA_GAP_SECONDS", 3600.0)))
+        gap_threshold = max(0.0, float(config.METRICS_DATA_GAP_SECONDS))
         data_gap = bool(gap_threshold > 0 and since is not None and since > gap_threshold)
 
         def _avg(xs):

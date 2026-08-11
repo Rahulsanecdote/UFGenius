@@ -40,6 +40,8 @@ def test_percentile_nearest_rank():
     assert _percentile(xs, 50.0) == 3.0
     assert _percentile([], 95.0) is None
     assert _percentile([7.0], 95.0) == 7.0
+    # Nearest-rank (not interpolation): P95 of 1..10 is an observed value, 10.0.
+    assert _percentile([float(i) for i in range(1, 11)], 95.0) == 10.0
 
 
 def test_latency_stats_over_many(ledger):
@@ -48,8 +50,21 @@ def test_latency_stats_over_many(ledger):
     s = ledger.summary()
     assert s["n_scans"] == 10
     assert s["avg_scan_latency_sec"] == 5.5
-    assert s["p95_scan_latency_sec"] is not None and s["p95_scan_latency_sec"] >= 9.0
+    # Nearest-rank P95 of latencies 1..10 = 10.0, not the interpolated 9.55.
+    assert s["p95_scan_latency_sec"] == 10.0
     assert s["last_scan_latency_sec"] == 10.0
+
+
+def test_two_writers_reload_no_lost_record(tmp_path):
+    # Two ledger instances on the same file model two processes. Each write
+    # reloads under the interprocess lock before appending, so neither record is
+    # clobbered (last-writer-wins would leave only one).
+    path = str(tmp_path / "metrics.json")
+    a = MetricsLedger(path=path)
+    b = MetricsLedger(path=path)
+    a.record_scan(1.0, total_scanned=1, total_signals=0)
+    b.record_scan(2.0, total_scanned=1, total_signals=0)
+    assert MetricsLedger(path=path).load().summary()["n_scans"] == 2
 
 
 def test_data_gap_flag(ledger, monkeypatch):

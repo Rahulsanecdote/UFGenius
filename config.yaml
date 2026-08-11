@@ -118,7 +118,13 @@ smart_orders:
 observability:
   metrics_ledger_path: "data/metrics.json"  # per-scan metrics ledger (bounded)
   metrics_max_scans: 2000                    # cap on retained scan records
-  data_gap_seconds: 3600                     # flag a data gap after this many seconds without a scan (<=0 disables)
+  # Flag/alert a data gap after this many seconds without a scan. DEFAULT 0 =
+  # disabled: raw elapsed time cannot tell a real outage from a normal quiet
+  # period (overnight ~9h, weekends ~63h with the schedule above), so a naive
+  # threshold would false-alarm. Set this ABOVE your deployment's real
+  # inter-scan cadence before enabling, or drive outage detection from an
+  # external watchdog polling GET /api/metrics (seconds_since_last_scan).
+  data_gap_seconds: 0
   alerts:
     enabled: false                           # operational alerts (breaker trips, data gaps) — opt-in
 

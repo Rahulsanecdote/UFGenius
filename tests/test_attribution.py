@@ -50,12 +50,24 @@ def test_empty_trades():
 def test_skips_non_finite_pnl_and_missing():
     trades = [
         _trade("BUY", float("nan"), 1.0),
+        _trade("BUY", float("inf"), 1.0),
+        _trade("BUY", float("-inf"), 1.0),
         _trade("BUY", None, 1.0),
         {"signal": "BUY"},  # no pnl
         _trade("BUY", 5.0, 1.0),
     ]
     out = signal_attribution(trades)
+    # Only the single finite pnl survives — no inf poisons the totals.
     assert out["by_signal"]["BUY"]["trades"] == 1
+    assert out["by_signal"]["BUY"]["total_pnl"] == 5.0
+
+
+def test_infinite_return_pct_skipped_but_finite_pnl_counts():
+    # A finite pnl with a non-finite return_pct: the trade counts, but the
+    # infinite return is dropped from the avg_return_pct aggregate.
+    out = signal_attribution([{"signal": "BUY", "pnl": 5.0, "return_pct": float("inf")}])
+    assert out["by_signal"]["BUY"]["trades"] == 1
+    assert out["by_signal"]["BUY"]["avg_return_pct"] is None
 
 
 def test_missing_label_becomes_unknown():

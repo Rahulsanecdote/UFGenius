@@ -257,9 +257,11 @@ METRICS_MAX_SCANS: int = env_int(
     "METRICS_MAX_SCANS", _as_int(_OBSERVABILITY.get("metrics_max_scans", 2000), 2000)
 )
 # Seconds without a scan before the dashboard flags a "data gap" and (if enabled)
-# an alert fires. Default 1 hour; set <= 0 to disable gap detection.
+# an alert fires. Default 0 = DISABLED: raw elapsed time can't distinguish a real
+# outage from a normal quiet period (overnight/weekends), so gap detection is
+# opt-in — set it above the deployment's real inter-scan cadence before enabling.
 METRICS_DATA_GAP_SECONDS: float = env_float(
-    "METRICS_DATA_GAP_SECONDS", float(_OBSERVABILITY.get("data_gap_seconds", 3600.0))
+    "METRICS_DATA_GAP_SECONDS", float(_OBSERVABILITY.get("data_gap_seconds", 0.0))
 )
 # Operational alerting (breaker trips, data gaps) — default OFF, opt-in.
 OBSERVABILITY_ALERTS_ENABLED: bool = env_bool(

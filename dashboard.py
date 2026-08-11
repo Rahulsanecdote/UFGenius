@@ -3521,9 +3521,13 @@ HTML = '''
       const gap = !!m.data_gap;
       const sinceMin = m.seconds_since_last_scan === null || m.seconds_since_last_scan === undefined
         ? 'n/a' : Math.round(Number(m.seconds_since_last_scan) / 60) + ' min';
+      const thr = Number(m.data_gap_threshold_seconds) || 0;
+      const gapDetail = thr > 0
+        ? `Last scan ${sinceMin} ago (threshold ${Math.round(thr / 60)} min).`
+        : `Last scan ${sinceMin} ago. Gap detection disabled (set observability.data_gap_seconds).`;
       const lc = m.last_label_counts || {};
       const items = [
-        `<div class="health-item"><strong>Data gap: ${gap ? '⚠️ YES' : '✅ no'}</strong><span>Last scan ${sinceMin} ago (threshold ${Math.round(Number(m.data_gap_threshold_seconds) / 60)} min).</span></div>`,
+        `<div class="health-item"><strong>Data gap: ${thr > 0 ? (gap ? '⚠️ YES' : '✅ no') : '— off'}</strong><span>${gapDetail}</span></div>`,
         `<div class="health-item"><strong>Scan latency: ${m.last_scan_latency_sec ?? 'n/a'}s last</strong><span>Avg ${m.avg_scan_latency_sec ?? 'n/a'}s · p95 ${m.p95_scan_latency_sec ?? 'n/a'}s across ${m.n_scans} scan(s).</span></div>`,
         `<div class="health-item"><strong>Signals last scan: ${m.last_total_signals ?? 0}/${m.last_total_scanned ?? 0}</strong><span>${Number(lc.STRONG_BUY) || 0} strong buy · ${Number(lc.BUY) || 0} buy · ${Number(lc.WEAK_BUY) || 0} watch. Regime ${escapeHtml(String(m.last_regime || 'n/a'))}.</span></div>`
       ];

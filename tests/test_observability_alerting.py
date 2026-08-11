@@ -70,10 +70,15 @@ def test_alerting_never_raises_on_transport_error(monkeypatch):
     assert alerting.alert_data_gap(7200, 3600) is False
 
 
-# ── executor breaker-trip transition ──────────────────────────────────────────
+# ── executor breaker-trip transition (atomic, single-alert) ───────────────────
 
-def test_executor_alerts_only_on_trip_transition(monkeypatch):
+def test_executor_alerts_only_on_trip_transition(monkeypatch, tmp_path):
     import src.alpaca.executor as ex
+    from src.alpaca.circuit_breaker import CircuitBreaker
+
+    monkeypatch.setattr(cfg, "CIRCUIT_STATE_PATH", str(tmp_path / "cb.json"))
+    monkeypatch.setattr(cfg, "CIRCUIT_BROKER_ERROR_THRESHOLD", 2)
+    monkeypatch.setattr(cfg, "CIRCUIT_BROKER_ERROR_WINDOW_SECONDS", 3600)
 
     calls = []
     monkeypatch.setattr(
@@ -81,26 +86,27 @@ def test_executor_alerts_only_on_trip_transition(monkeypatch):
         lambda state, kind="breaker": calls.append(kind),
     )
 
-    class _Breaker:
-        def __init__(self):
-            self._tripped = False
-            self.errors = 0
-
-        def broker_breaker_tripped(self):
-            return self._tripped
-
-        def record_broker_error(self, ctx):
-            self.errors += 1
-            if self.errors >= 2:
-                self._tripped = True
-
-        def state(self):
-            return {"broker_error_count": self.errors}
-
-    b = _Breaker()
-    ex._record_broker_error(b, "err 1")   # not tripped yet
+    b = CircuitBreaker.load_default()
+    ex._record_broker_error(b, "err 1")   # 1 error — not tripped yet
     assert calls == []
-    ex._record_broker_error(b, "err 2")   # false→true transition → one alert
+    ex._record_broker_error(b, "err 2")   # 2 errors — trips → one alert
     assert calls == ["broker_breaker"]
     ex._record_broker_error(b, "err 3")   # already tripped → no repeat alert
     assert calls == ["broker_breaker"]
+
+
+def test_atomic_trip_transition_reported_once(monkeypatch, tmp_path):
+    # Two breaker handles on the same state file (two processes) both record the
+    # tripping error; exactly one call observes the untripped→tripped transition.
+    from src.alpaca.circuit_breaker import CircuitBreaker
+
+    monkeypatch.setattr(cfg, "CIRCUIT_STATE_PATH", str(tmp_path / "cb.json"))
+    monkeypatch.setattr(cfg, "CIRCUIT_BROKER_ERROR_THRESHOLD", 2)
+    monkeypatch.setattr(cfg, "CIRCUIT_BROKER_ERROR_WINDOW_SECONDS", 3600)
+
+    a = CircuitBreaker(path=str(tmp_path / "cb.json")).load()
+    b = CircuitBreaker(path=str(tmp_path / "cb.json")).load()
+    first = a.record_broker_error_and_check_trip("e1")   # 1 error → False
+    second = b.record_broker_error_and_check_trip("e2")  # 2 errors → True (transition)
+    third = a.record_broker_error_and_check_trip("e3")   # already tripped → False
+    assert [first, second, third] == [False, True, False]

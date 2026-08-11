@@ -72,10 +72,18 @@ def alert_data_gap(seconds_since: float, threshold_seconds: float) -> bool:
 
 
 def maybe_alert_data_gap(seconds_since: Optional[float]) -> bool:
-    """Fire a data-gap alert iff the gap exceeds the configured ceiling."""
+    """Fire a data-gap alert iff the gap exceeds the configured ceiling.
+
+    A threshold of ``<= 0`` disables gap detection (the default). Numeric
+    conversion failures return False, preserving the never-raise contract.
+    """
     if not _alerts_enabled() or seconds_since is None:
         return False
-    threshold = max(0.0, float(getattr(config, "METRICS_DATA_GAP_SECONDS", 3600.0)))
-    if threshold <= 0 or float(seconds_since) <= threshold:
+    try:
+        threshold = max(0.0, float(config.METRICS_DATA_GAP_SECONDS))
+        elapsed = float(seconds_since)
+    except (TypeError, ValueError):
         return False
-    return alert_data_gap(float(seconds_since), threshold)
+    if threshold <= 0 or elapsed <= threshold:
+        return False
+    return alert_data_gap(elapsed, threshold)

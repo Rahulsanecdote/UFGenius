@@ -149,6 +149,24 @@ def test_metrics_and_attribution_panels_present():
     assert "loadAttribution()" in dashboard.HTML
 
 
+@pytest.mark.parametrize("path", ["/api/metrics", "/api/attribution"])
+def test_new_endpoints_require_api_key_when_remote(client, monkeypatch, path):
+    # The global /api/ guard authenticates both new P2.3 routes in remote mode.
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
+    monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers={"X-API-Key": "secret"}).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/api/metrics", "/api/attribution"])
+def test_new_endpoints_are_rate_limited(client, monkeypatch, path):
+    monkeypatch.setattr(dashboard, "_rate_limiter", InMemoryRateLimiter(1))
+    first = client.get(path)
+    second = client.get(path)
+    assert first.status_code in (200, 500)
+    assert second.status_code == 429
+
+
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")
