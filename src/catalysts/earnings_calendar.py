@@ -67,13 +67,23 @@ class EarningsCalendar:
         self._provider = provider_lookup
         self._dates: dict[str, date] = {}
         self._loaded = False
+        self._mtime: Optional[float] = None
         self._lock = threading.RLock()
+
+    @staticmethod
+    def _file_mtime(path: str) -> Optional[float]:
+        try:
+            p = Path(path)
+            return p.stat().st_mtime if p.exists() else None
+        except OSError:
+            return None
 
     def load(self) -> "EarningsCalendar":
         """Load the calendar file. Missing/malformed → empty (provider fallback only)."""
         with self._lock:
             self._loaded = True
             self._dates = {}
+            self._mtime = self._file_mtime(self._path)
             p = Path(self._path)
             if not p.exists():
                 return self
@@ -92,8 +102,15 @@ class EarningsCalendar:
             return self
 
     def _ensure_loaded(self) -> None:
-        if not self._loaded:
-            self.load()
+        """(Re)load if never loaded or the file changed on disk since last load.
+
+        The mtime check makes ``default_calendar()`` pick up an external
+        ``--mode earnings-calendar`` refresh without a process restart, so a
+        long-running executor never risks blocking/allowing on stale dates.
+        """
+        with self._lock:
+            if not self._loaded or self._file_mtime(self._path) != self._mtime:
+                self.load()
 
     def next_earnings(self, ticker: str) -> Optional[date]:
         """The next earnings date from the file, or None if absent."""
@@ -104,13 +121,19 @@ class EarningsCalendar:
     def days_to_earnings(self, ticker: str, as_of: Optional[date] = None) -> Optional[int]:
         """Days until the ticker's next earnings, or None if unknown.
 
-        File first (calendar-backed); if the ticker is absent, fall back to the
-        provider lookup. ``as_of`` defaults to today (injectable for tests).
+        File first (calendar-backed); if the ticker is absent — OR its stored
+        date has already passed (a stale record) — fall back to the provider
+        lookup. Returning a negative value would suppress the fallback and let an
+        obsolete record hide the ticker's *next* earnings week. ``as_of`` defaults
+        to today (injectable for tests).
         """
         as_of = as_of or date.today()
         d = self.next_earnings(ticker)
         if d is not None:
-            return (d - as_of).days
+            days = (d - as_of).days
+            if days >= 0:
+                return days
+            # Stored date is in the past → stale; fall through to the provider.
         if self._provider is not None:
             try:
                 return self._provider(ticker)
@@ -122,24 +145,34 @@ class EarningsCalendar:
         """Populate the calendar from the provider for ``tickers`` and save.
 
         Best-effort bulk build: for each ticker with a known days-to-earnings,
-        store as_of + days as the date. Returns the number of dates written.
+        store as_of + days as the date. Saves periodically so an interrupted run
+        (hundreds of sequential provider calls) keeps what it already fetched.
+        Returns the number of dates written.
         """
-        as_of = as_of or date.today()
+        import math
         from datetime import timedelta
 
+        as_of = as_of or date.today()
         with self._lock:
             self._ensure_loaded()
             written = 0
-            for ticker in tickers:
-                if self._provider is None:
-                    break
+            if self._provider is None:
+                self._save_locked()
+                return written
+            total = len(tickers)
+            for i, ticker in enumerate(tickers, 1):
                 try:
                     days = self._provider(ticker)
                 except Exception:
                     days = None
-                if isinstance(days, (int, float)):
+                # Guard non-finite: int(nan)/int(inf) raise and would abort the
+                # whole refresh mid-way.
+                if isinstance(days, (int, float)) and math.isfinite(days):
                     self._dates[str(ticker).upper()] = as_of + timedelta(days=int(days))
                     written += 1
+                if i % 50 == 0:
+                    log.info(f"Earnings calendar refresh: {i}/{total} ({written} dated) …")
+                    self._save_locked()  # periodic checkpoint
             self._save_locked()
             return written
 
@@ -152,6 +185,9 @@ class EarningsCalendar:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
             os.replace(tmp, str(p))
+            # This instance just wrote the file; adopt its mtime so the next
+            # _ensure_loaded doesn't reload the data we already hold.
+            self._mtime = self._file_mtime(self._path)
         except Exception as exc:
             log.error(f"Failed to save earnings calendar: {exc}", exc_info=True)
             if os.path.exists(tmp):

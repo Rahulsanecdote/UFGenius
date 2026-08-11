@@ -37,6 +37,14 @@ def test_none_and_garbage_tags_fail_open():
     assert g.evaluate("AAA", [None, 123]).action == "clear"
 
 
+def test_whitespace_is_normalized():
+    # A money-path gate must match despite stray whitespace from an upstream feed.
+    g = CatalystGate(veto_tags=[" FRAUD ", "TRADING_HALT"])
+    assert g.evaluate("AAA", [" fraud"]).vetoed is True
+    assert g.evaluate("AAA", ["trading_halt  "]).vetoed is True
+    assert g.evaluate("AAA", ["   "]).action == "clear"  # blank tag ignored
+
+
 def test_multiple_hits_are_reported_once():
     g = CatalystGate(veto_tags=_VETO)
     d = g.evaluate("AAA", ["FRAUD", "FRAUD", "TRADING_HALT"])

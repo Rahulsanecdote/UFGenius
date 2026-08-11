@@ -69,6 +69,46 @@ def test_refresh_from_provider_writes_file(tmp_path):
     assert "CCC" not in saved
 
 
+def test_expired_stored_date_falls_back_to_provider(tmp_path):
+    # File date already passed → treated as stale → provider consulted so the
+    # ticker's NEXT earnings week is not hidden by an obsolete record.
+    cal = _cal(tmp_path, {"AAPL": "2026-01-10"}, provider=lambda t: 4)
+    assert cal.days_to_earnings("AAPL", as_of=ASOF) == 4  # not -22 from the stale file
+    # Future stored date is still used directly.
+    cal2 = _cal(tmp_path, {"AAPL": "2026-02-10"}, provider=lambda t: 999)
+    assert cal2.days_to_earnings("AAPL", as_of=ASOF) == 9
+
+
+def test_reloads_when_file_changes(tmp_path):
+    import os
+    p = tmp_path / "ec.json"
+    p.write_text(json.dumps({"AAPL": "2026-02-05"}), encoding="utf-8")
+    cal = EarningsCalendar(path=str(p), provider_lookup=None).load()
+    assert cal.days_to_earnings("AAPL", as_of=ASOF) == 4
+    # Rewrite the file (as an external --mode earnings-calendar run would) and
+    # bump its mtime; the next query must reflect the new data without a restart.
+    p.write_text(json.dumps({"AAPL": "2026-02-20"}), encoding="utf-8")
+    os.utime(p, (p.stat().st_atime + 10, p.stat().st_mtime + 10))
+    assert cal.days_to_earnings("AAPL", as_of=ASOF) == 19
+
+
+def test_refresh_skips_non_finite_provider_values(tmp_path):
+    path = tmp_path / "ec.json"
+    vals = {"AAA": 5, "NAN": float("nan"), "INF": float("inf"), "BBB": 8}
+    cal = EarningsCalendar(path=str(path), provider_lookup=lambda t: vals.get(t))
+    written = cal.refresh_from_provider(["AAA", "NAN", "INF", "BBB"], as_of=ASOF)
+    assert written == 2  # NaN/inf skipped, not aborting the run
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert set(saved) == {"AAA", "BBB"}
+
+
+def test_refresh_with_no_provider_writes_empty(tmp_path):
+    path = tmp_path / "ec.json"
+    cal = EarningsCalendar(path=str(path), provider_lookup=None)
+    assert cal.refresh_from_provider(["AAA"], as_of=ASOF) == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+
 def test_parse_date_forms():
     assert _parse_date("2026-02-05") == date(2026, 2, 5)
     assert _parse_date("2026-02-05T00:00:00") == date(2026, 2, 5)

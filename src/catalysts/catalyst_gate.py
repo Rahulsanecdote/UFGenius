@@ -38,15 +38,17 @@ class CatalystGate:
 
     def __init__(self, veto_tags: Optional[list[str]] = None) -> None:
         source = veto_tags if veto_tags is not None else config.CATALYST_VETO_TAGS
-        self._veto_tags = {str(t).upper() for t in (source or [])}
+        # Strip + upper: this is a money-path gate, so " FRAUD" from an upstream
+        # feed must still match "FRAUD". Normalize both sides totally.
+        self._veto_tags = {str(t).strip().upper() for t in (source or []) if str(t).strip()}
 
     def evaluate(self, ticker: str, tags=None) -> CatalystDecision:
         """Decide veto/clear for a ticker given its catalyst ``tags``."""
         clean: list[str] = []
         if isinstance(tags, (list, tuple, set)):
-            clean = [str(t).upper() for t in tags if t is not None]
+            clean = [str(t).strip().upper() for t in tags if t is not None and str(t).strip()]
         elif isinstance(tags, str):
-            clean = [tags.upper()]
+            clean = [tags.strip().upper()] if tags.strip() else []
         hits = [t for t in clean if t in self._veto_tags]
         if hits:
             return CatalystDecision(

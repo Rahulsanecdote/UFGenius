@@ -664,6 +664,7 @@ Examples:
   python bot.py --mode validate --start 2022-01-01 --end 2023-12-31
   python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31
   python bot.py --mode intraday-scan                 # Continuous intraday candidate scan (P1.2)
+  python bot.py --mode earnings-calendar             # Build/refresh the earnings calendar (P1.4)
   python bot.py --mode paper
         """,
     )
