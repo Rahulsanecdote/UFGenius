@@ -20,6 +20,15 @@ safety_rules:
   cooldown_after_loss_hours: 24
   paper_trade_days_required: 30  # enforced by RiskGuard on the live path (ALPACA_PAPER=false)
 
+# Circuit breakers (upgrade plan P0.3). Halt NEW entries on stale data, repeated
+# broker failures, or an operator's global halt switch. Enforced in RiskGuard,
+# surfaced + toggled from the dashboard. Exits are never blocked.
+circuit_breakers:
+  data_staleness_max_seconds: 120   # block entries when plan market data is older than this (0 disables)
+  broker_error_threshold: 3         # trip after N broker failures within the window (<=0 disables)
+  broker_error_window_seconds: 300  # rolling window for the broker-error count
+  state_path: "data/circuit_breaker.json"  # shared halt flag + broker-error ledger
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

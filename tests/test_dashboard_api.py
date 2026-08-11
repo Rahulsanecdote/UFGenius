@@ -64,6 +64,39 @@ def test_rate_limiting_enforced(client, monkeypatch):
     assert second.status_code == 429
 
 
+def test_breaker_state_endpoint(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard.config, "CIRCUIT_STATE_PATH", str(tmp_path / "cb.json"))
+    response = client.get("/api/breaker-state")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["manual_halt"] is False
+    assert payload["entries_blocked"] is False
+    assert "broker_error_count" in payload
+
+
+def test_breaker_halt_then_resume(client, monkeypatch, tmp_path):
+    from src.alpaca.circuit_breaker import CircuitBreaker
+
+    state_path = str(tmp_path / "cb.json")
+    monkeypatch.setattr(dashboard.config, "CIRCUIT_STATE_PATH", state_path)
+
+    halt = client.post("/api/breaker", json={"action": "halt", "reason": "manual test"})
+    assert halt.status_code == 200
+    assert halt.get_json()["state"]["manual_halt"] is True
+    assert CircuitBreaker(path=state_path).load().manual_halt is True  # persisted
+
+    resume = client.post("/api/breaker", json={"action": "resume"})
+    assert resume.status_code == 200
+    assert resume.get_json()["state"]["manual_halt"] is False
+
+
+def test_breaker_rejects_bad_action(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard.config, "CIRCUIT_STATE_PATH", str(tmp_path / "cb.json"))
+    response = client.post("/api/breaker", json={"action": "explode"})
+    assert response.status_code == 400
+    assert "action" in response.get_json()["error"].lower()
+
+
 def test_remote_mode_requires_api_key(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "DASHBOARD_ALLOW_REMOTE", True)
     monkeypatch.setattr(dashboard.config, "DASHBOARD_API_KEY", "secret")

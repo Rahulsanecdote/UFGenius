@@ -38,6 +38,22 @@ AVG_RR    = 2.5
 _LONG_SIGNALS = {"STRONG_BUY", "BUY", "WEAK_BUY"}
 
 
+def _bar_as_of(df: pd.DataFrame | None) -> str | None:
+    """Naive-UTC ISO timestamp of the latest bar, for the P0.3 data-staleness
+    breaker. The OHLCV index is a naive-UTC DatetimeIndex (see data/fetcher);
+    its last value is the 'as of' time of the data this plan was built from.
+    Returns None when unavailable so the breaker fails open on unknown age."""
+    try:
+        if df is None or df.empty:
+            return None
+        ts = pd.Timestamp(df.index[-1])
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("UTC").tz_localize(None)
+        return ts.to_pydatetime().isoformat()
+    except Exception:
+        return None
+
+
 def generate_trade_plan(
     ticker: str,
     signal: dict,
@@ -206,6 +222,9 @@ def generate_trade_plan(
         "confidence":      signal.get("confidence", "N/A"),
         "composite_score": signal.get("score", 0.0),
         "days_to_earnings": days_to_earnings,
+        # Timestamp of the market data behind this plan; the P0.3 data-staleness
+        # circuit breaker refuses entries built on data older than the limit.
+        "quote_as_of":     _bar_as_of(df),
 
         "entry": {
             "type":  "LIMIT",
