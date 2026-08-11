@@ -235,6 +235,18 @@ EXEC_QUALITY_MIN_FILLS_FOR_MEASURED: int = env_int(
     "EXEC_QUALITY_MIN_FILLS_FOR_MEASURED", _as_int(_EXEC_QUALITY.get("min_fills_for_measured", 20), 20)
 )
 
+# Smart order handling (upgrade plan P2.2).
+_SMART_ORDERS: dict = get("smart_orders", {})
+SMART_ORDERS_ENABLED: bool = env_bool(
+    "SMART_ORDERS_ENABLED", bool(_SMART_ORDERS.get("enabled", False))
+)
+SMART_ORDERS_ENTRY_OFFSET_FLOOR_PCT: float = env_float(
+    "SMART_ORDERS_ENTRY_OFFSET_FLOOR_PCT", float(_SMART_ORDERS.get("entry_offset_floor_pct", 0.001))
+)
+SMART_ORDERS_ENTRY_OFFSET_CAP_PCT: float = env_float(
+    "SMART_ORDERS_ENTRY_OFFSET_CAP_PCT", float(_SMART_ORDERS.get("entry_offset_cap_pct", 0.01))
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

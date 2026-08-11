@@ -103,6 +103,15 @@ execution_quality:
   use_measured_slippage: false                   # backtest uses measured slippage when enough fills exist
   min_fills_for_measured: 20                     # trust measured slippage only after this many fills
 
+# Smart order handling (upgrade plan P2.2). Price entries as a MARKETABLE limit —
+# crossing the market by a small, bounded offset tuned to the P2.1 measured
+# slippage — so entries fill promptly without chasing, while the plan's price
+# stays the accounting benchmark. Default off (plain limit at the plan price).
+smart_orders:
+  enabled: false                 # when true, entries use a marketable-limit price
+  entry_offset_floor_pct: 0.001  # minimum crossing (0.1%) so the limit is actually marketable
+  entry_offset_cap_pct: 0.01     # maximum crossing (1%) — hard cap on how far we chase
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

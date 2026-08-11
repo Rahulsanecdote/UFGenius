@@ -418,8 +418,15 @@ def execute_trade_plan(
             "dry_run": True,
         }
 
+    # P2.2 smart order handling: submit a MARKETABLE limit (crossing the market by
+    # a small, measured-slippage-tuned offset) so the entry fills without chasing.
+    # The plan's entry_price stays the accounting benchmark (execution-quality
+    # measures shortfall against it, not against this submitted limit).
+    from src.alpaca.smart_orders import smart_entry_price
+
+    submit_price = smart_entry_price(float(entry_price))
     try:
-        order = place_entry_order(ticker, int(shares), float(entry_price))
+        order = place_entry_order(ticker, int(shares), submit_price)
         order_id = str(order.id)
     except OrderError as exc:
         # Broker submit failure — count it toward the broker-error breaker.
@@ -431,7 +438,7 @@ def execute_trade_plan(
             "ticker": ticker,
             "order_id": None,
             "shares": int(shares),
-            "limit_price": float(entry_price),
+            "limit_price": submit_price,
             "dry_run": False,
         }
 
@@ -465,7 +472,7 @@ def execute_trade_plan(
             "ticker": ticker,
             "order_id": order_id,
             "shares": int(shares),
-            "limit_price": float(entry_price),
+            "limit_price": submit_price,
             "dry_run": False,
         }
 
@@ -476,7 +483,7 @@ def execute_trade_plan(
         "ticker": ticker,
         "order_id": order_id,
         "shares": int(shares),
-        "limit_price": float(entry_price),
+        "limit_price": submit_price,
         "dry_run": False,
     }
 
