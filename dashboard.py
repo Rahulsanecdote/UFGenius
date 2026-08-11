@@ -825,6 +825,47 @@ HTML = '''
       border-top: 1px solid rgba(58, 77, 105, 0.52);
     }
 
+    .conn-banner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      padding: 11px 20px;
+      font-size: 14px;
+      line-height: 20px;
+      text-align: center;
+      border-bottom: 1px solid transparent;
+    }
+    .conn-banner.is-waking {
+      background: rgba(224, 168, 60, 0.14);
+      border-bottom-color: rgba(224, 168, 60, 0.4);
+      color: #f0c674;
+    }
+    .conn-banner.is-locked {
+      background: rgba(60, 198, 224, 0.12);
+      border-bottom-color: rgba(60, 198, 224, 0.4);
+      color: #8fdcec;
+    }
+    .conn-banner.is-error {
+      background: rgba(207, 74, 74, 0.14);
+      border-bottom-color: rgba(207, 74, 74, 0.45);
+      color: #f0888c;
+    }
+    .conn-banner-action {
+      appearance: none;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 600;
+      padding: 5px 14px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      background: transparent;
+      color: inherit;
+    }
+    .conn-banner-action:hover { background: rgba(255, 255, 255, 0.08); }
+    .conn-banner-action:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
     .explain-panel {
       display: grid;
       gap: 12px;
@@ -1641,6 +1682,11 @@ HTML = '''
       <div id="statusLive" class="sr-only" aria-live="polite"></div>
     </header>
 
+    <div id="connBanner" class="conn-banner" hidden role="status" aria-live="polite">
+      <span id="connBannerText"></span>
+      <button id="connBannerAction" class="conn-banner-action" type="button" hidden></button>
+    </div>
+
     <main class="page-shell" role="main">
       <section class="panel" aria-labelledby="overviewTitle">
         <div class="panel-heading">
@@ -2104,6 +2150,53 @@ HTML = '''
       }
       return false;
     }
+
+    // Persistent connection banner — surfaces cold-start and auth states that
+    // would otherwise leave the page sitting silently on "Syncing".
+    function setConnectionBanner(kind, message, actionLabel, onAction) {
+      const banner = $('connBanner');
+      const action = $('connBannerAction');
+      banner.hidden = false;
+      banner.className = `conn-banner is-${kind}`;
+      $('connBannerText').textContent = message;
+      if (actionLabel && typeof onAction === 'function') {
+        action.hidden = false;
+        action.textContent = actionLabel;
+        action.onclick = onAction;
+      } else {
+        action.hidden = true;
+        action.onclick = null;
+      }
+      announce(message);
+    }
+    function clearConnectionBanner() {
+      const banner = $('connBanner');
+      banner.hidden = true;
+      banner.className = 'conn-banner';
+      $('connBannerAction').hidden = true;
+      $('connBannerAction').onclick = null;
+    }
+
+    async function warmUp() {
+      // The Render free tier sleeps after idle; the first request can take
+      // 30-60s to wake. /healthz needs no API key, so it isolates "cold start"
+      // from "needs auth" — probe it and tell the user what's happening instead
+      // of leaving them on a silent, indefinite "Syncing".
+      const slowTimer = window.setTimeout(() => {
+        setConnectionBanner('waking',
+          'Waking up the server — the free hosting tier can take 30–60s on the first visit. Hang tight…');
+        $('statusBadgeText').textContent = 'Waking up…';
+      }, 2500);
+      try {
+        await fetch('/healthz', { cache: 'no-store' });
+      } catch (_error) {
+        // Ignore — the authenticated loaders below surface any real problem.
+      } finally {
+        window.clearTimeout(slowTimer);
+        if ($('connBanner').classList.contains('is-waking')) clearConnectionBanner();
+      }
+    }
+
     let authRecoveryTriggered = false;
     const STORAGE_KEYS = {
       recent: 'ufgenius.recentAnalyses',
@@ -2189,6 +2282,7 @@ HTML = '''
       // appending a fresh permanent toast each time.
       if (!window.isSecureContext) {
         const message = 'This dashboard is served over insecure HTTP — refusing to send an API key. Serve it over HTTPS.';
+        setConnectionBanner('error', message);
         showToast(message, 'error', true);
         announce(message);
         return;
@@ -2199,6 +2293,13 @@ HTML = '''
 
       if (!promptForApiKey()) {
         const message = errorMessage || 'Authorization required. Provide the dashboard API key.';
+        // Persistent banner (a toast is easy to miss) with a one-click retry.
+        setConnectionBanner(
+          'locked',
+          'This dashboard needs an API key to load data. Find it in your host’s DASHBOARD_API_KEY setting.',
+          'Enter API key',
+          () => { if (promptForApiKey()) window.location.reload(); }
+        );
         showToast(message, 'error', true);
         announce(message);
         authRecoveryTriggered = false;
@@ -3345,9 +3446,14 @@ HTML = '''
     async function loadRegime() {
       try {
         const payload = await apiFetchJson('/api/regime');
+        clearConnectionBanner();  // data is flowing — dismiss any waking/locked notice
         renderMarketOverview(payload);
       } catch (error) {
-        showToast(`Regime load failed: ${error.message}`, 'error');
+        // 401s already raise the persistent "API key required" banner via
+        // handleUnauthorizedResponse; only surface non-auth failures as a toast.
+        if (!/Authorization/i.test(error.message || '')) {
+          showToast(`Regime load failed: ${error.message}`, 'error');
+        }
       }
     }
 
@@ -3840,14 +3946,18 @@ HTML = '''
     });
 
     initializeResultState();
-    loadRegime();
-    loadProviderHealth();
-    startProviderHealthPolling();
-    loadBreakerState();
-    loadScorecard();
-    loadMetrics();
-    loadExecQuality();
-    loadAttribution();
+    // Probe the unauthenticated /healthz first so a cold start shows a clear
+    // "Waking up…" banner instead of a silent, indefinite "Syncing".
+    warmUp().then(() => {
+      loadRegime();
+      loadProviderHealth();
+      startProviderHealthPolling();
+      loadBreakerState();
+      loadScorecard();
+      loadMetrics();
+      loadExecQuality();
+      loadAttribution();
+    });
   </script>
 </body>
 </html>
