@@ -352,12 +352,14 @@ then an optional intelligence layer. Every phase makes the edge more
       **no import of the executor/broker** (structurally firewalled from the money
       path) and never raises. **Cost-capped**: default OFF (`explain.enabled`),
       a per-call `max_tokens` output cap at `effort: low`, a bounded structured
-      input, and a **per-day call cap** (atomic JSON counter). Surfaced via a new
+      input, and a **per-day call cap** (interprocess-`flock`ed JSON counter,
+      reserved only after a usable client exists). Surfaced via a new
       `GET /api/explain?ticker=…` endpoint (degrades to `{"available": false}`
       when off/unconfigured) and an on-demand dashboard **AI Explanation** panel
       (button, not polled). Config-driven (`config.yaml` `explain:`;
-      `EXPLAIN_*` env; needs `ANTHROPIC_API_KEY`). `anthropic` added to
-      `requirements.txt` (lazy-imported; only used when enabled). 19 offline
+      `EXPLAIN_*` env; needs `ANTHROPIC_API_KEY`). `anthropic` is an **optional**
+      dependency (`requirements-explain.txt`, kept out of the base install) —
+      lazy-imported; only used when enabled. 21 offline
       tests (`tests/test_explain.py` + dashboard-API cases) with a fake client —
       gating, refusal handling, cost caps, daily-cap reset, snapshot
       structured-only guarantee, and a no-executor-import firewall check.

@@ -193,9 +193,11 @@ pytest --cov=src       # coverage
   regime, our own reason strings) — never raw news/social text — and the system
   prompt treats the snapshot as inert data and forbids buy/sell advice
   (prompt-injection sandbox). Uses the **Anthropic SDK** (`claude-opus-5`
-  default; `anthropic` is lazy-imported and only needed when enabled).
+  default; `anthropic` is an **optional** dependency — `requirements-explain.txt`,
+  lazy-imported, only needed when enabled).
   **Cost-capped and default off** (`explain.enabled`): per-call `max_tokens` at
-  `effort: low`, bounded input, and a per-day call cap. Needs `ANTHROPIC_API_KEY`.
+  `effort: low`, bounded input, and an interprocess-`flock`ed per-day call cap
+  (reserved only after a usable client exists). Needs `ANTHROPIC_API_KEY`.
   Surfaced via `GET /api/explain?ticker=…` and an on-demand dashboard panel.
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
   fan-out for scans). Do not introduce `async def` without cause.

@@ -30,10 +30,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+try:
+    import fcntl
+except ImportError:  # non-POSIX — degrade to in-process lock
+    fcntl = None  # type: ignore[assignment]
+
 from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+_ledger_lock = threading.Lock()
+_WARNED_NO_FLOCK = False
 
 _DISCLAIMER = (
     "AI-generated explanation of a quant signal — NOT financial advice, NOT a "
@@ -85,8 +93,9 @@ def build_snapshot(plan: Optional[dict] = None, signal: Optional[dict] = None,
         if cs is not None:
             snap["score"] = cs
 
-    # Per-dimension composite breakdown (all numeric).
-    scores = (signal or {}).get("scores")
+    # Per-dimension composite breakdown (all numeric). scan_single_ticker attaches
+    # this to plan["scores"], so read from the merged dict, not just the signal.
+    scores = src.get("scores")
     if isinstance(scores, dict):
         snap["dimension_scores"] = {
             str(dk)[:32]: _num(dv) for dk, dv in scores.items() if _num(dv) is not None
@@ -108,8 +117,9 @@ def build_snapshot(plan: Optional[dict] = None, signal: Optional[dict] = None,
                 for tk, tv in targets.items() if isinstance(tv, dict)
             }
 
-    # Our own generated reason strings (not third-party text). Bounded.
-    reasons = (signal or {}).get("reasons") or (plan or {}).get("reasoning") or []
+    # Our own generated reason strings (not third-party text). Bounded. The
+    # signal names them `reasons`; the trade plan names them `reasoning`.
+    reasons = src.get("reasons") or src.get("reasoning") or []
     if isinstance(reasons, list):
         snap["quant_reasons"] = [str(r)[:200] for r in reasons if r][:8]
 
@@ -138,44 +148,65 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _daily_cap_ok(now: datetime) -> bool:
-    """Enforce the per-day call cap (cost guard). Returns True if a call is allowed.
+def _reserve_daily_call(now: datetime) -> bool:
+    """Reserve one call against the per-day cap. Returns True if allowed.
 
-    A cap of <= 0 disables the limit. Best-effort — if the counter file can't be
-    read/written, the call is allowed (the feature is already gated on enable +
-    API key, and the output-token cap still bounds per-call cost)."""
+    The read → check → increment runs under an **interprocess** ``flock`` (plus
+    the in-process lock), so concurrent dashboard workers can't each read the same
+    count and blow past the cap. A cap of <= 0 disables the limit. Callers reserve
+    only AFTER a usable client exists, so a misconfigured deployment never burns
+    the day's quota. Best-effort: a read/write failure allows the call (the
+    feature is already gated on enable + a working client, and the per-call
+    output-token cap still bounds cost); ``flock`` absence degrades to the
+    in-process lock with a one-time warning."""
+    global _WARNED_NO_FLOCK
     cap = int(config.EXPLAIN_DAILY_CALL_CAP)
     if cap <= 0:
         return True
     day = now.date().isoformat()
     path = Path(config.EXPLAIN_CALL_LEDGER_PATH)
     with _ledger_lock:
-        counts = {}
+        lock_file = None
+        if fcntl is not None:
+            try:
+                os.makedirs(path.parent, exist_ok=True)
+                lock_file = open(str(path) + ".lock", "w", encoding="utf-8")
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                if lock_file is not None:
+                    lock_file.close()
+                lock_file = None
+        elif not _WARNED_NO_FLOCK:
+            log.warning("flock unavailable; explain daily cap is per-process only")
+            _WARNED_NO_FLOCK = True
         try:
-            if path.exists():
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    counts = raw
-        except Exception as exc:
-            log.debug(f"explain call-ledger unreadable: {exc}")
-        used = int(counts.get(day, 0) or 0)
-        if used >= cap:
-            log.info(f"explain daily call cap reached ({used}/{cap})")
-            return False
-        # Keep only today's count (bounded file).
-        new_counts = {day: used + 1}
-        try:
-            os.makedirs(path.parent, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".explain-", suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(new_counts, f)
-            os.replace(tmp, str(path))
-        except Exception as exc:
-            log.debug(f"explain call-ledger unwritable: {exc}")
-        return True
-
-
-_ledger_lock = threading.Lock()
+            counts = {}
+            try:
+                if path.exists():
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        counts = raw
+            except Exception as exc:
+                log.debug(f"explain call-ledger unreadable: {exc}")
+            used = int(counts.get(day, 0) or 0)
+            if used >= cap:
+                log.info(f"explain daily call cap reached ({used}/{cap})")
+                return False
+            try:  # keep only today's count (bounded file), atomic write
+                os.makedirs(path.parent, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".explain-", suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump({day: used + 1}, f)
+                os.replace(tmp, str(path))
+            except Exception as exc:
+                log.debug(f"explain call-ledger unwritable: {exc}")
+            return True
+        finally:
+            if lock_file is not None:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
 
 
 def _build_client():
@@ -209,11 +240,14 @@ def generate_narrative(snapshot: dict, *, client=None, now: Optional[datetime] =
     if not isinstance(snapshot, dict) or not snapshot:
         return None
     now = now or _utcnow()
-    if not _daily_cap_ok(now):
-        return None
 
+    # Resolve a usable client BEFORE reserving quota — a missing key / SDK / bad
+    # config must never consume the day's cap (it could otherwise lock out a
+    # later, correctly-configured request).
     cli = client if client is not None else _build_client()
     if cli is None:
+        return None
+    if not _reserve_daily_call(now):
         return None
 
     # The snapshot is serialized inside a clearly-delimited DATA block so the model

@@ -198,6 +198,17 @@ def test_no_api_key_skips(_enabled, monkeypatch):
     assert nar.generate_narrative({"ticker": "AAA", "score": 1}) is None
 
 
+def test_quota_not_consumed_when_client_unavailable(_enabled, monkeypatch, tmp_path):
+    # An unusable client must NOT burn the daily quota (else a misconfigured
+    # deployment locks out a later, correctly-configured request).
+    ledger = tmp_path / "calls.json"
+    monkeypatch.setattr(cfg, "EXPLAIN_DAILY_CALL_CAP", 3)
+    monkeypatch.setattr(cfg, "EXPLAIN_CALL_LEDGER_PATH", str(ledger))
+    monkeypatch.setattr(cfg, "env", lambda name, default=None: "" if name == "ANTHROPIC_API_KEY" else default)
+    assert nar.generate_narrative({"ticker": "AAA", "score": 1}) is None
+    assert not ledger.exists()  # no quota reserved
+
+
 def test_module_does_not_import_executor():
     # The advisory layer must never reach the money path — no import of the
     # executor / broker / order-placement modules anywhere in the module.
@@ -213,8 +224,8 @@ def test_module_does_not_import_executor():
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
             imported.update(f"{node.module}.{a.name}" for a in node.names)
-    assert not any("executor" in name or "orders" in name or "alpaca" in name
-                   for name in imported), imported
+    assert not any(bad in name for name in imported
+                   for bad in ("executor", "orders", "alpaca", "broker")), imported
 
 
 def test_system_prompt_has_injection_and_no_advice_guards():

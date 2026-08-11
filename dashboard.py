@@ -4270,7 +4270,7 @@ def api_explain():
         from src.explain.narrative import explain as _explain
 
         plan = scan_single_ticker(ticker, account_size=float(account_size))
-        regime = (plan or {}).get("market_regime")
+        regime = (plan or {}).get("regime")  # scan_single_ticker stores it here
         narrative = _explain(plan=plan, regime=regime)
         if not narrative:
             return jsonify({"available": False,
