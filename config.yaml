@@ -42,6 +42,14 @@ paper_scorecard:
   performance_gate_enabled: true  # gate live trading on scorecard performance, not just tenure
   max_trades_retained: 5000       # cap on retained closed-trade outcome records (bounds the store)
 
+# Intraday data layer (upgrade plan P1.1). Governs intraday OHLCV bars (1m/5m/…):
+# a bar-scaled cache TTL and the look-ahead / staleness guards.
+intraday:
+  default_interval: "5m"        # default intraday bar size for fetch_intraday
+  cache_ttl_floor_sec: 30       # floor on the bar-scaled intraday cache TTL
+  max_staleness_intervals: 3    # a frame older than N bars is considered stale
+  future_bar_tolerance_sec: 5   # clock-skew grace before dropping future-labelled bars
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

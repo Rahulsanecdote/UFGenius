@@ -138,6 +138,12 @@ pytest --cov=src       # coverage
   circuit-breaker state (halt flag + broker-error trail) is a JSON file shared
   between the dashboard and CLI (`src/alpaca/circuit_breaker.py`, config
   `circuit_breakers:`). Live trading needs an explicit flag + `ALPACA_PAPER=false`.
+- **Intraday data (P1.1):** `fetch_intraday()` (`src/data/fetcher.py`) is the
+  entry point for 1m/5m/… bars — same provider abstraction as daily, but with an
+  interval-scaled cache TTL and the look-ahead guards in `src/data/lookahead.py`
+  (order/dedupe, drop future-labelled bars, `as_of` clamp, stale-frame check).
+  Use it (not `fetch_ohlcv`) for anything real-time; daily bars still use
+  `fetch_ohlcv`. Knobs live under `config.yaml` `intraday:` / `INTRADAY_*`.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
