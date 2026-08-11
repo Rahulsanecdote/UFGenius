@@ -1892,6 +1892,24 @@ HTML = '''
               <p id="breakerNarrative" class="health-note">The global halt blocks all new entries in RiskGuard until resumed. Open positions and their stops are never affected.</p>
             </div>
           </section>
+
+          <section class="panel health-shell" id="scorecardPanel" aria-labelledby="scorecardTitle">
+            <div class="panel-heading">
+              <div>
+                <h3 id="scorecardTitle">Paper-Trading Scorecard</h3>
+                <p>Realized paper performance, measured the way the backtest is — the live-trading graduation gate.</p>
+              </div>
+            </div>
+            <div class="health-list" id="scorecardList">
+              <div class="health-item">
+                <strong>Scorecard pending</strong>
+                <span>Loading realized paper-trade metrics…</span>
+              </div>
+            </div>
+            <div style="padding: 18px 24px 0;">
+              <p id="scorecardNarrative" class="health-note">Paper results include no real slippage and are not a guarantee of live performance. Going live requires this scorecard to clear its floors.</p>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -3242,6 +3260,7 @@ HTML = '''
       state.providerHealthTimer = window.setInterval(() => {
         loadProviderHealth();
         loadBreakerState();
+        loadScorecard();
       }, PROVIDER_HEALTH_REFRESH_MS);
     }
 
@@ -3399,6 +3418,35 @@ HTML = '''
         renderBreakerState(res && res.state ? res.state : null);
       } catch (error) {
         showToast(error.message, 'error', true);
+      }
+    }
+
+    function renderScorecard(card) {
+      const list = $('scorecardList');
+      if (!list) return;
+      if (!card) {
+        list.innerHTML = '<div class="health-item"><strong>Scorecard unavailable</strong><span>Could not load paper-trade metrics.</span></div>';
+        return;
+      }
+      if (!card.n_trades) {
+        list.innerHTML = `<div class="health-item"><strong>No closed paper trades yet</strong><span>${escapeHtml(card.summary || 'Keep paper trading to build a scorecard.')}</span></div>`;
+        return;
+      }
+      const acc = card.acceptance || {};
+      const items = [
+        `<div class="health-item"><strong>Graduation gate: ${acc.all_pass ? '✅ MEETS floors' : '❌ below floors'}</strong><span>${acc.all_pass ? 'Paper performance clears the live-trading floors.' : 'Keep paper trading — not cleared for live yet.'}</span></div>`,
+        `<div class="health-item"><strong>Trades: ${card.n_trades} (${card.win_rate_pct}% win)</strong><span>W ${card.wins} / L ${card.losses}. Need ≥ ${acc.min_trades || 0} to graduate.</span></div>`,
+        `<div class="health-item"><strong>Profit factor: ${card.profit_factor === null ? 'n/a' : card.profit_factor}</strong><span>Expectancy ${card.expectancy_per_trade} / trade; total P&L ${card.total_pnl} (${card.total_return_pct}%).</span></div>`,
+        `<div class="health-item"><strong>Prob. profitable: ${card.prob_profitable}</strong><span>Bootstrap resample estimate (same estimator as the backtest).</span></div>`
+      ];
+      list.innerHTML = items.join('');
+    }
+
+    async function loadScorecard() {
+      try {
+        renderScorecard(await apiFetchJson('/api/paper-scorecard'));
+      } catch (error) {
+        renderScorecard(null);
       }
     }
 
@@ -3584,6 +3632,7 @@ HTML = '''
     loadProviderHealth();
     startProviderHealthPolling();
     loadBreakerState();
+    loadScorecard();
   </script>
 </body>
 </html>
@@ -3847,6 +3896,22 @@ def api_breaker_state():
         return jsonify(CircuitBreaker.load_default().state())
     except Exception:
         log.exception("Breaker state endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/paper-scorecard")
+def api_paper_scorecard():
+    """Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4)."""
+    try:
+        from src.alpaca.position_tracker import PositionTracker
+        from src.alpaca.scorecard import scorecard_from_tracker
+
+        tracker = PositionTracker()
+        tracker.load()
+        card = scorecard_from_tracker(tracker, initial_capital=config.ACCOUNT_SIZE)
+        return jsonify(card)
+    except Exception:
+        log.exception("Paper scorecard endpoint error")
         return _error_response("Internal server error", 500)
 
 

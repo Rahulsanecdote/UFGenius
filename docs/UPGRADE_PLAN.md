@@ -178,11 +178,27 @@ then an optional intelligence layer. Every phase makes the edge more
       (halt/resume), and a "Circuit Breakers & Kill Switch" panel. Thresholds
       are config-driven (`config.yaml` `circuit_breakers:` + `CIRCUIT_*` env);
       19 offline tests (`tests/test_circuit_breaker.py` + dashboard route tests).
-- [ ] **P0.4 — Paper-trading scorecard**: persist every paper decision + realized
-      outcome to a ledger and compute the **same validated metrics** live, so
-      paper results are directly comparable to the backtest. Upgrade
-      `paper_trade_days_required` from a **duration** check to a **performance**
-      check.
+- [x] **P0.4 — Paper-trading scorecard**: persist paper entry decisions and
+      realized outcomes, then compute the **same validated metrics** live so
+      paper results are directly comparable to the backtest. The scorecard
+      outcome ledger holds one record per fully-closed *filled* position
+      (unfilled/expired entries are excluded). Upgrade `paper_trade_days_required`
+      from a **duration** check to a **performance** check.
+      **Delivered:** the position tracker now writes a per-**trade** outcome
+      ledger (one record per fully-closed *filled* position — ticker, signal,
+      score, entry/exit, realized P&L, return %) alongside its per-exit realized
+      ledger, so paper metrics line up with the backtest's trade-level metrics.
+      `src/alpaca/scorecard.py` computes win rate / profit factor / expectancy /
+      `total_return` plus a bootstrap `prob_profitable` **via the same
+      `bootstrap_trade_metrics` estimator the P0.1 validation uses** — a
+      like-for-like paper-vs-backtest comparison. RiskGuard's live gate now
+      requires **both** `paper_trade_days_required` tenure **and** the paper
+      scorecard clearing configured floors (min trades, profit factor, bootstrap
+      prob-profitable, positive expectancy) before real money — a performance
+      gate, not just elapsed time. Surfaced via `GET /api/paper-scorecard` + a
+      dashboard panel and `python bot.py --mode portfolio`. Config-driven
+      (`config.yaml` `paper_scorecard:`); 15 offline tests
+      (`tests/test_scorecard.py`).
 
 ### P1 — The real-time day-trading core *(the biggest genuine gap)*
 - [ ] **P1.1 — Intraday data layer**: 1-/5-minute bars (Alpaca/Polygon) behind

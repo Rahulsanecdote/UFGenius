@@ -126,13 +126,18 @@ pytest --cov=src       # coverage
   per-trade risk, daily trade count, bear-market, duplicate-ticker,
   `stop_loss_required`, daily/weekly realized-loss limits, post-loss cooldown,
   earnings-week (best-effort, when `days_to_earnings` is known),
-  `paper_trade_days_required` (live only), and the **P0.3 circuit breakers**
+  `paper_trade_days_required` (live only — **P0.4** upgraded this from a tenure
+  check to tenure **plus** a paper-scorecard performance gate: the realized
+  paper trades must clear configured floors before real money), and the
+  **P0.3 circuit breakers**
   (global operator halt, broker-error breaker, data-staleness breaker — checked
   first, block new entries only). Realized-loss limits and the cooldown read a
-  realized-P&L ledger the monitor writes at each exit; the circuit-breaker state
-  (halt flag + broker-error trail) is a JSON file shared between the dashboard
-  and CLI (`src/alpaca/circuit_breaker.py`, config `circuit_breakers:`). Live
-  trading needs an explicit flag + `ALPACA_PAPER=false`.
+  realized-P&L ledger the monitor writes at each exit; the position tracker also
+  writes a per-**trade** outcome ledger (P0.4) that `src/alpaca/scorecard.py`
+  turns into backtest-comparable metrics for the live performance gate; the
+  circuit-breaker state (halt flag + broker-error trail) is a JSON file shared
+  between the dashboard and CLI (`src/alpaca/circuit_breaker.py`, config
+  `circuit_breakers:`). Live trading needs an explicit flag + `ALPACA_PAPER=false`.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
@@ -166,6 +171,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/scan` | Full-universe scan (slow: 60–120s) |
 | GET | `/api/scan-gaps` | Pre-market gap scan |
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
+| GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/clear-cache` | Clear the market-data cache |

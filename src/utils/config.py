@@ -234,6 +234,26 @@ CIRCUIT_STATE_PATH: str = env(
     _CIRCUIT.get("state_path") or str(_ROOT / "data" / "circuit_breaker.json"),
 )
 
+# Paper-trading scorecard gates (upgrade plan P0.4). The scorecard computes the
+# same trade-level metrics as the backtest from realized paper trades; when the
+# performance gate is on, going live requires clearing these floors (in addition
+# to paper_trade_days_required tenure).
+_PAPER_SCORECARD: dict = get("paper_scorecard", {})
+PAPER_SCORECARD_MIN_TRADES: int = int(_PAPER_SCORECARD.get("min_trades", 20))
+PAPER_SCORECARD_PROFIT_FACTOR_FLOOR: float = float(
+    _PAPER_SCORECARD.get("profit_factor_floor", 1.2)
+)
+PAPER_SCORECARD_PROB_PROFITABLE_FLOOR: float = float(
+    _PAPER_SCORECARD.get("prob_profitable_floor", 0.55)
+)
+PAPER_SCORECARD_REQUIRE_POSITIVE_EXPECTANCY: bool = bool(
+    _PAPER_SCORECARD.get("require_positive_expectancy", True)
+)
+PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED: bool = bool(
+    _PAPER_SCORECARD.get("performance_gate_enabled", True)
+)
+PAPER_SCORECARD_MAX_TRADES: int = int(_PAPER_SCORECARD.get("max_trades_retained", 5000))
+
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 _VALIDATION: dict = get("validation", {})
 VALIDATION_OOS_SHARPE_FLOOR: float = float(_VALIDATION.get("oos_sharpe_floor", 1.0))
