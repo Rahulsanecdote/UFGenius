@@ -2198,6 +2198,19 @@ HTML = '''
     }
 
     let authRecoveryTriggered = false;
+    // Set once the user declines the key prompt this page-load. Stops every
+    // other loader's 401 from re-prompting and stacking a toast (7 loaders fire
+    // on boot) — the persistent banner becomes the single, quiet indicator.
+    let authPromptDismissed = false;
+
+    function showAuthRequiredBanner() {
+      setConnectionBanner(
+        'locked',
+        'This dashboard needs an API key to load data. Find it in your host’s DASHBOARD_API_KEY setting.',
+        'Enter API key',
+        () => { if (promptForApiKey()) window.location.reload(); }
+      );
+    }
     const STORAGE_KEYS = {
       recent: 'ufgenius.recentAnalyses',
       saved: 'ufgenius.savedResults'
@@ -2272,6 +2285,14 @@ HTML = '''
       // mistyped key must never dead-end the session. No reload-loop
       // cooldown is needed: every reload below is gated by the user
       // actually typing a key into the modal prompt.
+      // Already declined this page-load: don't re-prompt or re-toast for the
+      // other loaders' 401s — just keep the banner up. Its "Enter API key"
+      // button (which reloads on success) is the single retry path, so a
+      // mistyped key is never a dead-end.
+      if (authPromptDismissed) {
+        showAuthRequiredBanner();
+        return;
+      }
       if (authRecoveryTriggered) return;
       authRecoveryTriggered = true;
 
@@ -2293,16 +2314,12 @@ HTML = '''
 
       if (!promptForApiKey()) {
         const message = errorMessage || 'Authorization required. Provide the dashboard API key.';
-        // Persistent banner (a toast is easy to miss) with a one-click retry.
-        setConnectionBanner(
-          'locked',
-          'This dashboard needs an API key to load data. Find it in your host’s DASHBOARD_API_KEY setting.',
-          'Enter API key',
-          () => { if (promptForApiKey()) window.location.reload(); }
-        );
-        showToast(message, 'error', true);
+        // Persistent banner is the single indicator — no toast (it would stack
+        // once per loader). Latch stays SET and authPromptDismissed short-
+        // circuits the rest of this boot's 401s above.
+        authPromptDismissed = true;
+        showAuthRequiredBanner();
         announce(message);
-        authRecoveryTriggered = false;
         return;
       }
       const message = 'API key saved. Refreshing dashboard session...';
