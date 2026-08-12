@@ -75,15 +75,15 @@ def evaluate_preset(preset: dict, feat: dict) -> ScreenResult:
             fail(f"PRICE_ABOVE_MAX: ${price:.2f} > ${float(preset['max_price']):.2f}")
 
     # ── RSI band ─────────────────────────────────────────────────────────────
-    rsi = feat.get("rsi14")
+    rsi = feat.get("rsi")
     if "rsi_max" in preset:
         if rsi is None:
-            fail("INSUFFICIENT_DATA: rsi14")
+            fail("INSUFFICIENT_DATA: rsi")
         elif rsi > float(preset["rsi_max"]):
             fail(f"RSI_ABOVE_MAX: {rsi:.1f} > {float(preset['rsi_max']):.1f}")
     if "rsi_min" in preset:
         if rsi is None:
-            fail("INSUFFICIENT_DATA: rsi14")
+            fail("INSUFFICIENT_DATA: rsi")
         elif rsi < float(preset["rsi_min"]):
             fail(f"RSI_BELOW_MIN: {rsi:.1f} < {float(preset['rsi_min']):.1f}")
 
@@ -101,19 +101,19 @@ def evaluate_preset(preset: dict, feat: dict) -> ScreenResult:
         elif not price < sma:
             fail(f"NOT_BELOW_SMA{period}: ${price:.2f} >= ${sma:.2f}")
 
-    # ── new 50-day high ──────────────────────────────────────────────────────
-    if preset.get("require_new_high_50"):
-        is_high = feat.get("is_new_high_50")
+    # ── new high (config-driven lookback, default 50 sessions) ───────────────
+    if preset.get("require_new_high"):
+        is_high = feat.get("is_new_high")
         if is_high is None:
-            fail("INSUFFICIENT_DATA: high_50")
+            fail("INSUFFICIENT_DATA: high")
         elif not is_high:
-            fail("NOT_NEW_50D_HIGH")
+            fail("NOT_NEW_HIGH")
 
     # ── volume ───────────────────────────────────────────────────────────────
     if "min_avg_volume" in preset:
-        avg = feat.get("avg_volume_20")
+        avg = feat.get("avg_volume")
         if avg is None:
-            fail("INSUFFICIENT_DATA: avg_volume_20")
+            fail("INSUFFICIENT_DATA: avg_volume")
         elif avg < float(preset["min_avg_volume"]):
             fail(f"AVG_VOLUME_LOW: {avg:,.0f} < {float(preset['min_avg_volume']):,.0f}")
     if "min_rel_volume" in preset:
@@ -144,6 +144,19 @@ def evaluate_preset(preset: dict, feat: dict) -> ScreenResult:
     return ScreenResult(ticker=ticker, passed=not reasons, reasons=reasons, features=feat)
 
 
+def _fresh_context(ticker: str) -> Any:
+    """Build a signal context on a FRESHLY-fetched daily frame (bypassing the
+    24h OHLCV cache). The screen's current-day fields (rel-volume, 1-day change,
+    price, new-high) are time-sensitive, so a same-day rerun must not serve a
+    stale cached bar. Fundamentals still come from their own (daily-stable) fetch.
+    """
+    from src.data.fetcher import fetch_ohlcv
+    from src.signals.context import build_signal_context
+
+    df = fetch_ohlcv(ticker, period="1y", interval="1d", use_cache=False)
+    return build_signal_context(ticker, price_df=df)
+
+
 def screen_ticker(
     preset: dict,
     ticker: str,
@@ -151,8 +164,7 @@ def screen_ticker(
 ) -> ScreenResult:
     """Fetch one ticker's data and evaluate it against `preset`. Never raises."""
     if context_builder is None:
-        from src.signals.context import build_signal_context
-        context_builder = build_signal_context
+        context_builder = _fresh_context
     try:
         ctx = context_builder(ticker)
     except Exception as exc:

@@ -1,10 +1,12 @@
 """Per-ticker feature extraction for the screener presets.
 
 Pure pandas/numpy — computes exactly the fields the presets need from a daily
-OHLCV frame (+ best-effort fundamentals), no heavier scoring. Every field is
-optional: insufficient history yields ``None`` for that field, and the preset
-evaluator treats a missing *technical* field as "does not qualify" and a missing
-*fundamental* field as "skip that criterion" (see ``evaluate_preset``).
+OHLCV frame (+ best-effort fundamentals), no heavier scoring. Lookback periods
+are config-driven (`screener.sma_periods` / `rsi_period` / `volume_lookback` /
+`high_lookback`), never hardcoded. Every field is optional: insufficient history
+yields ``None`` for that field, and the preset evaluator treats a missing
+*technical* field as "does not qualify" and a missing *fundamental* field as
+"skip that criterion" (see ``evaluate_preset``).
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+
+from src.utils import config
 
 
 def _last(series: pd.Series) -> Optional[float]:
@@ -33,16 +37,19 @@ def _sma(close: pd.Series, period: int) -> Optional[float]:
     return _last(close.rolling(period).mean())
 
 
-def _rsi(close: pd.Series, period: int = 14) -> Optional[float]:
-    # Wilder's RSI via EWM(com=period-1) — matches src/technical/momentum.py so
-    # the screener's RSI agrees with the rest of the bot.
+def _rsi(close: pd.Series, period: int) -> Optional[float]:
+    # Wilder's RSI via EWM(com=period-1) — matches src/technical/momentum.py.
+    # A window with gains and no losses is RSI 100 (not NaN/None), so an RSI
+    # *minimum* criterion isn't spuriously failed on a pure uptrend.
     if len(close) < period + 1:
         return None
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(com=period - 1, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(com=period - 1, adjust=False).mean()
     rs = gain / loss.replace(0, np.nan)
-    return _last(100 - (100 / (1 + rs)))
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+    return _last(rsi)
 
 
 def _coerce(value: Any) -> Optional[float]:
@@ -53,6 +60,13 @@ def _coerce(value: Any) -> Optional[float]:
     return f if math.isfinite(f) else None
 
 
+def _ratio(num: Any, den: Any) -> Optional[float]:
+    n, d = _coerce(num), _coerce(den)
+    if n is None or d is None or d == 0:
+        return None
+    return n / d
+
+
 def compute_screen_features(context: Any) -> dict:
     """Extract screen features from a `SignalContext` (or any object exposing
     ``price_df`` / ``fundamentals_raw`` / ``ticker_info``).
@@ -61,12 +75,14 @@ def compute_screen_features(context: Any) -> dict:
     """
     feat: dict[str, Any] = {
         "ticker": getattr(context, "ticker", None),
-        "price": None, "sma20": None, "sma50": None, "sma200": None,
-        "rsi14": None, "avg_volume_20": None, "last_volume": None,
-        "rel_volume": None, "high_50": None, "is_new_high_50": None,
+        "price": None, "rsi": None, "avg_volume": None, "last_volume": None,
+        "rel_volume": None, "high": None, "is_new_high": None,
         "pct_change_1d": None, "market_cap": None, "roe_pct": None,
         "debt_equity": None, "bars": 0,
     }
+    sma_periods = config.SCREENER_SMA_PERIODS or [20, 50, 200]
+    for p in sma_periods:
+        feat[f"sma{p}"] = None
     try:
         df = getattr(context, "price_df", None)
         if df is None or getattr(df, "empty", True):
@@ -75,39 +91,54 @@ def compute_screen_features(context: Any) -> dict:
         volume = df["Volume"].astype(float)
         feat["bars"] = int(len(df))
         feat["price"] = _last(close)
-        feat["sma20"] = _sma(close, 20)
-        feat["sma50"] = _sma(close, 50)
-        feat["sma200"] = _sma(close, 200)
-        feat["rsi14"] = _rsi(close, 14)
+        for p in sma_periods:
+            feat[f"sma{p}"] = _sma(close, int(p))
+        feat["rsi"] = _rsi(close, int(config.SCREENER_RSI_PERIOD))
 
-        if len(volume) >= 20:
-            avg20 = _last(volume.rolling(20).mean())
-            feat["avg_volume_20"] = avg20
-            feat["last_volume"] = _last(volume)
-            if avg20 and avg20 > 0 and feat["last_volume"] is not None:
-                feat["rel_volume"] = feat["last_volume"] / avg20
+        # Volume: baseline is the PRECEDING N completed bars (exclude the current
+        # bar), so rel-volume isn't diluted by the very bar being measured and the
+        # liquidity average isn't inflated by a single spike.
+        vlb = int(config.SCREENER_VOLUME_LOOKBACK)
+        feat["last_volume"] = _last(volume)
+        if len(volume) >= vlb + 1:
+            prior_avg = _last(volume.iloc[-(vlb + 1):-1])
+            feat["avg_volume"] = prior_avg
+            if prior_avg and prior_avg > 0 and feat["last_volume"] is not None:
+                feat["rel_volume"] = feat["last_volume"] / prior_avg
 
         if len(close) >= 2 and close.iloc[-2] != 0:
             feat["pct_change_1d"] = float((close.iloc[-1] / close.iloc[-2] - 1) * 100)
 
-        # New 50-day high: today's price is the max close of the trailing window.
-        window = min(50, len(close))
-        if window >= 2:
-            hi = float(close.iloc[-window:].max())
-            feat["high_50"] = hi
+        # New N-day high: only decidable with a full window; otherwise None so a
+        # `require_new_high` criterion fails on insufficient data.
+        hlb = int(config.SCREENER_HIGH_LOOKBACK)
+        if len(close) >= hlb:
+            hi = float(close.iloc[-hlb:].max())
+            feat["high"] = hi
             if feat["price"] is not None:
-                feat["is_new_high_50"] = feat["price"] >= hi - 1e-9
+                feat["is_new_high"] = feat["price"] >= hi - 1e-9
 
         # ── Fundamentals (best-effort; None when unavailable) ────────────────
+        # Prefer the normalized fundamentals (available regardless of provider);
+        # fall back to raw yfinance info keys. Deriving ROE / debt-equity from
+        # net_income / total_debt / total_equity means the criterion actually
+        # works in a broker-configured env whose info payload lacks those keys.
         fr = getattr(context, "fundamentals_raw", None) or {}
         info = getattr(context, "ticker_info", None) or {}
         feat["market_cap"] = _coerce(fr.get("market_cap") or info.get("marketCap"))
-        roe = _coerce(info.get("returnOnEquity"))
-        feat["roe_pct"] = roe * 100 if roe is not None else None
-        # yfinance reports debtToEquity as a PERCENT (e.g. 45.3 = 0.453x); expose
-        # a ratio. None when absent — the evaluator then skips that criterion.
-        de = _coerce(info.get("debtToEquity"))
-        feat["debt_equity"] = de / 100.0 if de is not None else None
+
+        roe_ratio = _ratio(fr.get("net_income"), fr.get("total_equity"))
+        if roe_ratio is None:
+            info_roe = _coerce(info.get("returnOnEquity"))
+            roe_ratio = info_roe  # yfinance returnOnEquity is already a fraction
+        feat["roe_pct"] = roe_ratio * 100 if roe_ratio is not None else None
+
+        de = _ratio(fr.get("total_debt"), fr.get("total_equity"))
+        if de is None:
+            info_de = _coerce(info.get("debtToEquity"))
+            # yfinance reports debtToEquity as a PERCENT (e.g. 45.3 = 0.453x).
+            de = info_de / 100.0 if info_de is not None else None
+        feat["debt_equity"] = de
     except Exception:  # feature extraction must never break a scan
         return feat
     return feat

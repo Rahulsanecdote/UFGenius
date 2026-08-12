@@ -26,7 +26,7 @@ value must not silently reject every candidate.
 ## Usage
 
 ```bash
-# Screen a universe → a ranked watchlist + a ready-to-use CUSTOM_WATCHLIST line
+# Screen a universe → a filtered watchlist + a ready-to-use CUSTOM_WATCHLIST line
 python bot.py --mode screen --preset oversold-bounce                 # scans config's scan_universe
 python bot.py --mode screen --preset breakout --universe SP500
 
@@ -36,15 +36,19 @@ python bot.py --mode screen --preset ma-bounce --ticker AAPL
 
 The universe scan prints matches plus a copy-paste watchlist:
 
-```
+```bash
 CUSTOM_WATCHLIST="AAA,BBB,CCC"
 python bot.py --mode scan --universe CUSTOM
 python bot.py --mode intraday-scan --universe CUSTOM   # for intraday entries
 ```
 
+Screening fetches **fresh** daily bars each run (bypassing the 24h OHLCV cache),
+so the current-day fields (relative volume, 1-day change, new-high) reflect the
+latest close rather than a stale cached bar.
+
 ## How it fits the whole loop
 
-```
+```text
 screen (find candidates)  →  scan / intraday-scan (score + time the entry)  →  validate (prove the edge OOS)  →  paper  →  (only then) live
 ```
 

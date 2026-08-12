@@ -229,6 +229,12 @@ penny:
 # high, 1d change, market cap); ROE / debt-equity are OPTIONAL and skipped when
 # the free data provider doesn't supply them. Add/edit presets freely.
 screener:
+  # Feature lookback periods (config-driven — no hardcoded thresholds). SMA
+  # periods also decide which `smaN` features exist for presets to reference.
+  sma_periods: [20, 50, 200]
+  rsi_period: 14
+  volume_lookback: 20        # baseline is the PRECEDING N bars (current bar excluded)
+  high_lookback: 50          # "new high" window
   presets:
     # Oversold names starting to turn up on high relative volume — the
     # dip-reversal ("bounce play") candidates.
@@ -249,7 +255,7 @@ screener:
     breakout:
       description: "Above 20/50/200-day MA, new 50-day high, liquid"
       require_above_sma: ["20", "50", "200"]
-      require_new_high_50: true
+      require_new_high: true
       min_avg_volume: 100000
       min_roe_pct: 20         # optional quality filter (skipped when ROE unknown)
 
