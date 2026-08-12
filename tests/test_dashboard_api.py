@@ -140,6 +140,36 @@ def test_attribution_endpoint_empty(client, monkeypatch, tmp_path):
     assert response.get_json()["overall"]["trades"] == 0
 
 
+def test_explain_endpoint_disabled_is_graceful(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "EXPLAIN_ENABLED", False)
+    response = client.get("/api/explain?ticker=AAPL")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is False
+
+
+def test_explain_endpoint_returns_narrative_when_available(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "EXPLAIN_ENABLED", True)
+    monkeypatch.setattr(dashboard, "scan_single_ticker",
+                        lambda t, account_size=None: {"ticker": t, "composite_score": 70.0})
+    import src.explain.narrative as nar
+    monkeypatch.setattr(nar, "explain",
+                        lambda plan=None, regime=None, client=None: {
+                            "ticker": "AAPL", "narrative": "Bull vs bear.", "model": "claude-opus-5",
+                            "disclaimer": "NOT financial advice."})
+    response = client.get("/api/explain?ticker=AAPL")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is True
+    assert payload["narrative"] == "Bull vs bear."
+
+
+def test_explain_endpoint_rejects_bad_ticker(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "EXPLAIN_ENABLED", True)
+    response = client.get("/api/explain?ticker=BAD$$$")
+    assert response.status_code == 400
+
+
 def test_metrics_and_attribution_panels_present():
     # The dashboard HTML wires the new P2.3 panels + their loaders.
     assert 'id="metricsPanel"' in dashboard.HTML
@@ -147,6 +177,13 @@ def test_metrics_and_attribution_panels_present():
     assert 'id="execQualityPanel"' in dashboard.HTML
     assert "loadMetrics()" in dashboard.HTML
     assert "loadAttribution()" in dashboard.HTML
+
+
+def test_ai_narrative_panel_present():
+    # The P3.1 explainability panel + on-demand button are wired.
+    assert 'id="aiNarrativePanel"' in dashboard.HTML
+    assert 'id="aiNarrativeButton"' in dashboard.HTML
+    assert "loadAiNarrative" in dashboard.HTML
 
 
 @pytest.mark.parametrize("path", ["/api/metrics", "/api/attribution"])

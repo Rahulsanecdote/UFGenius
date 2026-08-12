@@ -44,3 +44,14 @@ def _isolate_metrics_ledger(tmp_path, monkeypatch):
     import src.observability.metrics as _metrics
     monkeypatch.setattr(cfg, "METRICS_LEDGER_PATH", str(tmp_path / "metrics.json"))
     monkeypatch.setattr(_metrics, "_default", None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_explain_ledger(tmp_path, monkeypatch):
+    """Point the P3.1 explain daily-call ledger at a per-test temp path.
+
+    The explainability layer writes a per-day call counter to
+    ``config.EXPLAIN_CALL_LEDGER_PATH`` for its cost cap; isolate it so tests
+    never touch the real ``data/explain_calls.json``.
+    """
+    monkeypatch.setattr(cfg, "EXPLAIN_CALL_LEDGER_PATH", str(tmp_path / "explain_calls.json"))

@@ -21,3 +21,8 @@ lxml
 flask
 gunicorn
 pytest
+
+# The optional P3.1 explainability layer (explain.enabled) needs the Anthropic
+# SDK — kept OUT of the base install so a default-off feature doesn't ship an
+# LLM SDK to every deployment. Operators who enable it install it separately:
+#   pip install -r requirements-explain.txt

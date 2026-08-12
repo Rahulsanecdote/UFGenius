@@ -269,6 +269,26 @@ OBSERVABILITY_ALERTS_ENABLED: bool = env_bool(
     bool((_OBSERVABILITY.get("alerts") or {}).get("enabled", False)),
 )
 
+# Explainability layer (upgrade plan P3.1): optional LLM bull/bear narrative.
+# Advisory only — never gates or places an order. Default OFF and cost-capped.
+_EXPLAIN: dict = get("explain", {})
+EXPLAIN_ENABLED: bool = env_bool("EXPLAIN_ENABLED", bool(_EXPLAIN.get("enabled", False)))
+EXPLAIN_MODEL: str = env("EXPLAIN_MODEL", str(_EXPLAIN.get("model", "claude-opus-5")))
+EXPLAIN_MAX_TOKENS: int = env_int(
+    "EXPLAIN_MAX_TOKENS", _as_int(_EXPLAIN.get("max_tokens", 1000), 1000)
+)
+EXPLAIN_TIMEOUT_SECONDS: float = env_float(
+    "EXPLAIN_TIMEOUT_SECONDS", float(_EXPLAIN.get("timeout_seconds", 30.0))
+)
+# Per-day call cap (cost guard); <= 0 disables the limit.
+EXPLAIN_DAILY_CALL_CAP: int = env_int(
+    "EXPLAIN_DAILY_CALL_CAP", _as_int(_EXPLAIN.get("daily_call_cap", 50), 50)
+)
+EXPLAIN_CALL_LEDGER_PATH: str = _resolve_root(env(
+    "EXPLAIN_CALL_LEDGER_PATH",
+    _EXPLAIN.get("call_ledger_path") or str(_ROOT / "data" / "explain_calls.json"),
+))
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

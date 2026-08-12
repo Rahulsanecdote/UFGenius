@@ -185,6 +185,20 @@ pytest --cov=src       # coverage
   best-effort, never raises. `run_daily_scan` records each scan (best-effort);
   the executor alerts only on the broker-breaker false→true trip transition.
   Surfaced via `/api/metrics`, `/api/attribution`, and dashboard panels.
+- **Explainability (P3.1):** `src/explain/narrative.py` is an *optional* LLM
+  layer that turns the **verified quant snapshot** into a plain-English bull/bear
+  read for the dashboard/alerts. It is **advisory only** — no import of the
+  executor/broker, structurally firewalled from the money path, and never raises.
+  `build_snapshot()` sends only **structured verified fields** (scores, levels,
+  regime, our own reason strings) — never raw news/social text — and the system
+  prompt treats the snapshot as inert data and forbids buy/sell advice
+  (prompt-injection sandbox). Uses the **Anthropic SDK** (`claude-opus-5`
+  default; `anthropic` is an **optional** dependency — `requirements-explain.txt`,
+  lazy-imported, only needed when enabled).
+  **Cost-capped and default off** (`explain.enabled`): per-call `max_tokens` at
+  `effort: low`, bounded input, and an interprocess-`flock`ed per-day call cap
+  (reserved only after a usable client exists). Needs `ANTHROPIC_API_KEY`.
+  Surfaced via `GET /api/explain?ticker=…` and an on-demand dashboard panel.
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
   fan-out for scans). Do not introduce `async def` without cause.
 
@@ -217,6 +231,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
 | GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |
 | GET | `/api/attribution` | Per-signal realized outcome (win rate / avg return / P&L) from the trade ledger (P2.3) |
+| GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/clear-cache` | Clear the market-data cache |

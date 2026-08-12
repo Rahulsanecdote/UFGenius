@@ -1,0 +1,12 @@
+# Optional dependency for the P3.1 explainability layer (config: explain.enabled).
+#
+# Kept out of the base requirements.txt / requirements.lock on purpose: the
+# feature is DEFAULT OFF and advisory-only, so a deployment that never enables it
+# should not ship an LLM SDK. When explain.enabled is turned on (and
+# ANTHROPIC_API_KEY is set), install this on top of the base requirements:
+#
+#   pip install -r requirements.lock -r requirements-explain.txt
+#
+# The /api/explain endpoint degrades gracefully (returns {"available": false})
+# when this is absent, so omitting it never breaks a deployment.
+anthropic==0.121.0
