@@ -9,4 +9,10 @@
 #
 # The /api/explain endpoint degrades gracefully (returns {"available": false})
 # when this is absent, so omitting it never breaks a deployment.
+# Default provider (explain.provider = "anthropic"):
 anthropic==0.121.0
+
+# OpenAI-compatible provider instead (explain.provider = "openai", i.e. OpenAI,
+# NVIDIA Nemotron, OpenRouter, a local vLLM server, …): install the OpenAI SDK.
+# Only one of these is needed — whichever matches explain.provider.
+openai==2.53.0

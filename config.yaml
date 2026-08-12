@@ -135,8 +135,14 @@ observability:
 # Default OFF; needs ANTHROPIC_API_KEY when enabled.
 explain:
   enabled: false             # master switch — a no-op until turned on
-  model: "claude-opus-5"     # any Claude model id; use a cheaper one (e.g. claude-haiku-4-5) to cut cost
+  provider: "anthropic"      # "anthropic" (Claude) or any OpenAI-compatible provider
+                             # ("openai" for OpenAI / NVIDIA Nemotron / OpenRouter / local)
+  model: "claude-opus-5"     # model id for the chosen provider; for Nemotron e.g.
+                             # "nvidia/llama-3.1-nemotron-ultra-253b-v1"
+  # base_url: ""             # OpenAI-compatible endpoint, e.g. https://integrate.api.nvidia.com/v1
+  # api_key: ""             # prefer the EXPLAIN_API_KEY env var over putting a key here
   max_tokens: 1000           # hard per-call output cap (cost guard)
+  temperature: 0.3           # OpenAI-compatible path only (Anthropic path uses effort=low)
   timeout_seconds: 30
   daily_call_cap: 50         # max narrations per day (cost guard); <=0 disables the cap
   call_ledger_path: "data/explain_calls.json"
