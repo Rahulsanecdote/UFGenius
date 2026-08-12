@@ -84,15 +84,15 @@ path is byte-for-byte unchanged.
 
 - **A pattern is not an edge.** The stop-hunt-reversal is a real market
   microstructure phenomenon, but "it looks clean on the chart" is not a backtest.
-- **There is no automated validation for this entry yet.** `--mode validate`
-  backtests the **daily composite** strategy (`src/backtest/engine.py`); it does
+- **Validate it with the intraday harness, not `--mode validate`.** `--mode
+  validate` backtests the **daily composite** (`src/backtest/engine.py`); it does
   **not** run `evaluate_sweep_reclaim`, so a passing `validate` verdict says
-  nothing about this timing hypothesis. Treat the sweep-reclaim entry as
-  **unvalidated**: keep it on `scan`/paper, and judge it on realized paper trades
-  via the paper scorecard (`/api/paper-scorecard`) and per-signal attribution
-  (`/api/attribution`) before ever pointing real money at it. An intraday
-  backtest harness is a known gap (shared by every intraday entry, incl. the
-  breakout).
+  nothing about this entry. Use the dedicated harness instead:
+  `python bot.py --mode intraday-backtest --entry sweep_reclaim` (see
+  `docs/INTRADAY_BACKTEST.md`). Even a green run there is necessary, not
+  sufficient — keep it on `scan`/paper and judge it on realized paper trades via
+  `/api/paper-scorecard` + `/api/attribution` before real money. (Note intraday
+  history is short and provider-dependent, so the backtest window is limited.)
 - **Reversal ≠ falling knife protection.** The reclaim confirmation is what
   separates this from catching a knife — but a low that gets swept can simply keep
   going. The tight swept-low stop is what bounds that; respect it.

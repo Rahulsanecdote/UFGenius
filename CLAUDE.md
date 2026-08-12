@@ -80,6 +80,7 @@ python bot.py --mode live --execute             # + submit orders to the PAPER a
 python bot.py --mode live --live-execute        # + REAL-MONEY orders (needs ALPACA_PAPER=false)
 python bot.py --mode live --execute --dry-run   # preview orders, submit nothing
 python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
+python bot.py --mode intraday-backtest --entry breakout --interval 5m  # OOS check for the intraday entries (breakout / sweep_reclaim)
 python bot.py --mode validate --start 2022-01-01 --end 2023-12-31  # walk-forward + OOS + bootstrap edge check (P0.1)
 python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31  # in-sample grid search + overfitting haircut + OOS confirm (P0.2)
 python bot.py --mode portfolio                  # read-only Alpaca portfolio
@@ -176,10 +177,24 @@ pytest --cov=src       # coverage
   `SWEEP_RECLAIM_ENABLED`, the producer enqueues a structural `sweep` candidate
   (`sweep_reclaim_present`, a superset of graded entries) and the consumer runs
   the full grading only when the breakout doesn't fire; both are behind the flag,
-  so off ⇒ intraday path unchanged. Timing hypothesis, **unvalidated** — `--mode
-  validate` covers the daily composite only, not this entry (intraday backtest
-  harness is a known gap); judge it on paper via `/api/paper-scorecard` +
-  `/api/attribution` before real money. See `docs/SWEEP_RECLAIM.md`.
+  so off ⇒ intraday path unchanged. Timing hypothesis — `--mode validate` covers
+  the daily composite only, so the intraday entries are checked out-of-sample by
+  the separate **`--mode intraday-backtest`** harness
+  (`src/backtest/intraday_engine.py`); still judge it on paper via
+  `/api/paper-scorecard` + `/api/attribution` before real money. See
+  `docs/SWEEP_RECLAIM.md`.
+- **Intraday backtest harness (`--mode intraday-backtest`):** the out-of-sample
+  check for the intraday entries (`src/backtest/intraday_engine.py`,
+  `backtest_intraday`, config `intraday_backtest:`). Replays the breakout /
+  sweep-reclaim evaluator bar-by-bar with **no look-ahead** (bar-T signal → bar
+  T+1 **same-session** open fill), manages the position **intrabar** (stop-first,
+  then T1/T2/T3 partials by the bar's high, same geometry as the live plan), and
+  forces **flat at session end** (no overnight holds). Reuses the daily cost
+  model; metrics are trade-based (expectancy in R, profit factor, win rate) plus
+  a fixed-fractional-risk equity curve, and the acceptance check refuses a
+  sub-`min_trades` sample. Honest about its biases (`bias_disclosures`:
+  intrabar-ordering, no-concurrency, short/provider-dependent data). Necessary,
+  not sufficient — still paper-trade after. See `docs/INTRADAY_BACKTEST.md`.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`

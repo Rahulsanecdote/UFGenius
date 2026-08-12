@@ -27,8 +27,8 @@ so nothing about the money path is special-cased here.
 
 Deterministic and reproducible: same bars in, same decision out. Thresholds are
 config-driven (``config.SWEEP_*``). Nothing here assumes profitability — it is a
-timing hypothesis to be validated before real money (and note: there is **no**
-automated intraday backtest harness for it yet — ``--mode validate`` covers the
+timing hypothesis to be validated before real money — check it out-of-sample with
+``--mode intraday-backtest --entry sweep_reclaim`` (``--mode validate`` covers the
 daily composite only, not this entry). **Default-off** (``SWEEP_RECLAIM_ENABLED``,
 consulted by the producer/consumer, not here — the evaluator stays pure for testing).
 """

@@ -323,6 +323,75 @@ def cmd_backtest(args) -> None:
         _print_json(result)
 
 
+def cmd_intraday_backtest(args) -> None:
+    """Backtest an intraday entry (breakout / sweep-reclaim) on historical bars.
+
+    Replays the deterministic intraday entry bar-by-bar with no look-ahead:
+    next-open fills (same session only), intrabar stop/target management, and
+    forced flat at session end (day-trading — no overnight holds). This is the
+    out-of-sample check the intraday entries previously lacked; `--mode validate`
+    only covers the daily composite.
+    """
+    from src.backtest.intraday_engine import backtest_intraday
+
+    entry = args.entry or "breakout"
+    interval = args.interval or config.INTRADAY_DEFAULT_INTERVAL
+    tickers = (
+        [args.ticker.upper()] if args.ticker
+        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
+    )
+    capital = args.account_size or config.ACCOUNT_SIZE
+
+    log.info(
+        f"Intraday backtest: entry={entry} interval={interval} "
+        f"tickers={len(tickers)} range={args.start or 'earliest'}→{args.end or 'latest'}"
+    )
+    result = backtest_intraday(
+        tickers, args.start, args.end,
+        interval=interval, entry=entry, initial_capital=capital,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"  INTRADAY BACKTEST: {result.get('entry','?')} @ {result.get('interval','?')}  ({result.get('period','')})")
+    print(f"{'='*60}")
+    if result.get("error"):
+        print(f"  ERROR: {result['error']}")
+        print(f"{'='*60}\n")
+        return
+    print(f"  Tickers Tested:    {result.get('tickers_tested', 0)}")
+    print(f"  Total Trades:      {result.get('total_trades', 0)}")
+    if not result.get("total_trades"):
+        print(f"  {result.get('note','No trades.')}")
+        print(f"\n  Verdict: {result.get('minimum_acceptance', {}).get('verdict', 'N/A')}")
+        print(f"{'='*60}\n")
+        if args.json:
+            _print_json(result)
+        return
+    print(f"  Win Rate:          {result.get('win_rate_pct', 0):.1f}%")
+    print(f"  Expectancy (R):    {result.get('expectancy_r', 0):+.3f}")
+    print(f"  Avg Win / Loss (R):{result.get('avg_win_r', 0):+.2f} / {result.get('avg_loss_r', 0):+.2f}")
+    _pf = result.get("profit_factor")
+    print(f"  Profit Factor:     {_pf:.2f}" if _pf is not None else "  Profit Factor:     ∞ (no losing trades)")
+    print(f"  Avg % / Trade:     {result.get('avg_pct_return', 0):+.3f}%")
+    print(f"  Avg Hold (bars):   {result.get('avg_hold_bars', 0):.1f}")
+    print(f"  Total Return:      {result.get('total_return_pct', 0):+.2f}%  (risk {result.get('cost_model',{}).get('risk_per_trade',0):.1%}/trade)")
+    print(f"  Max Drawdown:      {result.get('max_drawdown_pct', 0):.2f}%")
+    print(f"  Exit Breakdown:    {result.get('exit_breakdown', {})}")
+    print("\n  Acceptance Check:")
+    checks = result.get("minimum_acceptance", {})
+    for k, v in checks.items():
+        if k not in ("all_pass", "verdict"):
+            status = "✅" if v else "❌"
+            print(f"    {status} {k.replace('_ok', '').replace('_', ' ').title()}: {'PASS' if v else 'FAIL'}")
+    print(f"\n  Verdict: {checks.get('verdict', 'N/A')}")
+    for d in result.get("bias_disclosures", []):
+        print(f"    ⚠️  {d}")
+    print(f"{'='*60}\n")
+
+    if args.json:
+        _print_json(result)
+
+
 def cmd_validate(args) -> None:
     """Validate the strategy edge out-of-sample (upgrade plan P0.1).
 
@@ -751,7 +820,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -761,6 +830,8 @@ Examples:
     )
     parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist)")
     parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
+    parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim"], help="Intraday entry to backtest (for --mode intraday-backtest)")
+    parser.add_argument("--interval",     help="Intraday bar size for --mode intraday-backtest (e.g. 5m, 1m; default INTRADAY_DEFAULT_INTERVAL)")
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")
     parser.add_argument("--json",         action="store_true", help="Also output raw JSON")
@@ -845,6 +916,8 @@ Examples:
         _schedule_scan(args)
     elif args.mode == "backtest":
         cmd_backtest(args)
+    elif args.mode == "intraday-backtest":
+        cmd_intraday_backtest(args)
     elif args.mode == "validate":
         cmd_validate(args)
     elif args.mode == "optimize":
