@@ -121,6 +121,60 @@ def _print_trade_plan(plan: dict) -> None:
     print(f"{'='*60}\n")
 
 
+def cmd_screen(args) -> None:
+    """Filter a universe with a named screener preset → a candidate watchlist.
+
+    A screener finds *candidates*, not trades: the output feeds --mode scan /
+    --mode intraday-scan (which, after validation, decide anything about money).
+    """
+    from src.data.universe import get_universe
+    from src.screener.screener import get_preset, screen_ticker, screen_universe
+
+    available = ", ".join(sorted((config.SCREENER_PRESETS or {}).keys())) or "(none configured)"
+    if not args.preset:
+        log.error("--mode screen requires --preset NAME")
+        print(f"Available presets: {available}")
+        sys.exit(1)
+    preset = get_preset(args.preset)
+    if preset is None:
+        log.error(f"Unknown preset '{args.preset}'. Available: {available}")
+        sys.exit(1)
+
+    if args.ticker:  # single-name: show pass/fail + why
+        res = screen_ticker(preset, args.ticker.upper())
+        print(f"[{'PASS' if res.passed else 'FAIL'}] {res.ticker} — preset '{args.preset}'")
+        for r in res.reasons:
+            print(f"   - {r}")
+        if args.json:
+            _print_json(res.to_dict())
+        return
+
+    universe_name = args.universe or config.SCAN_UNIVERSE
+    tickers = get_universe(universe_name)
+    log.info(
+        f"Screening {len(tickers)} {universe_name} tickers with '{args.preset}' "
+        f"({preset.get('description', '')})"
+    )
+    passed = screen_universe(args.preset, tickers)
+    print(f"\n{len(passed)}/{len(tickers)} match preset '{args.preset}':")
+    for res in passed:
+        f = res.features
+        print(
+            f"  {res.ticker:<6} ${f.get('price') or 0:>7.2f}  "
+            f"RSI {f.get('rsi14') or 0:>5.1f}  RVOL {f.get('rel_volume') or 0:>5.2f}x"
+        )
+    if passed:
+        wl = ",".join(r.ticker for r in passed)
+        print(
+            "\nFeed these into a scan by setting the custom watchlist:\n"
+            f'  CUSTOM_WATCHLIST="{wl}"\n'
+            "  python bot.py --mode scan --universe CUSTOM\n"
+            "  python bot.py --mode intraday-scan --universe CUSTOM   # for intraday entries"
+        )
+    if args.json:
+        _print_json([r.to_dict() for r in passed])
+
+
 def cmd_scan(args) -> None:
     """Run a market scan (single ticker or full universe)."""
     account_size = args.account_size or config.ACCOUNT_SIZE
@@ -697,7 +751,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "paper", "live", "backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -705,7 +759,8 @@ Examples:
         "--account-size", type=_positive_account_size,
         help="Portfolio size in USD (positive number)",
     )
-    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000"], help="Ticker universe")
+    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist)")
+    parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")
     parser.add_argument("--json",         action="store_true", help="Also output raw JSON")
@@ -796,6 +851,8 @@ Examples:
         cmd_optimize(args)
     elif args.mode == "portfolio":
         cmd_portfolio(args)
+    elif args.mode == "screen":
+        cmd_screen(args)
     elif args.mode == "intraday-scan":
         cmd_intraday_scan(args)
     elif args.mode == "earnings-calendar":

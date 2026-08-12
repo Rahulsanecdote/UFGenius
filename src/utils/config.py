@@ -547,6 +547,25 @@ DASHBOARD_RATE_LIMIT_BACKEND: str = env("DASHBOARD_RATE_LIMIT_BACKEND", "sqlite"
 DASHBOARD_RATE_LIMIT_DB_PATH: str = env("DASHBOARD_RATE_LIMIT_DB_PATH", "/tmp/ufgenius_rate_limit.sqlite3")
 DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)
 
+# Screener presets — named pre-trade filters (config.yaml `screener.presets`).
+# A dict of {preset_name: {criteria...}} consumed by src/screener/. Empty when
+# unconfigured; unknown preset names are rejected loudly at call time.
+SCREENER_PRESETS: dict = get("screener.presets", {}) or {}
+# Feature lookback periods (config-driven, not hardcoded). SMA periods drive
+# which `sma{p}` features exist, so a preset can reference any configured period.
+SCREENER_SMA_PERIODS: list = [
+    _as_int(p, 0) for p in (get("screener.sma_periods", [20, 50, 200]) or []) if _as_int(p, 0) > 0
+] or [20, 50, 200]
+SCREENER_RSI_PERIOD: int = env_int(
+    "SCREENER_RSI_PERIOD", _as_int(get("screener.rsi_period", 14), 14)
+)
+SCREENER_VOLUME_LOOKBACK: int = env_int(
+    "SCREENER_VOLUME_LOOKBACK", _as_int(get("screener.volume_lookback", 20), 20)
+)
+SCREENER_HIGH_LOOKBACK: int = env_int(
+    "SCREENER_HIGH_LOOKBACK", _as_int(get("screener.high_lookback", 50), 50)
+)
+
 # Penny stock mode — an OPT-IN low-price/small-cap profile. Default OFF. When
 # enabled it does NOT remove protection: it swaps the standard disqualifiers for
 # penny-specific HARD RAILS (below). Scan/paper only until validated — the money

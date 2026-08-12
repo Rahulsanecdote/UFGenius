@@ -42,6 +42,7 @@ UFGenius/
 │   ├── macro/         ← market-regime detection (VIX, breadth, FRED)
 │   ├── signals/       ← generator (composite score → signal), filters, context, trade_plan
 │   ├── scanner/       ← daily_scan (universe orchestration) + gap_scanner
+│   ├── screener/      ← named pre-trade filter presets (oversold-bounce/ma-bounce/breakout)
 │   ├── alerts/        ← telegram / email notifications
 │   ├── backtest/      ← portfolio backtest engine (daily MTM, commission + slippage)
 │   ├── alpaca/        ← portfolio (read-only), orders, executor (+RiskGuard), position_tracker
@@ -72,6 +73,7 @@ data works on yfinance alone. `ALPACA_PAPER=true` (default) keeps you on paper.
 ```bash
 python bot.py --mode scan                       # one full-universe scan
 python bot.py --mode scan --ticker AAPL         # single ticker
+python bot.py --mode screen --preset oversold-bounce  # filter a universe by a named screener preset → watchlist
 python bot.py --mode paper                      # scheduled scans, log only
 python bot.py --mode live                        # scheduled scans + alerts
 python bot.py --mode live --execute             # + submit orders to the PAPER account
