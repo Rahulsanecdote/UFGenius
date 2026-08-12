@@ -15,17 +15,32 @@ MIN_PRICE = max(0.0, config.SIGNAL_MIN_PRICE)
 def _thresholds() -> dict:
     """Resolve hard-stop thresholds from config at call time.
 
-    Sourced from config.yaml (`filter_*` keys), relaxed when
-    ALLOW_PENNY_STOCKS is set. Evaluated per-call (not frozen at import) so
-    config/env changes take effect and the values stay testable (audit H4).
+    Sourced from config.yaml (`filter_*` keys). When ALLOW_PENNY_STOCKS is set,
+    the standard disqualifiers are swapped for penny-specific **hard rails**
+    (`penny.*` / `PENNY_*`) — this is deliberately NOT a "remove all protection"
+    mode: the market-cap floor stays positive, a dollar-volume gate is added, a
+    price band is enforced, the chaser-trap tightens, and the **bankruptcy check
+    stays on**. Evaluated per-call (not frozen at import) so config/env changes
+    take effect and the values stay testable (audit H4).
     """
-    penny = config.ALLOW_PENNY_STOCKS
+    if config.ALLOW_PENNY_STOCKS:
+        return {
+            "min_price":         max(0.0, config.PENNY_MIN_PRICE),
+            "max_price":         config.PENNY_MAX_PRICE,
+            "min_avg_volume":    config.PENNY_MIN_SHARE_VOLUME,
+            "min_dollar_volume": config.PENNY_MIN_DOLLAR_VOLUME,
+            "min_market_cap":    config.PENNY_MIN_MARKET_CAP,
+            "max_5day_gain_pct": config.PENNY_MAX_5DAY_GAIN_PCT,
+            "bankruptcy_z":      config.FILTER_BANKRUPTCY_Z,  # NOT disabled in penny mode
+        }
     return {
-        "min_price":         0.0 if penny else MIN_PRICE,
-        "min_avg_volume":    10_000 if penny else config.FILTER_MIN_AVG_VOLUME,
-        "min_market_cap":    0 if penny else config.FILTER_MIN_MARKET_CAP,
-        "max_5day_gain_pct": 100.0 if penny else config.FILTER_MAX_5DAY_GAIN_PCT,
-        "bankruptcy_z":      0.0 if penny else config.FILTER_BANKRUPTCY_Z,
+        "min_price":         MIN_PRICE,
+        "max_price":         float("inf"),   # no ceiling in standard mode
+        "min_avg_volume":    config.FILTER_MIN_AVG_VOLUME,
+        "min_dollar_volume": 0.0,            # dollar-volume gate is penny-mode only
+        "min_market_cap":    config.FILTER_MIN_MARKET_CAP,
+        "max_5day_gain_pct": config.FILTER_MAX_5DAY_GAIN_PCT,
+        "bankruptcy_z":      config.FILTER_BANKRUPTCY_Z,
     }
 
 
@@ -39,12 +54,14 @@ def run_disqualification_filters(
     Return a list of disqualification reasons.
     An empty list means the ticker passes all hard filters.
 
-    Checks:
-    ✗ Altman Z-Score < 1.0           (bankruptcy risk)
-    ✗ Price < $1.00                   (penny stock)
-    ✗ Avg 20-day volume < 100K        (illiquid)
-    ✗ Already up >50% in 5 days       (chaser trap)
-    ✗ Market cap < $100M              (nano-cap)
+    Checks (standard mode; penny mode swaps in the `penny.*` hard rails):
+    ✗ Altman Z-Score < 1.0           (bankruptcy risk — enforced in penny mode too)
+    ✗ Price < $1.00                   (penny stock; penny mode uses a $0.50 floor)
+    ✗ Price > band ceiling            (penny mode only, default $10)
+    ✗ Avg 20-day volume < 100K        (illiquid — share count)
+    ✗ Dollar volume < $3M/day         (penny mode only — the real liquidity gate)
+    ✗ Already up >50% in 5 days       (chaser trap; penny mode tightens to 30%)
+    ✗ Market cap < $100M              (nano-cap; penny mode floors at $50M, not 0)
     """
     reasons = []
     t = _thresholds()
@@ -59,10 +76,28 @@ def run_disqualification_filters(
     if current_price < t["min_price"]:
         reasons.append(f"PENNY_STOCK: Price ${current_price:.2f} < ${t['min_price']}")
 
-    # Volume floor
-    avg_vol_20 = df["Volume"].tail(20).mean()
+    # Price ceiling (penny-band mode only; inf in standard mode)
+    if current_price > t["max_price"]:
+        reasons.append(
+            f"ABOVE_PRICE_BAND: Price ${current_price:.2f} > ${t['max_price']:.2f}"
+        )
+
+    # Share-volume floor
+    avg_vol_20 = float(df["Volume"].tail(20).mean())
     if avg_vol_20 < t["min_avg_volume"]:
         reasons.append(f"ILLIQUID: Avg vol {avg_vol_20:,.0f} < {t['min_avg_volume']:,.0f}")
+
+    # Dollar-volume floor (penny hard rail; 0 = disabled). price × avg volume is
+    # the liquidity gate that a share count misses: it rejects both huge-share
+    # sub-penny names and high-price zero-volume names (both common on daily-
+    # gainer screens) that you could never actually get filled on.
+    if t["min_dollar_volume"] > 0:
+        dollar_vol = current_price * avg_vol_20
+        if dollar_vol < t["min_dollar_volume"]:
+            reasons.append(
+                f"THIN_DOLLAR_VOLUME: ${dollar_vol:,.0f}/day < "
+                f"${t['min_dollar_volume']:,.0f}"
+            )
 
     # Altman Z-Score bankruptcy risk
     z_score = fundamental_score.get("altman_z_score")

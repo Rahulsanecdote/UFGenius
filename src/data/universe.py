@@ -90,7 +90,12 @@ def filter_universe(
     Apply basic filters to a ticker list using yfinance info.
     This is a slower, accurate filter — use for overnight scans.
     """
-    effective_min_price = 0.0 if config.ALLOW_PENNY_STOCKS else max(0.0, config.SIGNAL_MIN_PRICE)
+    # Penny mode uses its own sub-penny floor (not 0), matching the disqualifier.
+    effective_min_price = (
+        max(0.0, config.PENNY_MIN_PRICE)
+        if config.ALLOW_PENNY_STOCKS
+        else max(0.0, config.SIGNAL_MIN_PRICE)
+    )
     min_price = effective_min_price if min_price is None else min_price
 
     passed = []

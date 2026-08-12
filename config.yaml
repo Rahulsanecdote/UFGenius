@@ -201,6 +201,26 @@ filter_min_market_cap: 100000000   # Minimum market cap $100M (nano-cap trap flo
 filter_max_5day_gain_pct: 50.0     # Maximum 5-day gain % before flagging as chaser trap
 filter_bankruptcy_z: 1.0           # Altman Z-Score below this = bankruptcy risk
 
+# Penny-stock mode (OPT-IN, default OFF). Enabling this does NOT disable
+# protection — it swaps the standard disqualifiers for penny-specific HARD RAILS.
+# The dollar-volume and market-cap floors are what actually keep out the
+# manipulated nano-caps and 0-volume names that "biggest daily gainer" screens
+# are full of; the bankruptcy check stays ON (so post-bankruptcy tickers are
+# rejected). Scan/paper only until you've validated an edge — do not point live
+# execution at this without --mode validate first and tiny position sizing.
+#
+# Usage: set enabled true, list tickers in custom_watchlist (or CUSTOM_WATCHLIST
+# env), set scan_universe: CUSTOM, and run `python bot.py --mode intraday-scan`.
+penny:
+  enabled: false                 # master switch (mirrors ALLOW_PENNY_STOCKS env)
+  custom_watchlist: ""           # comma-separated tickers, e.g. "BOXL,HYLN,DOGZ" (or CUSTOM_WATCHLIST env)
+  min_price: 0.50                # sub-penny floor (spreads/manipulation worst below this)
+  max_price: 10.0               # low-price band ceiling
+  min_share_volume: 100000       # 20-day avg share-volume floor (NOT relaxed vs standard)
+  min_dollar_volume: 3000000     # price × avg volume — primary liquidity gate ($3M)
+  min_market_cap: 50000000       # FLOOR, not 0 — cuts the sub-$50M pump-and-dump zone
+  max_5day_gain_pct: 30.0        # tighter chaser-trap than standard (don't buy after the pop)
+
 # Signal classification thresholds (score out of 100)
 signal_thresholds:
   - [80, "STRONG_BUY",  "VERY_HIGH"]

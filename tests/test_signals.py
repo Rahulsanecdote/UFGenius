@@ -162,6 +162,84 @@ class TestDisqualificationFilters:
         assert any("UNKNOWN_MARKET_CAP" in r for r in result)
 
 
+class TestPennyHardRails:
+    """Penny mode is a hard-rail profile, NOT a 'remove all protection' switch."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_penny(self, monkeypatch):
+        from src.signals import filters as signal_filters
+        monkeypatch.setattr(signal_filters.config, "ALLOW_PENNY_STOCKS", True)
+
+    @staticmethod
+    def _df(price, volume, gain_5d=0.0):
+        n = 30
+        closes = np.full(n, float(price))
+        if gain_5d:
+            closes[-6] = price / (1 + gain_5d)  # inject a prior-5-day surge
+        return pd.DataFrame({
+            "Open": closes, "High": closes * 1.01,
+            "Low": closes * 0.99, "Close": closes,
+            "Volume": np.full(n, float(volume)),
+        })
+
+    def test_good_liquid_penny_passes(self):
+        # $2.50 × 4M sh = $10M/day, $120M cap, healthy Z, no surge → tradeable.
+        result = run_disqualification_filters(
+            "GOODPENNY", self._df(2.50, 4_000_000), {"altman_z_score": 3.0},
+            {"market_cap": 120_000_000},
+        )
+        assert result == []
+
+    def test_thin_dollar_volume_flagged(self):
+        # Zero-volume high-priced name (CSXXY-style) — untradeable despite big cap.
+        result = run_disqualification_filters(
+            "ZEROVOL", self._df(41.88, 0), {"altman_z_score": 3.0},
+            {"market_cap": 9_150_000_000},
+        )
+        assert any("THIN_DOLLAR_VOLUME" in r for r in result)
+
+    def test_nano_cap_still_flagged_in_penny_mode(self):
+        # The market-cap floor is $50M, NOT 0 — a $1.4M pump-zone cap is rejected
+        # even with huge share volume (OFAL-style).
+        result = run_disqualification_filters(
+            "NANO", self._df(1.79, 65_000_000), {"altman_z_score": 3.0},
+            {"market_cap": 1_390_000},
+        )
+        assert any("MICRO_CAP" in r for r in result)
+
+    def test_bankruptcy_check_still_on_in_penny_mode(self):
+        # Post-bankruptcy tickers (BBBY+-style) must NOT be waved through.
+        result = run_disqualification_filters(
+            "BANKRUPT", self._df(2.50, 4_000_000), {"altman_z_score": 0.4},
+            {"market_cap": 120_000_000},
+        )
+        assert any("BANKRUPTCY_RISK" in r for r in result)
+
+    def test_above_band_flagged(self):
+        # Above the $10 penny band → rejected (keeps the profile in its lane).
+        result = run_disqualification_filters(
+            "PRICEY", self._df(48.01, 4_000_000), {"altman_z_score": 3.0},
+            {"market_cap": 5_940_000_000},
+        )
+        assert any("ABOVE_PRICE_BAND" in r for r in result)
+
+    def test_sub_penny_floor_enforced(self):
+        # Sub-$0.50 is still rejected in penny mode (spreads/manipulation zone).
+        result = run_disqualification_filters(
+            "SUBPENNY", self._df(0.42, 3_000_000), {"altman_z_score": 3.0},
+            {"market_cap": 120_000_000},
+        )
+        assert any("PENNY_STOCK" in r for r in result)
+
+    def test_chaser_trap_tighter_in_penny_mode(self):
+        # A +40% 5-day surge passes the standard 50% gate but fails penny's 30%.
+        result = run_disqualification_filters(
+            "SURGE", self._df(2.50, 4_000_000, gain_5d=0.40), {"altman_z_score": 3.0},
+            {"market_cap": 120_000_000},
+        )
+        assert any("CHASER_TRAP" in r for r in result)
+
+
 class TestTradePlan:
     def test_returns_required_keys(self, mock_signal, sample_df):
         plan = generate_trade_plan("TEST", mock_signal, account_size=10_000, df=sample_df)
