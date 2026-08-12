@@ -55,16 +55,18 @@ intraday:
 # emitting deduped candidates into an in-process queue for the entry logic (P1.3).
 # Rate/cost-aware: bounded universe, interval floor, cached bars, dedup window.
 continuous_scan:
-  # 1m bars polled every 15s (the loop floor). NOTE: this tightens *reaction
-  # latency* — a newly-closed 1m bar is picked up within ~15s — it does NOT give
-  # sub-minute *resolution*: 1m is the smallest bar the providers serve, and the
-  # bar-scaled cache TTL means the same closed bar is re-scored (harmlessly,
-  # deduped) between refreshes. The lookback_bars below are counts, so on 1m they
-  # now span minutes (6-min momentum, 20-min breakout high) rather than 5m units.
+  # 1m bars polled every 15s (the loop floor). This tightens the *poll* cadence,
+  # not the data itself: a newly-closed bar's freshness is bounded by the 1m bar
+  # cache (~60s TTL — one provider call per bar, kept that way on purpose to avoid
+  # 4x the request rate), so the 15s loop mainly shrinks the post-expiry poll gap
+  # (<=15s vs <=45s before). Net: faster *reaction* (worst-case bar->reaction
+  # ~60s), NOT sub-minute *resolution* — 1m is the smallest bar the providers
+  # serve and the forming bar is dropped by the look-ahead guard. lookback_bars
+  # are counts, so on 1m they span minutes (6-min momentum, 20-min breakout high).
   interval_sec: 15             # seconds between scan cycles (floored to _MIN_INTERVAL_SEC=15)
   interval: "1m"               # intraday bar size to scan (1m is the provider floor)
   universe_cap: 100            # max tickers scanned per cycle (cost guard)
-  dedup_ttl_sec: 300           # do not re-emit the same ticker+kind within this window
+  dedup_ttl_sec: 60            # ~one 1m bar: suppress the same (ticker,kind) re-scored from cached intra-bar polls, but let the NEXT bar re-qualify (track ~1 bar; was 300 = one 5m bar)
   queue_max: 500               # bounded candidate queue (drops oldest beyond this)
   rel_volume_threshold: 2.0    # current-bar volume vs recent intraday average → unusual volume
   momentum_pct_threshold: 1.5  # abs % move over the momentum lookback → momentum candidate

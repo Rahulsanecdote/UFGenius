@@ -169,10 +169,12 @@ pytest --cov=src       # coverage
   volume, intraday-ATR stop via `src/technical/intraday_features.py`). Discovery
   + planning only — plans go to a pluggable sink (default log); execution reuses
   the gated `execute_trade_plan` path. Config: `continuous_scan:` / `intraday_signal:`
-  (default **1m bars polled every 15s** — the `_MIN_INTERVAL_SEC` loop floor; this
-  tightens reaction latency to a newly-closed 1m bar to ≤15s, but 1m is the
-  provider floor so it is not sub-minute *resolution*, and the bar-scaled cache
-  TTL means the same closed bar is re-scored between refreshes, harmlessly deduped).
+  (default **1m bars polled every 15s** — the `_MIN_INTERVAL_SEC` loop floor; the
+  15s poll shrinks the post-cache-expiry gap, but data freshness is bounded by the
+  ~60s 1m bar cache, so it is faster *reaction* (worst-case bar→reaction ~60s) not
+  sub-minute *resolution* — 1m is the provider floor and the forming bar is dropped
+  by the look-ahead guard; `dedup_ttl_sec` tracks ~1 bar so re-scored cached polls
+  are suppressed while the next bar can still re-qualify).
   An **opt-in sweep-reclaim reversal** entry (`src/signals/sweep_reclaim.py`,
   config `sweep_reclaim:`, **default off**) is the counterpart to the breakout:
   it detects a sweep of a recent swing low (`lookback_bars`=15) + a reclaim close
