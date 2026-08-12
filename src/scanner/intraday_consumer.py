@@ -21,6 +21,8 @@ from typing import Callable, Optional
 
 import pandas as pd
 
+from datetime import timedelta
+
 from src.data.fetcher import fetch_intraday
 from src.data.lookahead import is_stale
 from src.scanner.candidate_queue import CandidateQueue
@@ -29,6 +31,10 @@ from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+# How long a penny-eligibility verdict is cached (daily bars + fundamentals don't
+# change intraday, so refetching every ~45s drain would be wasteful).
+_ELIGIBILITY_TTL = timedelta(minutes=15)
 
 
 def _utcnow() -> datetime:
@@ -49,6 +55,8 @@ class IntradayConsumer:
         self.sink = sink or self._log_sink
         self._fetch = fetch
         self.account_size = account_size
+        # ticker -> (expiry, eligible, reasons); penny-mode eligibility cache.
+        self._eligibility: dict[str, tuple[datetime, bool, list[str]]] = {}
 
     @staticmethod
     def _log_sink(plan: dict) -> None:
@@ -60,6 +68,50 @@ class IntradayConsumer:
             f"vwap={(plan.get('intraday') or {}).get('vwap')}"
         )
 
+    def _penny_eligible(self, ticker: str, now: datetime) -> tuple[bool, list[str]]:
+        """Apply the daily disqualifier HARD RAILS as an intraday eligibility gate.
+
+        Intraday bars can't measure daily liquidity/fundamentals, so the price
+        band / dollar-volume / market-cap / bankruptcy / chaser rails are checked
+        on a **daily** frame + fundamentals (the same context the daily scan
+        uses). Only runs when penny mode is on — otherwise the intraday path is
+        unchanged. **Fail-closed:** if eligibility can't be determined (no daily
+        data / fetch error), the candidate is skipped rather than traded blind,
+        matching the daily path's "unknown → disqualify" stance. Verdicts are
+        cached for `_ELIGIBILITY_TTL`.
+        """
+        cached = self._eligibility.get(ticker)
+        if cached is not None and cached[0] > now:
+            return cached[1], cached[2]
+
+        try:
+            from src.signals.context import build_signal_context
+            from src.signals.filters import run_disqualification_filters
+            from src.signals.generator import _neutral_fundamental_score
+
+            ctx = build_signal_context(ticker)
+            if ctx is None or ctx.price_df is None or ctx.price_df.empty:
+                eligible, reasons = False, ["NO_DAILY_DATA: eligibility unverifiable"]
+            else:
+                try:
+                    from src.fundamental.scorer import calculate_fundamental_score
+                    fundamental = calculate_fundamental_score(
+                        ticker, fundamentals_data=ctx.fundamentals_raw
+                    )
+                    if not isinstance(fundamental, dict):
+                        raise TypeError("fundamental score not a dict")
+                except Exception:
+                    fundamental = _neutral_fundamental_score(ticker, ctx.fundamentals_raw)
+                reasons = run_disqualification_filters(
+                    ticker, ctx.price_df, fundamental, ctx.fundamentals_raw
+                )
+                eligible = not reasons
+        except Exception as exc:
+            eligible, reasons = False, [f"ELIGIBILITY_ERROR: {exc}"]
+
+        self._eligibility[ticker] = (now + _ELIGIBILITY_TTL, eligible, reasons)
+        return eligible, reasons
+
     def drain_once(self, now: Optional[datetime] = None) -> list[dict]:
         """Process up to the per-cycle cap of queued candidates. Returns the
         entry plans produced (also passed to the sink)."""
@@ -68,6 +120,7 @@ class IntradayConsumer:
         candidates = self.queue.drain(max_items=cap)
         interval = config.CONTINUOUS_SCAN_INTERVAL
         max_stale = float(config.INTRADAY_MAX_STALENESS_INTERVALS)
+        penny = config.ALLOW_PENNY_STOCKS
         plans: list[dict] = []
         seen: set[str] = set()
         for c in candidates:
@@ -78,6 +131,14 @@ class IntradayConsumer:
                 continue
             seen.add(c.ticker)
             try:
+                # Penny-mode hard-rail eligibility gate — before any plan is
+                # emitted, so the intraday path can't route a nano-cap / bankrupt
+                # / above-band / already-surged name past the advertised rails.
+                if penny:
+                    ok, reasons = self._penny_eligible(c.ticker, now)
+                    if not ok:
+                        log.debug(f"{c.ticker}: penny-ineligible ({'; '.join(reasons)})")
+                        continue
                 df = self._fetch(c.ticker, interval=interval)
                 # Reject stale frames here too: fetch_intraday can return a
                 # stale-cache fallback, and generate_trade_plan stamps a fresh

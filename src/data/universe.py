@@ -147,11 +147,15 @@ def get_universe(universe: str = "SP500") -> List[str]:
 
 def get_custom_watchlist() -> List[str]:
     """
-    Load custom watchlist from CUSTOM_WATCHLIST env var.
+    Load custom watchlist from the CUSTOM_WATCHLIST env var, falling back to the
+    config value (`penny.custom_watchlist` in config.yaml, via
+    config.CUSTOM_WATCHLIST) so a YAML-only setup is not silently empty.
     Format: comma-separated tickers, e.g. "SWMR,HCTI,BBRW,AAPL"
     """
     import os
     raw = os.getenv("CUSTOM_WATCHLIST", "").strip()
+    if not raw:
+        raw = str(config.CUSTOM_WATCHLIST or "").strip()
     if not raw:
         log.warning("CUSTOM_WATCHLIST is empty — no tickers to scan")
         return []

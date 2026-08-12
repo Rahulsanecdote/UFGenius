@@ -167,8 +167,19 @@ class TestPennyHardRails:
 
     @pytest.fixture(autouse=True)
     def _enable_penny(self, monkeypatch):
+        # Pin every PENNY_* value the filters read, so config.yaml / env overrides
+        # can't change what these tests assert (they validate the filter logic at
+        # a KNOWN profile, not the shipped defaults).
         from src.signals import filters as signal_filters
-        monkeypatch.setattr(signal_filters.config, "ALLOW_PENNY_STOCKS", True)
+        cfg = signal_filters.config
+        monkeypatch.setattr(cfg, "ALLOW_PENNY_STOCKS", True)
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        monkeypatch.setattr(cfg, "PENNY_MIN_DOLLAR_VOLUME", 3_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MAX_5DAY_GAIN_PCT", 30.0)
+        monkeypatch.setattr(cfg, "FILTER_BANKRUPTCY_Z", 1.0)
 
     @staticmethod
     def _df(price, volume, gain_5d=0.0):
@@ -183,7 +194,7 @@ class TestPennyHardRails:
         })
 
     def test_good_liquid_penny_passes(self):
-        # $2.50 × 4M sh = $10M/day, $120M cap, healthy Z, no surge → tradeable.
+        # $2.50 x 4M sh = $10M/day, $120M cap, healthy Z, no surge -> tradeable.
         result = run_disqualification_filters(
             "GOODPENNY", self._df(2.50, 4_000_000), {"altman_z_score": 3.0},
             {"market_cap": 120_000_000},

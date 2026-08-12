@@ -564,7 +564,7 @@ PENNY_MAX_PRICE: float = env_float("PENNY_MAX_PRICE", _as_float(_PENNY.get("max_
 PENNY_MIN_SHARE_VOLUME: int = env_int(
     "PENNY_MIN_SHARE_VOLUME", _as_int(_PENNY.get("min_share_volume", 100_000), 100_000)
 )
-# price × avg 20-day volume — the primary liquidity gate (catches both huge-share
+# price x avg 20-day volume — the primary liquidity gate (catches both huge-share
 # sub-penny names and high-price zero-volume names that a share count misses).
 PENNY_MIN_DOLLAR_VOLUME: float = env_float(
     "PENNY_MIN_DOLLAR_VOLUME", _as_float(_PENNY.get("min_dollar_volume"), 3_000_000.0)

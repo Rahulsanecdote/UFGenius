@@ -87,7 +87,7 @@ def run_disqualification_filters(
     if avg_vol_20 < t["min_avg_volume"]:
         reasons.append(f"ILLIQUID: Avg vol {avg_vol_20:,.0f} < {t['min_avg_volume']:,.0f}")
 
-    # Dollar-volume floor (penny hard rail; 0 = disabled). price × avg volume is
+    # Dollar-volume floor (penny hard rail; 0 = disabled). price x avg volume is
     # the liquidity gate that a share count misses: it rejects both huge-share
     # sub-penny names and high-price zero-volume names (both common on daily-
     # gainer screens) that you could never actually get filled on.
