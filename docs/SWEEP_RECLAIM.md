@@ -63,23 +63,36 @@ has a `SWEEP_*` override in `src/utils/config.py`.
 ## How it fits the pipeline
 
 ```text
-intraday-scan (find candidates) → consumer drains the queue →
+intraday-scan (produce candidates) → consumer drains the queue →
    breakout entry?  → plan
    else, if sweep_reclaim.enabled → sweep-reclaim reversal entry? → plan
         → sink (log by default; execution reuses the gated execute_trade_plan path)
 ```
 
-The `IntradayConsumer` evaluates the momentum **breakout** first; only when that
-doesn't fire *and* `sweep_reclaim.enabled` is true does it try the reversal
-evaluator. A breakout (momentum) and a sweep-reclaim (reversal) are distinct
-setups, so at most one plan is emitted per ticker per drain. With `enabled:
-false` the intraday path is byte-for-byte unchanged.
+The **producer** (`ContinuousScanner`) enqueues a structural `sweep` candidate
+whenever a sweep + reclaim is present on a scanned frame (a strict superset of the
+graded entries, so a thin-volume `BUY` or a sub-threshold reclaim still reaches
+the consumer). The **consumer** (`IntradayConsumer`) evaluates the momentum
+**breakout** first; only when that doesn't fire *and* `sweep_reclaim.enabled` is
+true does it run the full reversal grading. A breakout (momentum) and a
+sweep-reclaim (reversal) are distinct setups, so at most one plan is emitted per
+ticker per drain. Both the producer's `sweep` candidate and the consumer's
+reversal path are gated by the same flag — with `enabled: false` the intraday
+path is byte-for-byte unchanged.
 
 ## Caveats (read these)
 
 - **A pattern is not an edge.** The stop-hunt-reversal is a real market
   microstructure phenomenon, but "it looks clean on the chart" is not a backtest.
-  Run `--mode validate` on held-out data before trusting it with money.
+- **There is no automated validation for this entry yet.** `--mode validate`
+  backtests the **daily composite** strategy (`src/backtest/engine.py`); it does
+  **not** run `evaluate_sweep_reclaim`, so a passing `validate` verdict says
+  nothing about this timing hypothesis. Treat the sweep-reclaim entry as
+  **unvalidated**: keep it on `scan`/paper, and judge it on realized paper trades
+  via the paper scorecard (`/api/paper-scorecard`) and per-signal attribution
+  (`/api/attribution`) before ever pointing real money at it. An intraday
+  backtest harness is a known gap (shared by every intraday entry, incl. the
+  breakout).
 - **Reversal ≠ falling knife protection.** The reclaim confirmation is what
   separates this from catching a knife — but a low that gets swept can simply keep
   going. The tight swept-low stop is what bounds that; respect it.

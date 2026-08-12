@@ -27,9 +27,10 @@ so nothing about the money path is special-cased here.
 
 Deterministic and reproducible: same bars in, same decision out. Thresholds are
 config-driven (``config.SWEEP_*``). Nothing here assumes profitability — it is a
-timing hypothesis to be validated out-of-sample before real money, and every
-entry still passes RiskGuard downstream. **Default-off** (``SWEEP_RECLAIM_ENABLED``,
-consulted by the consumer, not here — the evaluator stays pure for testing).
+timing hypothesis to be validated before real money (and note: there is **no**
+automated intraday backtest harness for it yet — ``--mode validate`` covers the
+daily composite only, not this entry). **Default-off** (``SWEEP_RECLAIM_ENABLED``,
+consulted by the producer/consumer, not here — the evaluator stays pure for testing).
 """
 
 from __future__ import annotations
@@ -49,26 +50,24 @@ log = get_logger(__name__)
 _ENTRY_SIGNALS = frozenset({"STRONG_BUY", "BUY"})
 
 
-def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> dict:
-    """Evaluate a deterministic sweep-reclaim reversal entry on an intraday frame.
+def _detect(df: pd.DataFrame) -> Optional[dict]:
+    """Locate the swept swing low and test for a sweep + reclaim on ``df``.
 
-    Returns a decision dict shaped so ``build_sweep_reclaim_plan`` (and, through
-    it, ``generate_trade_plan``) can consume it directly: ``signal``, ``enter``,
-    ``current_price``, ``score``, ``confidence``, ``reasons``, and a ``sweep``
-    feature/trigger block (including the ``stop_hint`` below the swept wick).
-    Never raises. The ``now`` argument is accepted for signature parity with the
-    other intraday evaluators; session slicing is anchored on the last bar's date.
+    Pure structural detection (no volume/extension grading) shared by the graded
+    evaluator and the producer prefilter. Returns a dict with ``swing_low``,
+    ``sweep_low``, ``reclaim_close``, ``swept``, ``reclaimed`` and ``session_bars``,
+    or ``None`` when there aren't enough session bars to decide.
     """
     lookback = max(1, int(config.SWEEP_LOOKBACK_BARS))
     window = max(1, int(config.SWEEP_RECLAIM_WINDOW_BARS))
     min_bars = int(config.SWEEP_MIN_SESSION_BARS)
-    # Need a full reference window (lookback) that sits entirely BEFORE the recent
+    # Need a full reference window (lookback) sitting entirely BEFORE the recent
     # reclaim window, plus the recent window itself.
     need = lookback + window
 
     session = current_session_bars(df)
     if df is None or df.empty or session is None or len(session) < max(need, min_bars):
-        return _hold("insufficient session data for sweep-reclaim")
+        return None
 
     low = session["Low"].astype(float)
     close = session["Close"].astype(float)
@@ -80,15 +79,58 @@ def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> 
     ref = low.iloc[n - window - lookback: n - window]
     recent_low = low.iloc[n - window:]
     if ref.empty or recent_low.empty:
-        return _hold("insufficient session data for sweep-reclaim")
+        return None
 
     swing_low = float(ref.min())
     sweep_low = float(recent_low.min())        # the wick that grabbed liquidity
     reclaim_close = float(close.iloc[-1])
-    current_price = reclaim_close
+    return {
+        "swing_low": swing_low,
+        "sweep_low": sweep_low,
+        "reclaim_close": reclaim_close,
+        "swept": sweep_low < swing_low,        # pierced below the level
+        "reclaimed": reclaim_close > swing_low,  # closed back above it
+        "lookback_bars": lookback,
+        "reclaim_window_bars": window,
+        "session_bars": n,
+    }
 
-    swept = sweep_low < swing_low               # pierced below the level
-    reclaimed = reclaim_close > swing_low       # closed back above it
+
+def sweep_reclaim_present(df: pd.DataFrame) -> bool:
+    """Cheap structural prefilter: did price sweep a swing low and reclaim it?
+
+    Used by the intraday producer to enqueue candidates so the consumer's graded
+    evaluator actually sees them. Deliberately looser than ``evaluate_sweep_reclaim``
+    (no volume / over-extension test) so it is a strict SUPERSET of every graded
+    entry — the consumer applies the full grading. Never raises.
+    """
+    try:
+        d = _detect(df)
+    except Exception:
+        return False
+    return bool(d and d["swept"] and d["reclaimed"])
+
+
+def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> dict:
+    """Evaluate a deterministic sweep-reclaim reversal entry on an intraday frame.
+
+    Returns a decision dict shaped so ``build_sweep_reclaim_plan`` (and, through
+    it, ``generate_trade_plan``) can consume it directly: ``signal``, ``enter``,
+    ``current_price``, ``score``, ``confidence``, ``reasons``, and a ``sweep``
+    feature/trigger block (including the ``stop_hint`` below the swept wick).
+    Never raises. The ``now`` argument is accepted for signature parity with the
+    other intraday evaluators; session slicing is anchored on the last bar's date.
+    """
+    d = _detect(df)
+    if d is None:
+        return _hold("insufficient session data for sweep-reclaim")
+
+    swing_low = d["swing_low"]
+    sweep_low = d["sweep_low"]
+    reclaim_close = d["reclaim_close"]
+    current_price = reclaim_close
+    swept = d["swept"]
+    reclaimed = d["reclaimed"]
 
     extension = (reclaim_close - swing_low) / swing_low if swing_low > 0 else None
     max_ext = float(config.SWEEP_MAX_RECLAIM_EXTENSION_PCT)
@@ -140,12 +182,12 @@ def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> 
         "rel_volume": round(rel_vol, 2) if rel_vol is not None else None,
         "stop_hint": stop_hint,
         "extension_pct": round(extension * 100, 2) if extension is not None else None,
-        "lookback_bars": lookback,
-        "reclaim_window_bars": window,
+        "lookback_bars": d["lookback_bars"],
+        "reclaim_window_bars": d["reclaim_window_bars"],
         "swept": swept,
         "reclaimed": reclaimed,
         "volume_ok": volume_ok,
-        "session_bars": n,
+        "session_bars": d["session_bars"],
     }
     return {
         "signal": signal,
@@ -170,6 +212,16 @@ def _hold(reason: str) -> dict:
     }
 
 
+def _skip(ticker: str, decision: dict, reason: str) -> dict:
+    return {
+        "ticker": ticker,
+        "signal": decision.get("signal", "HOLD"),
+        "skip": True,
+        "reason": reason,
+        "disclaimer": "NOT FINANCIAL ADVICE. All trading involves risk of loss.",
+    }
+
+
 def build_sweep_reclaim_plan(
     ticker: str,
     df: pd.DataFrame,
@@ -182,12 +234,16 @@ def build_sweep_reclaim_plan(
     to the swept-wick level rather than a pure ATR distance: the stop distance is
     converted into the ATR input the planner consumes so that
     ``entry - ATR × multiplier`` lands just below the swept low. Targets, sizing,
-    and RiskGuard gating are then identical to every other path. Returns a
-    ``skip``/``error`` dict for non-entry decisions, mirroring the daily planner.
+    and RiskGuard gating are then identical to every other path.
+
+    Returns a ``skip`` dict for non-entry decisions **and** for a degenerate
+    reclaim so shallow that the planner's discounted entry would sit at or below
+    the swept-low stop: emitting there would silently fall back to a generic ATR
+    stop (discarding the swept-low stop the whole setup depends on) and leave a
+    limit that only fills after price has broken back through the reclaimed level.
     """
     if not decision.get("enter"):
-        return {"ticker": ticker, "signal": decision.get("signal", "HOLD"),
-                "skip": True, "reason": "sweep-reclaim decision is not an entry"}
+        return _skip(ticker, decision, "sweep-reclaim decision is not an entry")
 
     sweep = decision.get("sweep") or {}
     stop_hint = sweep.get("stop_hint")
@@ -195,14 +251,22 @@ def build_sweep_reclaim_plan(
     multiplier = float(config.ATR_STOP_MULTIPLIER)
 
     decision = dict(decision)
-    if stop_hint is not None and current_price and multiplier > 0 and "volatility" not in decision:
+    if "volatility" not in decision:
         # generate_trade_plan sets entry = current_price * 0.998, then
         # stop = entry - ATR * multiplier. Back out the ATR that lands the stop at
         # the sweep-based stop_hint, so the swept-wick stop drives sizing/targets.
+        if stop_hint is None or not current_price or multiplier <= 0:
+            return _skip(ticker, decision, "sweep-reclaim stop geometry unavailable")
         entry_approx = round(float(current_price) * 0.998, 2)
         atr_equiv = (entry_approx - float(stop_hint)) / multiplier
-        if atr_equiv > 0:
-            decision["volatility"] = {"ATR_14": pd.Series([atr_equiv])}
+        if atr_equiv <= 0:
+            return _skip(
+                ticker, decision,
+                f"Reclaim too shallow for a valid stop: discounted entry "
+                f"${entry_approx:.2f} <= swept-low stop ${float(stop_hint):.2f}. "
+                "Skipping rather than fall back to a generic ATR stop.",
+            )
+        decision["volatility"] = {"ATR_14": pd.Series([atr_equiv])}
 
     plan = generate_trade_plan(ticker, decision, account_size=account_size, df=df)
     if isinstance(plan, dict) and "error" not in plan and not plan.get("skip"):

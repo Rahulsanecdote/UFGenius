@@ -5,12 +5,21 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.signals.sweep_reclaim import build_sweep_reclaim_plan, evaluate_sweep_reclaim
+from src.signals.sweep_reclaim import (
+    build_sweep_reclaim_plan,
+    evaluate_sweep_reclaim,
+    sweep_reclaim_present,
+)
 from src.utils import config
+
+# The frame's last bar sits here; producer tests pass a `now` just after it so the
+# staleness guard in scan_intraday doesn't reject the (fixed-date) fixture.
+_FRAME_DATE = "2023-06-01"
+_FRAME_LAST = pd.Timestamp("2023-06-01 15:26")   # 24 bars from 13:30 @ 5m → 15:25
 
 
 # ── session-frame builder ─────────────────────────────────────────────────────
-def _session(lows, closes, vols, highs=None, opens=None, date="2023-06-01"):
+def _session(lows, closes, vols, highs=None, opens=None, date=_FRAME_DATE):
     """Build a single-session intraday OHLCV frame (naive-UTC 5m index)."""
     n = len(closes)
     idx = pd.date_range(f"{date} 13:30", periods=n, freq="5min")  # naive UTC
@@ -22,22 +31,22 @@ def _session(lows, closes, vols, highs=None, opens=None, date="2023-06-01"):
     )
 
 
-def _sweep_reclaim_frame(*, last_close=9.95, sweep_low=9.60, last_vol=1_500_000,
-                         base_vol=500_000, swing_low=9.80, n_base=22):
+def _sweep_reclaim_frame(*, swing_low=9.80, sweep_low=9.60, last_close=9.95,
+                         base_close=10.0, last_vol=1_500_000, base_vol=500_000,
+                         n_base=22):
     """A frame that sweeps `swing_low` on the 2nd-to-last bar then reclaims it.
 
     Base bars hover so their min Low is `swing_low`; the recent 2-bar window dips
     to `sweep_low` (below the level) and the last bar closes at `last_close`
     (above the level) on `last_vol`.
     """
-    # base bars: lows never below swing_low; the minimum is exactly swing_low.
-    base_closes = [10.0] * n_base
+    base_closes = [base_close] * n_base
     base_lows = [swing_low + 0.05] * n_base
     base_lows[10] = swing_low          # the swing low itself, inside the lookback
     base_vols = [base_vol] * n_base
-    # recent window (2 bars): a sweep bar then the reclaim bar.
-    closes = base_closes + [9.70, last_close]
-    lows = base_lows + [sweep_low, sweep_low + 0.30]
+    # recent window (2 bars): a sweep bar (dips to sweep_low) then the reclaim bar.
+    closes = base_closes + [swing_low - 0.05, last_close]
+    lows = base_lows + [sweep_low, sweep_low + 0.02]
     vols = base_vols + [base_vol, last_vol]
     return _session(lows, closes, vols)
 
@@ -119,3 +128,47 @@ def test_build_plan_skips_non_entry():
     hold = {"signal": "HOLD", "enter": False, "sweep": {}}
     plan = build_sweep_reclaim_plan("AAA", pd.DataFrame(), hold)
     assert plan["skip"] and "not an entry" in plan["reason"]
+
+
+def test_build_plan_skips_shallow_reclaim_geometry():
+    # Razor-thin reclaim: the planner's 0.2% entry discount would drop entry to/
+    # below the swept-low stop → no valid stop-below-entry. Must SKIP, not fall
+    # back to a generic ATR stop (Codex P2).
+    f = _sweep_reclaim_frame(swing_low=100.0, sweep_low=99.95, last_close=100.01,
+                             base_close=100.2)
+    d = evaluate_sweep_reclaim(f)
+    assert d["enter"]                                   # it IS a graded entry...
+    plan = build_sweep_reclaim_plan("AAA", f, d, account_size=100_000)
+    assert plan.get("skip") and "too shallow" in plan["reason"]  # ...but geometry is degenerate
+    assert "source" not in plan                         # never produced a plan
+
+
+# ── producer prefilter (sweep candidates get enqueued) ────────────────────────
+def test_sweep_reclaim_present_true_on_setup():
+    assert sweep_reclaim_present(_sweep_reclaim_frame()) is True
+
+
+def test_sweep_reclaim_present_false_without_sweep():
+    assert sweep_reclaim_present(_sweep_reclaim_frame(sweep_low=9.90)) is False
+
+
+def test_producer_enqueues_sweep_candidate_when_enabled(monkeypatch):
+    from src.scanner import intraday_scan
+
+    monkeypatch.setattr(config, "SWEEP_RECLAIM_ENABLED", True)
+    f = _sweep_reclaim_frame()
+    cands = intraday_scan.scan_intraday(
+        ["AAA"], now=_FRAME_LAST, fetch=lambda t, interval=None: f
+    )
+    assert "sweep" in {c.kind for c in cands}
+
+
+def test_producer_no_sweep_candidate_when_disabled(monkeypatch):
+    from src.scanner import intraday_scan
+
+    monkeypatch.setattr(config, "SWEEP_RECLAIM_ENABLED", False)
+    f = _sweep_reclaim_frame()
+    cands = intraday_scan.scan_intraday(
+        ["AAA"], now=_FRAME_LAST, fetch=lambda t, interval=None: f
+    )
+    assert "sweep" not in {c.kind for c in cands}
