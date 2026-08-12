@@ -179,14 +179,19 @@ The `src/eval/` module was never created — the functionality below supersedes 
 | Walk-forward evaluation + OOS gating | `src/backtest/validation.py` (`walk_forward`, `validate_strategy`, `bootstrap_trade_metrics`) + `python bot.py --mode validate` — **P0.1**. Parameter selection scored only on validation folds with an overfitting haircut: `src/backtest/optimize.py` (`parameter_search`, `expected_max_sharpe`) + `--mode optimize` — **P0.2**. |
 | Transaction cost / slippage models | Backtest cost model (`commission_pct`/`slippage_pct`, next-bar-open fills) + **measured** slippage fed back from real fills: `src/alpaca/execution_quality.py` (`use_measured_slippage`) — **P2.1**. (Per-asset-class models remain single-asset today — equities only — since the universe is equities.) |
 | Attribution | `src/observability/attribution.py` — per-signal-label realized outcome over the P0.4 trade-outcome ledger — **P2.3**. |
-| Promotion to paper/live | `src/alpaca/scorecard.py` — the paper scorecard gate that requires realized paper metrics to match the validated backtest (same `bootstrap_trade_metrics` estimator) before the live flag — **P0.4**. |
+| Promotion to paper/live | `src/alpaca/scorecard.py` — an **absolute-floor** performance gate: realized paper metrics must clear fixed configured floors (min trades, profit factor, bootstrap prob-profitable, positive expectancy) before real money. It uses the **same `bootstrap_trade_metrics` estimator** as the P0.1 validation, so paper and backtest numbers are *directly comparable* — but the gate checks floors, it does **not** compare paper against the run's validated-backtest values. Enforced by RiskGuard on the live path (when `ALPACA_PAPER=false`), alongside the tenure check — **P0.4**. |
 
-**Genuine remaining gap:** a *formal champion/challenger* workflow — running a
-candidate strategy against the incumbent and auto-promoting on a measured edge —
-does **not** exist. The pieces are in place (validation harness + paper
-scorecard as the promotion gate); what's missing is the orchestration that pits
-two parameter sets/strategies against each other and records a promotion
-decision. Left as the one open Phase 5 item.
+**Genuine remaining gaps:**
+- A *formal champion/challenger* workflow — running a candidate strategy against
+  the incumbent and auto-promoting on a measured edge — does **not** exist. The
+  pieces are in place (validation harness + paper-scorecard floor gate); what's
+  missing is the orchestration that pits two parameter sets/strategies against
+  each other and records a promotion decision.
+- The promotion gate is **absolute-floor**, not a tolerance comparison against
+  the validated backtest. The `UPGRADE_PLAN.md` acceptance criterion ("paper
+  performance matches the validated backtest within tolerance") describes the
+  *goal*; the implemented gate enforces floors on the same metrics. Closing the
+  loop into an explicit paper-vs-backtest tolerance check is open work.
 
 ## Phase 6: Operational Intelligence Layer
 
@@ -211,17 +216,20 @@ Delivered under the **`UPGRADE_PLAN.md` P0.3/P2.3/P3.1 track**; the proposed
 |---|---|
 | Structured metrics — latency | `src/observability/metrics.py` (`MetricsLedger`: per-scan latency avg/p95, signal counts, data-gap flag), `GET /api/metrics` — **P2.3**. |
 | Structured metrics — fill quality | `src/alpaca/execution_quality.py` (realized slippage / implementation shortfall), `GET /api/execution-quality` — **P2.1**. |
-| Structured metrics — risk breaches | `src/alpaca/circuit_breaker.py` (halt / broker-error / data-staleness state), `GET /api/breaker-state` — **P0.3**; alerting on trips via `src/observability/alerting.py` — **P2.3**. |
+| Structured metrics — risk breaches *(partial)* | `src/alpaca/circuit_breaker.py` exposes **current** breaker state (halt / broker-error / data-staleness), `GET /api/breaker-state` — **P0.3**; trips fire alerts via `src/observability/alerting.py` — **P2.3**. This is a live-state snapshot + notifications, **not** a queryable breach **history**: `state()` is point-in-time, `resume` clears the broker-error trail, and data-staleness entry refusals aren't persisted. A structured breach event/count series is **not** delivered. |
 | Structured metrics — PnL attribution | `src/observability/attribution.py`, `GET /api/attribution` — **P2.3**. |
 | LLM research copilot (read-only to execution) | `src/explain/narrative.py` — optional bull/bear narrative over the **verified snapshot**, structurally firewalled from the money path, prompt-injection-sandboxed, cost-capped, `GET /api/explain` — **P3.1**. |
 | Alert routing | `src/observability/alerting.py` + `src/alerts/*` (`send_text_alert`/telegram/email) — **P2.3**. |
 
-**Partial gap — unified audit trail:** decision/outcome history *is* persisted,
-but across several purpose-built ledgers (P0.4 trade-outcome, P2.1
-execution-quality, P2.3 scan-metrics, P0.3 circuit-breaker trail) rather than one
-consolidated incident stream. A single append-only "why did the bot do X at
-time T" audit log that stitches these together does not yet exist; the raw
-material for it does. Left as the open Phase 6 item.
+**Genuine remaining gaps:**
+- **Queryable risk-breach history** — see the risk-breaches row above: today only
+  current breaker state + trip alerts exist, not a persisted, queryable
+  breach-event/count series.
+- **Unified audit trail** — decision/outcome history *is* persisted, but across
+  several purpose-built ledgers (P0.4 trade-outcome, P2.1 execution-quality, P2.3
+  scan-metrics, P0.3 circuit-breaker trail) rather than one consolidated incident
+  stream. A single append-only "why did the bot do X at time T" audit log that
+  stitches these together does not yet exist; the raw material for it does.
 
 ## Definition of Done (Per Phase)
 
