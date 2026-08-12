@@ -31,6 +31,7 @@ from src.data.fetcher import fetch_intraday
 from src.data.lookahead import is_stale
 from src.scanner.candidate_queue import Candidate, CandidateQueue
 from src.scanner.gap_scanner import scan_for_gaps
+from src.signals.sweep_reclaim import sweep_reclaim_present
 from src.utils import config
 from src.utils.logger import get_logger
 
@@ -175,7 +176,16 @@ def scan_intraday(
             metrics = score_intraday_frame(df)
             if metrics is None:
                 continue
-            out.extend(_candidates_from_metrics(str(ticker).upper(), metrics, now))
+            tkr = str(ticker).upper()
+            out.extend(_candidates_from_metrics(tkr, metrics, now))
+            # Opt-in sweep-reclaim REVERSAL candidate: the volume/momentum/breakout
+            # thresholds above don't cover a liquidity-grab reversal (e.g. a
+            # thin-volume reclaim, or a 1.5-1.99x one under the momentum floor), so
+            # a valid sweep would never reach the consumer's sweep-reclaim path.
+            # Enqueue a structural sweep candidate (superset of graded entries) so
+            # it does. Gated by the same flag — off ⇒ producer unchanged.
+            if config.SWEEP_RECLAIM_ENABLED and sweep_reclaim_present(df):
+                out.append(Candidate(tkr, "sweep", metrics["last_price"], now.isoformat(), dict(metrics)))
         except Exception as exc:  # never let one symbol break the cycle
             log.debug(f"{ticker}: intraday scan error: {exc}")
     return out

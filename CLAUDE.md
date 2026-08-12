@@ -168,6 +168,18 @@ pytest --cov=src       # coverage
   volume, intraday-ATR stop via `src/technical/intraday_features.py`). Discovery
   + planning only — plans go to a pluggable sink (default log); execution reuses
   the gated `execute_trade_plan` path. Config: `continuous_scan:` / `intraday_signal:`.
+  An **opt-in sweep-reclaim reversal** entry (`src/signals/sweep_reclaim.py`,
+  config `sweep_reclaim:`, **default off**) is the counterpart to the breakout:
+  it detects a sweep of a recent swing low (`lookback_bars`=15) + a reclaim close
+  on volume (`reclaim_window_bars`=2), stops just below the swept wick, and builds
+  the plan through the same `generate_trade_plan` money-path. When
+  `SWEEP_RECLAIM_ENABLED`, the producer enqueues a structural `sweep` candidate
+  (`sweep_reclaim_present`, a superset of graded entries) and the consumer runs
+  the full grading only when the breakout doesn't fire; both are behind the flag,
+  so off ⇒ intraday path unchanged. Timing hypothesis, **unvalidated** — `--mode
+  validate` covers the daily composite only, not this entry (intraday backtest
+  harness is a known gap); judge it on paper via `/api/paper-scorecard` +
+  `/api/attribution` before real money. See `docs/SWEEP_RECLAIM.md`.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`

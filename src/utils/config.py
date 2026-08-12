@@ -214,6 +214,36 @@ INTRADAY_CONSUMER_MAX_PER_CYCLE: int = env_int(
     "INTRADAY_CONSUMER_MAX_PER_CYCLE", _as_int(_INTRADAY_SIGNAL.get("consumer_max_per_cycle", 20), 20)
 )
 
+# Sweep-reclaim reversal entry (liquidity-grab timing). Deterministic intraday
+# reversal: sweep of a recent swing low + reclaim close on volume, stop below the
+# swept wick. Default-OFF (SWEEP_RECLAIM_ENABLED) — an opt-in, validate-first
+# timing hypothesis the consumer only evaluates when explicitly enabled.
+_SWEEP: dict = get("sweep_reclaim", {})
+SWEEP_RECLAIM_ENABLED: bool = env_bool(
+    "SWEEP_RECLAIM_ENABLED", bool(_SWEEP.get("enabled", False))
+)
+SWEEP_LOOKBACK_BARS: int = env_int(
+    "SWEEP_LOOKBACK_BARS", _as_int(_SWEEP.get("lookback_bars", 15), 15)
+)
+SWEEP_RECLAIM_WINDOW_BARS: int = env_int(
+    "SWEEP_RECLAIM_WINDOW_BARS", _as_int(_SWEEP.get("reclaim_window_bars", 2), 2)
+)
+SWEEP_MIN_REL_VOLUME: float = env_float(
+    "SWEEP_MIN_REL_VOLUME", float(_SWEEP.get("min_rel_volume", 1.5))
+)
+SWEEP_REQUIRE_VOLUME: bool = env_bool(
+    "SWEEP_REQUIRE_VOLUME", bool(_SWEEP.get("require_volume", False))
+)
+SWEEP_STOP_BUFFER_PCT: float = env_float(
+    "SWEEP_STOP_BUFFER_PCT", float(_SWEEP.get("stop_buffer_pct", 0.001))
+)
+SWEEP_MAX_RECLAIM_EXTENSION_PCT: float = env_float(
+    "SWEEP_MAX_RECLAIM_EXTENSION_PCT", float(_SWEEP.get("max_reclaim_extension_pct", 0.05))
+)
+SWEEP_MIN_SESSION_BARS: int = env_int(
+    "SWEEP_MIN_SESSION_BARS", _as_int(_SWEEP.get("min_session_bars", 20), 20)
+)
+
 # Catalyst gating (upgrade plan P1.4): calendar-backed earnings + catalyst-tag veto.
 _CATALYSTS: dict = get("catalysts", {})
 _ecal_path = env(

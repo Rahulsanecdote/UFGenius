@@ -79,6 +79,21 @@ intraday_signal:
   min_session_bars: 6          # minimum current-session bars before an entry can fire
   consumer_max_per_cycle: 20   # candidates evaluated per consumer drain (cost guard)
 
+# Sweep-reclaim reversal entry (liquidity-grab / stop-hunt timing). A deterministic
+# intraday REVERSAL entry (the counterpart to the breakout above): price sweeps a
+# recent swing low then reclaims it on volume → long, stop just below the swept
+# wick. Default OFF — opt-in, and a timing hypothesis to validate out-of-sample
+# before real money. The consumer only evaluates it when `enabled: true`.
+sweep_reclaim:
+  enabled: false               # master switch (consumer skips this path when false)
+  lookback_bars: 15            # bars defining the swept swing low (the liquidity level)
+  reclaim_window_bars: 2       # bars within which the sweep + reclaim must occur
+  min_rel_volume: 1.5          # reclaim-bar volume vs session average to confirm participation
+  require_volume: false        # if true, NO entry without volume confirmation (else volume only upgrades BUY→STRONG_BUY)
+  stop_buffer_pct: 0.001       # stop placed this fraction below the swept wick low
+  max_reclaim_extension_pct: 0.05  # reject if close is already >5% above the swept level (chasing)
+  min_session_bars: 20         # minimum current-session bars before it can fire
+
 # Catalyst gating (upgrade plan P1.4). A calendar-backed earnings source (used
 # by the RiskGuard earnings-week block) plus an optional catalyst-tag veto so
 # entries carrying a hard catalyst (halt, fraud, investigation, …) are refused —
