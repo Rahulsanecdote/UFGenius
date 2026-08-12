@@ -332,8 +332,10 @@ class RiskGuard:
         # 15. Paper-trading graduation gate before real-money trading. Two parts,
         #     both on the live path only (ALPACA_PAPER=false):
         #     (a) tenure — a minimum number of days of trading history, and
-        #     (b) P0.4 performance — the paper scorecard must clear its floors,
-        #         so we go live on a *validated* paper edge, not just elapsed time.
+        #     (b) performance — the paper scorecard must clear its absolute floors
+        #         (P0.4) and, when the opt-in baseline gate is on, stay within
+        #         tolerance of the validated out-of-sample backtest, so we go live
+        #         on a *validated* paper edge, not just elapsed time.
         req_days = safety.get("paper_trade_days_required")
         if req_days and not config.ALPACA_PAPER:
             since = tracker.trading_since()
@@ -353,12 +355,13 @@ class RiskGuard:
                 # not pass, even if it returned no scorecard (defensive — a
                 # future (False, None) must never approve a real-money order).
                 card = card or {}
-                n = card.get("n_trades", 0)
-                pp = card.get("prob_profitable")
-                pf = card.get("profit_factor")
+                detail = card.get("gate_reason") or (
+                    f"trades={card.get('n_trades', 0)}, "
+                    f"profit_factor={card.get('profit_factor')}, "
+                    f"prob_profitable={card.get('prob_profitable')}"
+                )
                 return False, (
-                    "paper scorecard has not met the live-performance floors "
-                    f"(trades={n}, profit_factor={pf}, prob_profitable={pp}); "
+                    f"paper graduation gate not met — {detail}; "
                     "keep paper trading before enabling real money"
                 )
 

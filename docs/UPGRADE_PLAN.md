@@ -120,6 +120,9 @@ then an optional intelligence layer. Every phase makes the edge more
       frequency is punished by costs and noise.
 - [ ] Do **not** flip the live-trading flag until the P0 **paper scorecard**
       matches the **validated backtest** within an agreed tolerance.
+      *(Standing operating rule — now machine-enforceable rather than
+      honour-system: enable `paper_scorecard.baseline_gate_enabled` and RiskGuard
+      refuses real-money entries that breach it. See the acceptance criteria.)*
 
 ### P0 — Prove the edge & harden the gates *(do first; leverages what exists)*
 - [x] **P0.1 — Walk-forward + out-of-sample harness** around the existing
@@ -369,8 +372,34 @@ then an optional intelligence layer. Every phase makes the edge more
 ## Acceptance criteria (definition of "production-grade")
 - [ ] Edge is demonstrated on a **held-out out-of-sample** period, with
       confidence intervals — not just in-sample metrics.
-- [ ] Live **paper** performance matches the validated backtest within tolerance
+- [x] Live **paper** performance matches the validated backtest within tolerance
       before any real-money flag is enabled.
+      **Delivered:** `src/backtest/baseline.py`. `python bot.py --mode validate
+      --save-baseline` persists the run's **held-out out-of-sample** metrics as a
+      reference (with provenance: span, ticker count, capital, seed, timestamp,
+      and the run's own `validated` verdict);
+      `compare_paper_to_baseline()` then scores the realized paper scorecard
+      against it within a configured **relative tolerance**. Compared metrics are
+      `win_rate_pct` and `profit_factor` — the two the backtest engine and the
+      paper scorecard both produce, both **trade-level** (the paper ledger has no
+      daily equity curve, so Sharpe/drawdown have no like-for-like counterpart)
+      and both **capital-invariant**, so a differently-sized paper account does
+      not skew the comparison. The check is **one-sided**: only paper
+      *underperformance* fails, because paper fills carry no real slippage or
+      queue position, so paper-better-than-backtest is the expected direction and
+      vetoing it would be a false veto (a large overshoot is still surfaced as a
+      likely data/accounting bug — advisory, never blocking). **Fail-closed**:
+      a missing, unreadable, NOT-VALIDATED, stale (`baseline_max_age_days`), or
+      non-comparable baseline all reject — "we could not check" must never read
+      as "you may proceed". Wired as the second half of RiskGuard's live
+      graduation gate alongside the P0.4 absolute floors (each half separately
+      enabled; the gate passes only if every enabled half passes), and surfaced
+      on `GET /api/paper-scorecard` + the dashboard scorecard panel + `--mode
+      portfolio` — computed advisory-side whenever a baseline exists, whether or
+      not the money-path gate is on. Opt-in (`paper_scorecard.baseline_gate_enabled`,
+      default off) since it requires a saved baseline; config-driven
+      (`config.yaml` `paper_scorecard:` `baseline_*` / `PAPER_SCORECARD_BASELINE_*`
+      env). 35 offline tests (`tests/test_baseline.py` + dashboard-API cases).
 - [ ] Every entry passes `RiskGuard`; **kill-switches and circuit breakers** are
       observable and enforced.
 - [ ] **Realized** slippage/cost is measured and reconciled against the model.

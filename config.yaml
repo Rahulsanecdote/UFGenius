@@ -41,6 +41,13 @@ paper_scorecard:
   require_positive_expectancy: true  # mean per-trade P&L must be > 0
   performance_gate_enabled: true  # gate live trading on scorecard performance, not just tenure
   max_trades_retained: 5000       # cap on retained closed-trade outcome records (bounds the store)
+  # Paper-vs-validated-backtest tolerance gate. The floors above ask "is paper good
+  # enough?"; this asks "does paper still look like the edge validated out-of-sample?".
+  # Needs a baseline saved by `python bot.py --mode validate --save-baseline`.
+  baseline_gate_enabled: false    # opt-in: also require paper within tolerance of the validated backtest before live
+  baseline_tolerance_pct: 30      # paper win rate / profit factor may sit up to this % BELOW the validated OOS values (one-sided; outperformance never blocks)
+  baseline_max_age_days: 180      # refuse a baseline older than this — a stale reference is not evidence of a current edge
+  baseline_path: "data/validated_baseline.json"  # where --save-baseline writes the reference
 
 # Intraday data layer (upgrade plan P1.1). Governs intraday OHLCV bars (1m/5m/…):
 # a bar-scaled cache TTL and the look-ahead / staleness guards.

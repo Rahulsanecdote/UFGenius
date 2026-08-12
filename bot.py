@@ -460,6 +460,23 @@ def cmd_validate(args) -> None:
     print(f"\n  ⚠️  {verdict['disclaimer']}")
     print(f"{'='*64}\n")
 
+    if getattr(args, "save_baseline", False):
+        from src.backtest.baseline import save_baseline
+
+        saved = save_baseline(
+            result,
+            tickers=tickers, start=start, end=end,
+            initial_capital=capital, seed=args.seed,
+        )
+        print(f"  Baseline saved → {config.PAPER_SCORECARD_BASELINE_PATH}")
+        if not saved["validated"]:
+            # Saved for the record, but the tolerance gate refuses an unvalidated
+            # reference — say so here rather than letting an operator discover it
+            # only when a live entry is blocked.
+            print("  ⚠️  This run was NOT VALIDATED — the paper-vs-backtest gate will "
+                  "refuse it as a reference until a validated run replaces it.")
+        print()
+
     if args.json:
         _print_json(result)
 
@@ -609,6 +626,30 @@ def _print_paper_scorecard() -> None:
     banner = "✅ MEETS live-performance floors" if acc.get("all_pass") else "❌ BELOW floors"
     print(f"\n  {banner}")
     print(f"  {card.get('summary', '')}")
+
+    try:  # the baseline comparison must never break the portfolio view either
+        from src.backtest.baseline import compare_paper_to_baseline, load_baseline
+
+        baseline = load_baseline()
+        if baseline is not None:
+            cmp_ = compare_paper_to_baseline(card, baseline)
+            gate_on = config.PAPER_SCORECARD_BASELINE_GATE_ENABLED
+            cmp_banner = "✅ WITHIN tolerance" if cmp_.get("all_pass") else "❌ OUTSIDE tolerance"
+            print("\n  vs validated backtest "
+                  f"({baseline.get('provenance', {}).get('out_of_sample')}):")
+            for metric, chk in (cmp_.get("checks") or {}).items():
+                if not chk.get("comparable"):
+                    continue
+                mark = "✅" if chk.get("pass") else "❌"
+                print(f"    {mark} {metric}: paper {chk.get('paper')} "
+                      f"vs backtest {chk.get('baseline')} (floor {chk.get('floor')})")
+            print(f"  {cmp_banner}"
+                  f"{'' if gate_on else '  (advisory — baseline_gate_enabled=false)'}")
+            print(f"  {cmp_.get('reason', '')}")
+            if cmp_.get("divergence_note"):
+                print(f"  ⚠️  {cmp_['divergence_note']}")
+    except Exception as exc:
+        log.debug(f"baseline comparison unavailable: {exc}")
     print(f"  ⚠️  {card.get('disclaimer', '')}")
     print(f"{'='*60}\n")
 
@@ -850,6 +891,10 @@ Examples:
                         help="validate: held-out out-of-sample fraction 0.05-0.9 (default 0.30)")
     parser.add_argument("--seed",         type=int, default=DEFAULT_SEED,
                         help=f"validate: RNG seed for reproducible bootstrap (default {DEFAULT_SEED})")
+    parser.add_argument("--save-baseline", action="store_true", dest="save_baseline",
+                        help=("validate: persist this run's out-of-sample metrics as the "
+                              "reference the live paper-vs-backtest tolerance gate compares "
+                              "against (see paper_scorecard.baseline_* in config.yaml)"))
     parser.add_argument(
         "--execute",
         action="store_true",

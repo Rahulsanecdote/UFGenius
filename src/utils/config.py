@@ -555,6 +555,32 @@ PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED: bool = bool(
 )
 PAPER_SCORECARD_MAX_TRADES: int = int(_PAPER_SCORECARD.get("max_trades_retained", 5000))
 
+# Paper-vs-validated-backtest tolerance gate. The floors above ask "is paper good
+# enough?"; this asks the UPGRADE_PLAN acceptance question "does paper still look
+# like the edge that was validated out-of-sample?". Opt-in (default off) because
+# it requires a saved baseline: `bot.py --mode validate --save-baseline`.
+PAPER_SCORECARD_BASELINE_GATE_ENABLED: bool = env_bool(
+    "PAPER_SCORECARD_BASELINE_GATE_ENABLED",
+    bool(_PAPER_SCORECARD.get("baseline_gate_enabled", False)),
+)
+PAPER_SCORECARD_BASELINE_TOLERANCE_PCT: float = env_float(
+    "PAPER_SCORECARD_BASELINE_TOLERANCE_PCT",
+    _as_float(_PAPER_SCORECARD.get("baseline_tolerance_pct"), 30.0),
+)
+PAPER_SCORECARD_BASELINE_MAX_AGE_DAYS: float = env_float(
+    "PAPER_SCORECARD_BASELINE_MAX_AGE_DAYS",
+    _as_float(_PAPER_SCORECARD.get("baseline_max_age_days"), 180.0),
+)
+# A blank env value (a `PAPER_SCORECARD_BASELINE_PATH=` line in .env) means
+# "unset", not "the project root" — falling through to the configured default
+# instead of resolving an empty path.
+_baseline_path: str = (
+    env("PAPER_SCORECARD_BASELINE_PATH", "").strip()
+    or str(_PAPER_SCORECARD.get("baseline_path") or "").strip()
+    or str(_ROOT / "data" / "validated_baseline.json")
+)
+PAPER_SCORECARD_BASELINE_PATH: str = _resolve_root(_baseline_path)
+
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 _VALIDATION: dict = get("validation", {})
 VALIDATION_OOS_SHARPE_FLOOR: float = float(_VALIDATION.get("oos_sharpe_floor", 1.0))
