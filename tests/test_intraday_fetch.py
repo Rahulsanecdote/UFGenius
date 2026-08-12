@@ -24,17 +24,36 @@ def _frame(times: list[str]) -> pd.DataFrame:
 # ── interval-aware TTL ────────────────────────────────────────────────────────
 
 def test_ttl_boundary_aligned(monkeypatch):
-    # Default path: expire just after the next bar boundary + settle grace.
+    # Default path: expire at the earliest boundary+settle instant after now.
     monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True)
     monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_SETTLE_SEC", 5.0)
-    # 5m boundaries are multiples of 300: now=1000 → next boundary 1200 → 200 + 5 settle.
+    # 5m boundaries are multiples of 300: now=1000 is past 900+5, so next is 1200+5 → 205.
     assert fetcher._ttl_for_interval("5m", now=1000.0) == 205
-    # exactly on a boundary → a full bar + settle (not a near-zero TTL).
-    assert fetcher._ttl_for_interval("5m", now=1200.0) == 305
-    # 1s before a boundary → a tiny TTL (the bar is about to close).
+    # exactly on a boundary → this boundary's settle instant (1200+5) → 5, NOT a full bar.
+    assert fetcher._ttl_for_interval("5m", now=1200.0) == 5
+    # 1s before a boundary → a tiny TTL (the bar is about to close): 1200+5-1199.
     assert fetcher._ttl_for_interval("5m", now=1199.0) == 6
-    # 1m: now=1000 → next boundary 1020 → 20 + 5.
+    # 1m: now=1000 is past 960+5, so next is 1020+5 → 25.
     assert fetcher._ttl_for_interval("1m", now=1000.0) == 25
+
+
+def test_ttl_cold_start_within_settle_window(monkeypatch):
+    # Codex P1: a fetch inside the settle window right after a boundary must
+    # expire at THIS boundary's settle instant, not be pushed a full bar out.
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True)
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_SETTLE_SEC", 5.0)
+    # now = 962 is 2s past the 960 boundary; settle instant 965 hasn't passed → ttl 3.
+    assert fetcher._ttl_for_interval("1m", now=962.0) == 3
+
+
+def test_ttl_session_phased_intervals_use_legacy(monkeypatch):
+    # Codex P2: hourly / 90m bars are session-phased (open 09:30 ET; 90m doesn't
+    # divide the hour), so epoch-modulo alignment would be wrong — they keep the
+    # legacy bar-length TTL even with boundary-align on.
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True)
+    assert fetcher._ttl_for_interval("60m", now=1000.0) == 3600
+    assert fetcher._ttl_for_interval("1h", now=1000.0) == 3600
+    assert fetcher._ttl_for_interval("90m", now=1000.0) == 5400
 
 
 def test_ttl_is_bar_scaled_for_intraday_legacy(monkeypatch):

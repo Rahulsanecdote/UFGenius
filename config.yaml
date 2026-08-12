@@ -46,7 +46,7 @@ paper_scorecard:
 # a bar-scaled cache TTL and the look-ahead / staleness guards.
 intraday:
   default_interval: "5m"        # default intraday bar size for fetch_intraday
-  cache_boundary_align: true    # expire the intraday cache just AFTER the next bar boundary (+settle) so a newly-closed bar is picked up promptly, instead of a fixed TTL measured from fetch time
+  cache_boundary_align: true    # expire the intraday cache at the next bar boundary (+settle) so a newly-closed bar is picked up promptly, instead of a fixed TTL from fetch time. Sub-hour clock-aligned bars (1m/2m/5m/15m/30m) only; hourly+/90m are session-phased and keep the legacy TTL
   cache_settle_sec: 5           # grace after a bar boundary for the provider to publish the closed bar before the cache refetches
   cache_ttl_floor_sec: 30       # floor on the bar-scaled intraday cache TTL (legacy path only — used when cache_boundary_align is false)
   max_staleness_intervals: 3    # a frame older than N bars is considered stale

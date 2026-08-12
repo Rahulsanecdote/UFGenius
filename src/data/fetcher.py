@@ -50,15 +50,18 @@ def _ttl_for_interval(interval: str, now: float | None = None) -> int:
     An intraday frame cached for a day would serve bars hours stale, so the TTL
     tracks the bar cadence. Two intraday modes:
 
-    * **Boundary-aligned (default):** expire just AFTER the next bar boundary,
-      plus ``INTRADAY_CACHE_SETTLE_SEC`` grace for the provider to publish the
-      freshly-closed bar. A fixed bar-length TTL measured from an arbitrary fetch
-      time can hide a just-closed bar for nearly a full bar; aligning to the
-      boundary means the first poll after a bar closes re-fetches it — one fetch
-      per bar per ticker, so reaction latency tracks the poll cadence, not the bar
-      length. ``now`` is injectable for tests (defaults to wall-clock).
-    * **Legacy (``cache_boundary_align: false``):** the bar's own duration,
-      floored by ``INTRADAY_CACHE_TTL_FLOOR_SEC``.
+    * **Boundary-aligned (default, sub-hour clock-phased intervals only):** expire
+      at the earliest ``boundary + INTRADAY_CACHE_SETTLE_SEC`` instant after now
+      (the settle grace lets the provider publish the freshly-closed bar) — which
+      is the CURRENT boundary's settle instant when now falls inside that grace
+      window (e.g. a cold-start fetch at 12:00:02), otherwise the next boundary's.
+      A fixed bar-length TTL measured from an arbitrary fetch time can hide a
+      just-closed bar for nearly a full bar; this makes the first poll after a bar
+      closes re-fetch it — one fetch per bar per ticker, so reaction latency
+      tracks the poll cadence, not the bar length. ``now`` is injectable for tests.
+    * **Legacy (``cache_boundary_align: false``, or hourly+/90m intervals whose
+      bars are session-phased rather than clock-aligned):** the bar's own
+      duration, floored by ``INTRADAY_CACHE_TTL_FLOOR_SEC``.
 
     Daily/unknown intervals keep the default long TTL.
     """
@@ -66,11 +69,29 @@ def _ttl_for_interval(interval: str, now: float | None = None) -> int:
     if secs is None:
         return cache.DEFAULT_TTL
     secs = int(secs)
-    if getattr(config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True):
+    # Boundary-align only for sub-hour intervals whose bars are phase-aligned to
+    # the clock hour (1m/2m/5m/15m/30m — they evenly divide 3600 and open on the
+    # hour). Hourly+ and 90m bars are SESSION-phased (US hourly bars open 09:30
+    # ET, 90m doesn't divide the hour), so epoch-modulo boundaries would be wrong
+    # and could hide a closed bar for ~half an interval — those keep the legacy
+    # bar-length TTL.
+    aligned = (
+        getattr(config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True)
+        and secs < 3600 and 3600 % secs == 0
+    )
+    if aligned:
         t = _time.time() if now is None else float(now)
         settle = max(0.0, float(getattr(config, "INTRADAY_CACHE_SETTLE_SEC", 5.0)))
-        next_boundary = (int(t // secs) + 1) * secs   # first boundary strictly after t
-        return max(1, math.ceil((next_boundary + settle) - t))
+        cur_boundary = (int(t // secs)) * secs
+        # Earliest "boundary + settle" instant strictly after t: the CURRENT
+        # boundary's settle instant if it hasn't passed (a cold-start fetch inside
+        # the grace window, before the just-closed bar is published), else the
+        # next boundary's. Otherwise a fetch at 12:00:02 would cache until 12:01:05
+        # instead of expiring at 12:00:05 and missing the 12:00 bar for a full bar.
+        target = cur_boundary + settle
+        if target <= t:
+            target = cur_boundary + secs + settle
+        return max(1, math.ceil(target - t))
     floor = max(1, int(getattr(config, "INTRADAY_CACHE_TTL_FLOOR_SEC", 30)))
     return max(floor, secs)
 _UPSTREAM_FETCH_SEMAPHORE = threading.BoundedSemaphore(max(1, config.PROVIDER_CONCURRENCY_LIMIT))
