@@ -142,8 +142,20 @@ FEATURE_ENABLE_REGIME_WEIGHTING: bool = env_bool("FEATURE_ENABLE_REGIME_WEIGHTIN
 # cache TTL and the look-ahead/staleness assertions.
 _INTRADAY: dict = get("intraday", {})
 INTRADAY_DEFAULT_INTERVAL: str = env("INTRADAY_DEFAULT_INTERVAL", _INTRADAY.get("default_interval", "5m"))
-# Floor on the derived intraday cache TTL (seconds). The TTL defaults to the
-# bar's own duration; this stops sub-floor churn on very short bars.
+# Boundary-align the intraday cache TTL: expire just AFTER the next bar boundary
+# (+ a settle grace) so a newly-closed bar is picked up promptly, rather than a
+# fixed TTL measured from fetch time. Default on.
+INTRADAY_CACHE_BOUNDARY_ALIGN: bool = env_bool(
+    "INTRADAY_CACHE_BOUNDARY_ALIGN", bool(_INTRADAY.get("cache_boundary_align", True))
+)
+# Grace after a bar boundary for the provider to publish the freshly-closed bar
+# before the cache refetches (boundary-align path only).
+INTRADAY_CACHE_SETTLE_SEC: float = env_float(
+    "INTRADAY_CACHE_SETTLE_SEC", _as_float(_INTRADAY.get("cache_settle_sec", 5), 5.0)
+)
+# Floor on the derived intraday cache TTL (seconds), used only on the legacy
+# (non-boundary-aligned) path. The TTL there defaults to the bar's own duration;
+# this stops sub-floor churn on very short bars.
 INTRADAY_CACHE_TTL_FLOOR_SEC: int = env_int(
     "INTRADAY_CACHE_TTL_FLOOR_SEC", _as_int(_INTRADAY.get("cache_ttl_floor_sec", 30), 30)
 )

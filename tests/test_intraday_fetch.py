@@ -23,18 +23,35 @@ def _frame(times: list[str]) -> pd.DataFrame:
 
 # ── interval-aware TTL ────────────────────────────────────────────────────────
 
-def test_ttl_is_bar_scaled_for_intraday():
+def test_ttl_boundary_aligned(monkeypatch):
+    # Default path: expire just after the next bar boundary + settle grace.
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True)
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_SETTLE_SEC", 5.0)
+    # 5m boundaries are multiples of 300: now=1000 → next boundary 1200 → 200 + 5 settle.
+    assert fetcher._ttl_for_interval("5m", now=1000.0) == 205
+    # exactly on a boundary → a full bar + settle (not a near-zero TTL).
+    assert fetcher._ttl_for_interval("5m", now=1200.0) == 305
+    # 1s before a boundary → a tiny TTL (the bar is about to close).
+    assert fetcher._ttl_for_interval("5m", now=1199.0) == 6
+    # 1m: now=1000 → next boundary 1020 → 20 + 5.
+    assert fetcher._ttl_for_interval("1m", now=1000.0) == 25
+
+
+def test_ttl_is_bar_scaled_for_intraday_legacy(monkeypatch):
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", False)
     assert fetcher._ttl_for_interval("1m") == 60
     assert fetcher._ttl_for_interval("5m") == 300
     assert fetcher._ttl_for_interval("15m") == 900
 
 
 def test_ttl_is_daily_default_for_daily():
+    # Daily/unknown intervals ignore alignment entirely (no bar cadence).
     assert fetcher._ttl_for_interval("1d") == cache.DEFAULT_TTL
     assert fetcher._ttl_for_interval("1wk") == cache.DEFAULT_TTL
 
 
-def test_ttl_respects_floor(monkeypatch):
+def test_ttl_respects_floor_legacy(monkeypatch):
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", False)
     monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_TTL_FLOOR_SEC", 120)
     assert fetcher._ttl_for_interval("1m") == 120  # floored up from 60
     assert fetcher._ttl_for_interval("5m") == 300  # already above floor
@@ -46,11 +63,24 @@ def test_fetch_ohlcv_caches_intraday_with_short_ttl(monkeypatch):
     def fake_set(key, data, ttl=cache.DEFAULT_TTL):
         captured["ttl"] = ttl
 
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", False)
     monkeypatch.setattr(fetcher.cache, "get", lambda k: None)
     monkeypatch.setattr(fetcher.cache, "set", fake_set)
     monkeypatch.setattr(fetcher, "retry_call", lambda *a, **k: _frame(["2026-01-02 15:00"]))
     fetcher.fetch_ohlcv("AAPL", period="5d", interval="5m")
     assert captured["ttl"] == 300
+
+
+def test_fetch_ohlcv_caches_intraday_boundary_aligned(monkeypatch):
+    # End-to-end: the boundary-aligned TTL is well under a full bar and > 0.
+    captured = {}
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True)
+    monkeypatch.setattr(fetcher.config, "INTRADAY_CACHE_SETTLE_SEC", 5.0)
+    monkeypatch.setattr(fetcher.cache, "get", lambda k: None)
+    monkeypatch.setattr(fetcher.cache, "set", lambda key, data, ttl=cache.DEFAULT_TTL: captured.__setitem__("ttl", ttl))
+    monkeypatch.setattr(fetcher, "retry_call", lambda *a, **k: _frame(["2026-01-02 15:00"]))
+    fetcher.fetch_ohlcv("AAPL", period="5d", interval="5m")
+    assert 0 < captured["ttl"] <= 305   # (settle, one 5m bar + settle]
 
 
 # ── fetch_intraday ────────────────────────────────────────────────────────────

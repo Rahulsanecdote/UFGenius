@@ -7,6 +7,7 @@ Compatible with yfinance 0.2.x AND 1.x.
 
 from __future__ import annotations
 
+import math
 import re
 import time as _time
 import threading
@@ -43,19 +44,35 @@ _INTRADAY_DEFAULT_PERIOD = {
 }
 
 
-def _ttl_for_interval(interval: str) -> int:
-    """Cache TTL (seconds) for an interval — bar-scaled for intraday, else daily.
+def _ttl_for_interval(interval: str, now: float | None = None) -> int:
+    """Cache TTL (seconds) for an interval — boundary-aligned for intraday, else daily.
 
-    An intraday frame cached for a day would serve bars hours stale; scale the
-    TTL to the bar's own duration (a 5m bar caches for ~5m) so it refreshes each
-    bar, floored by ``INTRADAY_CACHE_TTL_FLOOR_SEC`` to avoid sub-floor churn.
+    An intraday frame cached for a day would serve bars hours stale, so the TTL
+    tracks the bar cadence. Two intraday modes:
+
+    * **Boundary-aligned (default):** expire just AFTER the next bar boundary,
+      plus ``INTRADAY_CACHE_SETTLE_SEC`` grace for the provider to publish the
+      freshly-closed bar. A fixed bar-length TTL measured from an arbitrary fetch
+      time can hide a just-closed bar for nearly a full bar; aligning to the
+      boundary means the first poll after a bar closes re-fetches it — one fetch
+      per bar per ticker, so reaction latency tracks the poll cadence, not the bar
+      length. ``now`` is injectable for tests (defaults to wall-clock).
+    * **Legacy (``cache_boundary_align: false``):** the bar's own duration,
+      floored by ``INTRADAY_CACHE_TTL_FLOOR_SEC``.
+
     Daily/unknown intervals keep the default long TTL.
     """
     secs = _interval_seconds(interval)
     if secs is None:
         return cache.DEFAULT_TTL
+    secs = int(secs)
+    if getattr(config, "INTRADAY_CACHE_BOUNDARY_ALIGN", True):
+        t = _time.time() if now is None else float(now)
+        settle = max(0.0, float(getattr(config, "INTRADAY_CACHE_SETTLE_SEC", 5.0)))
+        next_boundary = (int(t // secs) + 1) * secs   # first boundary strictly after t
+        return max(1, math.ceil((next_boundary + settle) - t))
     floor = max(1, int(getattr(config, "INTRADAY_CACHE_TTL_FLOOR_SEC", 30)))
-    return max(floor, int(secs))
+    return max(floor, secs)
 _UPSTREAM_FETCH_SEMAPHORE = threading.BoundedSemaphore(max(1, config.PROVIDER_CONCURRENCY_LIMIT))
 
 _ALPACA_DATA_BASE_URL = config.env("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")

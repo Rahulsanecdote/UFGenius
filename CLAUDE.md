@@ -155,8 +155,11 @@ pytest --cov=src       # coverage
   offset tuned to that measured slippage. Live trading needs an explicit flag +
   `ALPACA_PAPER=false`.
 - **Intraday data (P1.1):** `fetch_intraday()` (`src/data/fetcher.py`) is the
-  entry point for 1m/5m/… bars — same provider abstraction as daily, but with an
-  interval-scaled cache TTL and the look-ahead guards in `src/data/lookahead.py`
+  entry point for 1m/5m/… bars — same provider abstraction as daily, but with a
+  **boundary-aligned** intraday cache TTL (`intraday.cache_boundary_align`,
+  default on — the cache expires just after the next bar boundary + a settle
+  grace, so a just-closed bar is picked up on the next poll; `_ttl_for_interval`)
+  and the look-ahead guards in `src/data/lookahead.py`
   (order/dedupe, drop future-labelled bars, `as_of` clamp, stale-frame check).
   Use it (not `fetch_ohlcv`) for anything real-time; daily bars still use
   `fetch_ohlcv`. Knobs live under `config.yaml` `intraday:` / `INTRADAY_*`.
@@ -169,11 +172,11 @@ pytest --cov=src       # coverage
   volume, intraday-ATR stop via `src/technical/intraday_features.py`). Discovery
   + planning only — plans go to a pluggable sink (default log); execution reuses
   the gated `execute_trade_plan` path. Config: `continuous_scan:` / `intraday_signal:`
-  (default **1m bars polled every 15s** — the `_MIN_INTERVAL_SEC` loop floor; the
-  15s poll shrinks the post-cache-expiry gap, but data freshness is bounded by the
-  ~60s 1m bar cache, so it is faster *reaction* (worst-case bar→reaction ~60s) not
-  sub-minute *resolution* — 1m is the provider floor and the forming bar is dropped
-  by the look-ahead guard; `dedup_ttl_sec` tracks ~1 bar so re-scored cached polls
+  (default **1m bars polled every 15s** — the `_MIN_INTERVAL_SEC` loop floor; with
+  the boundary-aligned intraday cache the cache expires just after each bar closes,
+  so reaction to a newly-closed bar tracks the ~15s poll cadence, one provider call
+  per bar — still not sub-minute *resolution* (1m is the provider floor and the
+  forming bar is dropped by the look-ahead guard); `dedup_ttl_sec` tracks ~1 bar so re-scored cached polls
   are suppressed while the next bar can still re-qualify).
   An **opt-in sweep-reclaim reversal** entry (`src/signals/sweep_reclaim.py`,
   config `sweep_reclaim:`, **default off**) is the counterpart to the breakout:
