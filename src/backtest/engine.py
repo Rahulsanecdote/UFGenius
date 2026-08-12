@@ -194,7 +194,7 @@ def backtest_signal_system(
     for frame in histories.values():
         if "enter_flag" not in frame.columns:
             frame["enter_flag"] = (
-                frame["entry_signal"].shift(1).fillna(False).astype(bool)
+                frame["entry_signal"].shift(1, fill_value=False).astype(bool)
                 if "entry_signal" in frame.columns
                 else False
             )
@@ -548,7 +548,7 @@ def _prepare_ticker_history(
     ).fillna(False)
     # Shift BEFORE slicing so a signal on the bar just before start_date still
     # produces an entry on the first in-range bar (next-open fills, audit M4).
-    df["enter_flag"] = df["entry_signal"].shift(1).fillna(False).astype(bool)
+    df["enter_flag"] = df["entry_signal"].shift(1, fill_value=False).astype(bool)
     df["atr_entry"] = df["ATR_14"].shift(1)
 
     return df.loc[(df.index >= start_date) & (df.index <= end_date)].copy()
