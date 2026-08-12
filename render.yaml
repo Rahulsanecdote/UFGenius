@@ -30,22 +30,40 @@ services:
         value: "memory"
 
       # ── Optional: set these in the Render dashboard (mark as Secret) ──────
+      # Key names must match exactly what the code reads (src/utils/config.py).
       # Market data / brokerage
       # - key: ALPACA_API_KEY
       #   sync: false
       # - key: ALPACA_SECRET_KEY
       #   sync: false
-      # - key: ALPHA_VANTAGE_API_KEY
+      # - key: ALPACA_PAPER          # "true" (default) keeps execution on paper
       #   sync: false
-      # - key: FINNHUB_API_KEY
+      # - key: ALPHA_VANTAGE_KEY
       #   sync: false
-      # - key: NEWS_API_KEY
+      # - key: POLYGON_KEY
+      #   sync: false
+      # - key: FMP_KEY
+      #   sync: false
+      # - key: FINNHUB_KEY
+      #   sync: false
+      # - key: NEWSAPI_KEY
       #   sync: false
       # - key: FRED_API_KEY
       #   sync: false
       # - key: REDDIT_CLIENT_ID
       #   sync: false
       # - key: REDDIT_CLIENT_SECRET
+      #   sync: false
+      # - key: REDDIT_USER_AGENT
+      #   sync: false
+      # Optional AI narrative layer (P3.1 — default off; see requirements-explain.txt)
+      # - key: ANTHROPIC_API_KEY     # used when EXPLAIN_PROVIDER=anthropic (default)
+      #   sync: false
+      # - key: EXPLAIN_PROVIDER      # "anthropic" | "openai" (provider-agnostic, #42)
+      #   sync: false
+      # - key: EXPLAIN_API_KEY       # overrides provider default key (e.g. OpenAI-compatible host)
+      #   sync: false
+      # - key: EXPLAIN_BASE_URL      # custom OpenAI-compatible endpoint
       #   sync: false
       # Alerts
       # - key: TELEGRAM_BOT_TOKEN
