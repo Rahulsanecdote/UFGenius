@@ -55,8 +55,14 @@ intraday:
 # emitting deduped candidates into an in-process queue for the entry logic (P1.3).
 # Rate/cost-aware: bounded universe, interval floor, cached bars, dedup window.
 continuous_scan:
-  interval_sec: 45              # seconds between scan cycles (floored to a safe minimum)
-  interval: "5m"               # intraday bar size to scan
+  # 1m bars polled every 15s (the loop floor). NOTE: this tightens *reaction
+  # latency* — a newly-closed 1m bar is picked up within ~15s — it does NOT give
+  # sub-minute *resolution*: 1m is the smallest bar the providers serve, and the
+  # bar-scaled cache TTL means the same closed bar is re-scored (harmlessly,
+  # deduped) between refreshes. The lookback_bars below are counts, so on 1m they
+  # now span minutes (6-min momentum, 20-min breakout high) rather than 5m units.
+  interval_sec: 15             # seconds between scan cycles (floored to _MIN_INTERVAL_SEC=15)
+  interval: "1m"               # intraday bar size to scan (1m is the provider floor)
   universe_cap: 100            # max tickers scanned per cycle (cost guard)
   dedup_ttl_sec: 300           # do not re-emit the same ticker+kind within this window
   queue_max: 500               # bounded candidate queue (drops oldest beyond this)
