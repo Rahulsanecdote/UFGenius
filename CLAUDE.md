@@ -45,6 +45,8 @@ UFGenius/
 │   ├── alerts/        ← telegram / email notifications
 │   ├── backtest/      ← portfolio backtest engine (daily MTM, commission + slippage)
 │   ├── alpaca/        ← portfolio (read-only), orders, executor (+RiskGuard), position_tracker
+│   ├── portfolio/     ← volatility/correlation-aware position sizing (advisory, Phase 4)
+│   ├── risk/          ← portfolio-level risk engine (leverage/heat/cluster/drawdown; advisory, Phase 4)
 │   └── utils/         ← config, logging, HTTP retry/session, dashboard security
 └── tests/             ← pytest suite (unit + `integration`-marked network tests)
 ```
@@ -199,6 +201,17 @@ pytest --cov=src       # coverage
   `effort: low`, bounded input, and an interprocess-`flock`ed per-day call cap
   (reserved only after a usable client exists). Needs `ANTHROPIC_API_KEY`.
   Surfaced via `GET /api/explain?ticker=…` and an on-demand dashboard panel.
+- **Portfolio + Risk Engine (roadmap Phase 4):** `src/portfolio/` (pure
+  numpy/pandas volatility/correlation-aware sizing) and `src/risk/engine.py`
+  (`PortfolioRiskEngine` → `RiskDecision`: portfolio-level gross-leverage,
+  single-name-weight, portfolio-heat, correlated-cluster, and drawdown checks)
+  are an **advisory, default-off** layer that *complements* `RiskGuard`, never
+  replaces it. Firewalled from the money path (no executor/broker import) and
+  fail-open (any internal error → *approve*, so a bug can't silently block
+  trading). Default `portfolio.enabled=false` makes it a no-op surfaced only via
+  `GET /api/portfolio-risk`; the separate opt-in `portfolio.gate_entries` lets
+  `execute_trade_plan` consult it **after** RiskGuard approves — veto-only
+  (tighten, never loosen). Config `portfolio:` / `PORTFOLIO_*`.
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
   fan-out for scans). Do not introduce `async def` without cause.
 
@@ -232,6 +245,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |
 | GET | `/api/attribution` | Per-signal realized outcome (win rate / avg return / P&L) from the trade ledger (P2.3) |
 | GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
+| GET | `/api/portfolio-risk` | Advisory portfolio-level risk snapshot: gross leverage / heat / per-name weights vs limits (roadmap Phase 4; `available:false` when disabled) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/clear-cache` | Clear the market-data cache |

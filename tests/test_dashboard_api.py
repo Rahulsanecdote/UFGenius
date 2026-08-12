@@ -170,6 +170,48 @@ def test_explain_endpoint_rejects_bad_ticker(client, monkeypatch):
     assert response.status_code == 400
 
 
+def test_portfolio_risk_endpoint_disabled_is_graceful(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_ENABLED", False)
+    response = client.get("/api/portfolio-risk")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is False
+
+
+def test_portfolio_risk_endpoint_returns_book_metrics(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_ENABLED", True)
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_GATE_ENTRIES", False)
+    import src.alpaca.portfolio as pf
+
+    monkeypatch.setattr(
+        pf,
+        "get_portfolio_data",
+        lambda: {
+            "total_equity": 10_000,
+            # Real provider shape: shares + current (per-share), no market_value.
+            "holdings": [{"ticker": "AAPL", "shares": 10, "current": 250.0}],
+        },
+    )
+    response = client.get("/api/portfolio-risk")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is True
+    assert payload["gross_leverage"] == pytest.approx(0.25)  # 2500 / 10000
+    assert payload["breaches"]["single_weight"] is True  # 25% > 20% cap
+    assert payload["portfolio_heat"] is None  # no stop data → heat unmeasured
+    assert payload["gate_entries"] is False
+
+
+def test_portfolio_risk_endpoint_handles_unreadable_portfolio(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_ENABLED", True)
+    import src.alpaca.portfolio as pf
+
+    monkeypatch.setattr(pf, "get_portfolio_data", lambda: {"error": "no broker keys"})
+    payload = client.get("/api/portfolio-risk").get_json()
+    assert payload["available"] is False
+    assert "no broker keys" in payload["reason"]
+
+
 def test_metrics_and_attribution_panels_present():
     # The dashboard HTML wires the new P2.3 panels + their loaders.
     assert 'id="metricsPanel"' in dashboard.HTML

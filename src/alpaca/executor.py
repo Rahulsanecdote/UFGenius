@@ -458,6 +458,55 @@ def execute_trade_plan(
             "dry_run": dry_run,
         }
 
+    # Portfolio-level risk engine (roadmap Phase 4) — an OPT-IN, default-off
+    # gate that runs ONLY after RiskGuard already approved, so it can only
+    # further tighten (never loosen). Veto-only in the money path: we proceed
+    # only on an explicit APPROVE; a veto or a scale-down recommendation skips
+    # this entry (automated mid-flight resizing is deliberately avoided — the
+    # full scale-down suggestion is surfaced advisory-side via /api/portfolio-risk
+    # for a human/upstream to act on). Advisory and fail-open: any error here
+    # logs and proceeds, never breaking the money path.
+    #
+    # Enforced at THIS call site: gross leverage, single-name weight, portfolio
+    # heat (existing book value derived from the broker's shares x price), and the
+    # equity-drawdown halt (via the persisted high-water mark). NOT enforced
+    # here: correlated-cluster exposure — the executor does not fetch aligned
+    # intraday return histories, so that check is advisory-surface only and
+    # simply no-ops in the live gate (never a false veto).
+    if config.PORTFOLIO_ENABLED and config.PORTFOLIO_GATE_ENTRIES:
+        try:
+            from src.risk.engine import (
+                PortfolioRiskEngine,
+                candidate_from_plan,
+                holdings_from_portfolio,
+            )
+            from src.risk.peak_equity import PeakEquityTracker
+
+            equity = float(portfolio.get("total_equity", 0) or 0)
+            peak = PeakEquityTracker.load_default().observe(equity)
+            decision = PortfolioRiskEngine().evaluate(
+                candidate_from_plan(risk_plan),
+                holdings_from_portfolio(portfolio),
+                equity=equity,
+                peak_equity=peak,
+            )
+            if decision.action != "approve":
+                why = "; ".join(decision.reasons) or decision.action
+                log.warning(f"[{ticker}] Trade rejected by PortfolioRiskEngine: {why}")
+                return {
+                    "ok": False,
+                    "reason": f"portfolio risk: {why}",
+                    "ticker": ticker,
+                    "order_id": None,
+                    "shares": int(shares),
+                    "limit_price": submit_price,
+                    "dry_run": dry_run,
+                }
+        except Exception:
+            log.exception(
+                f"[{ticker}] PortfolioRiskEngine consult failed; proceeding (advisory)"
+            )
+
     if dry_run:
         log.info(
             f"[DRY RUN] Would place: {ticker} x{shares} LIMIT @ ${submit_price:.2f}"
