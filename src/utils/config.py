@@ -547,10 +547,35 @@ DASHBOARD_RATE_LIMIT_BACKEND: str = env("DASHBOARD_RATE_LIMIT_BACKEND", "sqlite"
 DASHBOARD_RATE_LIMIT_DB_PATH: str = env("DASHBOARD_RATE_LIMIT_DB_PATH", "/tmp/ufgenius_rate_limit.sqlite3")
 DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)
 
-# Penny stock mode
-ALLOW_PENNY_STOCKS: bool = env_bool("ALLOW_PENNY_STOCKS", False)
+# Penny stock mode — an OPT-IN low-price/small-cap profile. Default OFF. When
+# enabled it does NOT remove protection: it swaps the standard disqualifiers for
+# penny-specific HARD RAILS (below). Scan/paper only until validated — the money
+# path still needs --execute/--live-execute + ALPACA_PAPER handling.
+_PENNY: dict = get("penny", {})
+ALLOW_PENNY_STOCKS: bool = env_bool("ALLOW_PENNY_STOCKS", bool(_PENNY.get("enabled", False)))
 SIGNAL_MIN_PRICE: float = env_float("SIGNAL_MIN_PRICE", 1.0)
-CUSTOM_WATCHLIST: str = env("CUSTOM_WATCHLIST", "")
+CUSTOM_WATCHLIST: str = env("CUSTOM_WATCHLIST", str(_PENNY.get("custom_watchlist", "")))
+
+# Penny hard rails (used by src/signals/filters.py when ALLOW_PENNY_STOCKS is on).
+# Protective defaults — loosen at your own risk; the dollar-volume and market-cap
+# floors are the ones that actually keep out manipulated nano-caps.
+PENNY_MIN_PRICE: float = env_float("PENNY_MIN_PRICE", _as_float(_PENNY.get("min_price"), 0.50))
+PENNY_MAX_PRICE: float = env_float("PENNY_MAX_PRICE", _as_float(_PENNY.get("max_price"), 10.0))
+PENNY_MIN_SHARE_VOLUME: int = env_int(
+    "PENNY_MIN_SHARE_VOLUME", _as_int(_PENNY.get("min_share_volume", 100_000), 100_000)
+)
+# price x avg 20-day volume — the primary liquidity gate (catches both huge-share
+# sub-penny names and high-price zero-volume names that a share count misses).
+PENNY_MIN_DOLLAR_VOLUME: float = env_float(
+    "PENNY_MIN_DOLLAR_VOLUME", _as_float(_PENNY.get("min_dollar_volume"), 3_000_000.0)
+)
+# A FLOOR, not 0: sub-$50M caps are the pump-and-dump zone.
+PENNY_MIN_MARKET_CAP: float = env_float(
+    "PENNY_MIN_MARKET_CAP", _as_float(_PENNY.get("min_market_cap"), 50_000_000.0)
+)
+PENNY_MAX_5DAY_GAIN_PCT: float = env_float(
+    "PENNY_MAX_5DAY_GAIN_PCT", _as_float(_PENNY.get("max_5day_gain_pct"), 30.0)
+)
 
 # Provider concurrency
 PROVIDER_CONCURRENCY_LIMIT: int = env_int("PROVIDER_CONCURRENCY_LIMIT", 10)

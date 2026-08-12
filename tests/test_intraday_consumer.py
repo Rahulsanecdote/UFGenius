@@ -68,6 +68,52 @@ def test_consumer_produces_plan_for_confirmed_entry():
     assert len(sink_calls) == 1  # sink received the plan
 
 
+def test_penny_ineligible_candidate_blocked_before_plan(monkeypatch):
+    # Penny mode: a candidate that fails the daily hard rails must NOT produce an
+    # intraday plan, even on a confirmed breakout — the gate runs first.
+    monkeypatch.setattr(cfg, "ALLOW_PENNY_STOCKS", True)
+    q = CandidateQueue(dedup_ttl_sec=0)
+    q.push(_cand("NANO"), now=T0)
+    sink_calls = []
+    consumer = IntradayConsumer(
+        q, sink=sink_calls.append,
+        fetch=lambda t, interval=None: _breakout_df(), account_size=10_000,
+    )
+    monkeypatch.setattr(consumer, "_penny_eligible", lambda t, now: (False, ["MICRO_CAP"]))
+    plans = consumer.drain_once(now=T0)
+    assert plans == []
+    assert sink_calls == []
+
+
+def test_penny_eligible_candidate_still_produces_plan(monkeypatch):
+    monkeypatch.setattr(cfg, "ALLOW_PENNY_STOCKS", True)
+    q = CandidateQueue(dedup_ttl_sec=0)
+    q.push(_cand("GOOD"), now=T0)
+    consumer = IntradayConsumer(
+        q, fetch=lambda t, interval=None: _breakout_df(), account_size=10_000,
+    )
+    monkeypatch.setattr(consumer, "_penny_eligible", lambda t, now: (True, []))
+    plans = consumer.drain_once(now=T0)
+    assert len(plans) == 1 and plans[0]["ticker"] == "GOOD"
+
+
+def test_gate_not_consulted_when_penny_mode_off(monkeypatch):
+    # Standard mode: the eligibility gate (a network fetch) must not run at all.
+    monkeypatch.setattr(cfg, "ALLOW_PENNY_STOCKS", False)
+    q = CandidateQueue(dedup_ttl_sec=0)
+    q.push(_cand("AAA"), now=T0)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("eligibility gate consulted while penny mode off")
+
+    consumer = IntradayConsumer(
+        q, fetch=lambda t, interval=None: _breakout_df(), account_size=10_000,
+    )
+    monkeypatch.setattr(consumer, "_penny_eligible", _boom)
+    plans = consumer.drain_once(now=T0)
+    assert len(plans) == 1 and plans[0]["ticker"] == "AAA"
+
+
 def test_consumer_skips_non_entry_candidates():
     q = CandidateQueue(dedup_ttl_sec=0)
     q.push(_cand("FLAT"), now=T0)

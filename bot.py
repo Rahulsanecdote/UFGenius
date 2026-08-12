@@ -232,7 +232,7 @@ def cmd_backtest(args) -> None:
 
     tickers = (
         [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or "SP500")[:50]
+        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
     )
 
     capital = args.account_size or config.ACCOUNT_SIZE
@@ -282,7 +282,7 @@ def cmd_validate(args) -> None:
     end   = args.end   or "2023-12-31"
     tickers = (
         [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or "SP500")[:50]
+        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
     )
     capital = args.account_size or config.ACCOUNT_SIZE
 
@@ -351,7 +351,7 @@ def cmd_optimize(args) -> None:
     end   = args.end   or "2023-12-31"
     tickers = (
         [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or "SP500")[:50]
+        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
     )
     capital = args.account_size or config.ACCOUNT_SIZE
 

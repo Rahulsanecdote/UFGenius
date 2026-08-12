@@ -266,6 +266,14 @@ trade-count/bear-market/duplicate rules, plus stop-required, daily/weekly
 realized-loss limits, post-loss cooldown, earnings-week (P1.4 calendar-backed),
 the P1.4 catalyst-tag veto (`catalysts:`), and paper-trading-tenure (live only).
 
+**Penny mode** (`penny:` / `ALLOW_PENNY_STOCKS`, default off): an opt-in
+low-price/small-cap profile that does **not** disable protection — it swaps the
+standard disqualifiers (`src/signals/filters.py`) for penny-specific **hard
+rails**: a dollar-volume floor (price × avg volume — the real liquidity gate), a
+positive market-cap floor (not 0), a price band, a tighter chaser-trap, and the
+bankruptcy check **stays on**. Scan/paper only until validated. See
+`docs/PENNY_MODE.md`.
+
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env).
 Entries fill at the **next bar's open** after a signal (no same-bar lookahead);

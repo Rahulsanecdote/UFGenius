@@ -90,7 +90,12 @@ def filter_universe(
     Apply basic filters to a ticker list using yfinance info.
     This is a slower, accurate filter — use for overnight scans.
     """
-    effective_min_price = 0.0 if config.ALLOW_PENNY_STOCKS else max(0.0, config.SIGNAL_MIN_PRICE)
+    # Penny mode uses its own sub-penny floor (not 0), matching the disqualifier.
+    effective_min_price = (
+        max(0.0, config.PENNY_MIN_PRICE)
+        if config.ALLOW_PENNY_STOCKS
+        else max(0.0, config.SIGNAL_MIN_PRICE)
+    )
     min_price = effective_min_price if min_price is None else min_price
 
     passed = []
@@ -142,11 +147,15 @@ def get_universe(universe: str = "SP500") -> List[str]:
 
 def get_custom_watchlist() -> List[str]:
     """
-    Load custom watchlist from CUSTOM_WATCHLIST env var.
+    Load custom watchlist from the CUSTOM_WATCHLIST env var, falling back to the
+    config value (`penny.custom_watchlist` in config.yaml, via
+    config.CUSTOM_WATCHLIST) so a YAML-only setup is not silently empty.
     Format: comma-separated tickers, e.g. "SWMR,HCTI,BBRW,AAPL"
     """
     import os
     raw = os.getenv("CUSTOM_WATCHLIST", "").strip()
+    if not raw:
+        raw = str(config.CUSTOM_WATCHLIST or "").strip()
     if not raw:
         log.warning("CUSTOM_WATCHLIST is empty — no tickers to scan")
         return []
