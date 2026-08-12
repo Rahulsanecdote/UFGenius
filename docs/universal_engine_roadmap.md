@@ -168,6 +168,26 @@ never loosens a rule or enlarges a position.
 - Transaction cost/slippage models per asset class.
 - Champion/challenger workflow for promotion to paper/live.
 
+### Delivered (by mapping)
+
+This phase's scope was delivered under the **`UPGRADE_PLAN.md` P0/P2 track**, so
+the work lives in existing packages rather than the proposed `src/eval/*` files.
+The `src/eval/` module was never created — the functionality below supersedes it.
+
+| Phase 5 scope item | Delivered by |
+|---|---|
+| Walk-forward evaluation + OOS gating | `src/backtest/validation.py` (`walk_forward`, `validate_strategy`, `bootstrap_trade_metrics`) + `python bot.py --mode validate` — **P0.1**. Parameter selection scored only on validation folds with an overfitting haircut: `src/backtest/optimize.py` (`parameter_search`, `expected_max_sharpe`) + `--mode optimize` — **P0.2**. |
+| Transaction cost / slippage models | Backtest cost model (`commission_pct`/`slippage_pct`, next-bar-open fills) + **measured** slippage fed back from real fills: `src/alpaca/execution_quality.py` (`use_measured_slippage`) — **P2.1**. (Per-asset-class models remain single-asset today — equities only — since the universe is equities.) |
+| Attribution | `src/observability/attribution.py` — per-signal-label realized outcome over the P0.4 trade-outcome ledger — **P2.3**. |
+| Promotion to paper/live | `src/alpaca/scorecard.py` — the paper scorecard gate that requires realized paper metrics to match the validated backtest (same `bootstrap_trade_metrics` estimator) before the live flag — **P0.4**. |
+
+**Genuine remaining gap:** a *formal champion/challenger* workflow — running a
+candidate strategy against the incumbent and auto-promoting on a measured edge —
+does **not** exist. The pieces are in place (validation harness + paper
+scorecard as the promotion gate); what's missing is the orchestration that pits
+two parameter sets/strategies against each other and records a promotion
+decision. Left as the one open Phase 5 item.
+
 ## Phase 6: Operational Intelligence Layer
 
 ### Target files
@@ -181,6 +201,27 @@ never loosens a rule or enlarges a position.
 - Structured metrics: latency, fill quality, risk breaches, PnL attribution.
 - LLM research copilot for explanation and anomaly triage (read-only to execution).
 - Incident-level audit trail for all strategy and risk decisions.
+
+### Delivered (by mapping)
+
+Delivered under the **`UPGRADE_PLAN.md` P0.3/P2.3/P3.1 track**; the proposed
+`src/ops/metrics.py` was never created — `src/observability/` fills that role.
+
+| Phase 6 scope item | Delivered by |
+|---|---|
+| Structured metrics — latency | `src/observability/metrics.py` (`MetricsLedger`: per-scan latency avg/p95, signal counts, data-gap flag), `GET /api/metrics` — **P2.3**. |
+| Structured metrics — fill quality | `src/alpaca/execution_quality.py` (realized slippage / implementation shortfall), `GET /api/execution-quality` — **P2.1**. |
+| Structured metrics — risk breaches | `src/alpaca/circuit_breaker.py` (halt / broker-error / data-staleness state), `GET /api/breaker-state` — **P0.3**; alerting on trips via `src/observability/alerting.py` — **P2.3**. |
+| Structured metrics — PnL attribution | `src/observability/attribution.py`, `GET /api/attribution` — **P2.3**. |
+| LLM research copilot (read-only to execution) | `src/explain/narrative.py` — optional bull/bear narrative over the **verified snapshot**, structurally firewalled from the money path, prompt-injection-sandboxed, cost-capped, `GET /api/explain` — **P3.1**. |
+| Alert routing | `src/observability/alerting.py` + `src/alerts/*` (`send_text_alert`/telegram/email) — **P2.3**. |
+
+**Partial gap — unified audit trail:** decision/outcome history *is* persisted,
+but across several purpose-built ledgers (P0.4 trade-outcome, P2.1
+execution-quality, P2.3 scan-metrics, P0.3 circuit-breaker trail) rather than one
+consolidated incident stream. A single append-only "why did the bot do X at
+time T" audit log that stitches these together does not yet exist; the raw
+material for it does. Left as the open Phase 6 item.
 
 ## Definition of Done (Per Phase)
 
