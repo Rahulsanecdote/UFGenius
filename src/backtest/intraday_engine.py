@@ -41,11 +41,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
-from src.data.fetcher import fetch_intraday
+from src.data.fetcher import _INTRADAY_DEFAULT_PERIOD, fetch_intraday
 from src.signals.intraday_signal import evaluate_intraday_entry
 from src.signals.sweep_reclaim import evaluate_sweep_reclaim
 from src.utils import config
@@ -53,8 +54,42 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# Absolute floor on bars a ticker frame needs before we bother simulating it.
-_MIN_FRAME_BARS = 5
+# US-equities session boundary. fetch_intraday returns naive-UTC timestamps, so a
+# post-market bar after ~20:00 ET rolls to the next UTC date; bucketing sessions
+# by UTC date would split one trading day (and force an early session-flat).
+# Bucket by market-local (ET) date instead.
+_MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _session_dates(index: pd.DatetimeIndex) -> np.ndarray:
+    """Market-local (ET) calendar date for each bar — the session key.
+
+    The fetcher's index is naive UTC; localize to UTC then convert to ET before
+    taking the date so extended-hours bars stay in the correct trading session.
+    """
+    idx = pd.DatetimeIndex(index)
+    idx = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+    return idx.tz_convert(_MARKET_TZ).date
+
+
+def _period_for_range(start: Optional[str], interval: str,
+                      today: Optional[pd.Timestamp] = None) -> Optional[str]:
+    """Derive a lookback period token so the fetch actually spans ``[start, today]``.
+
+    ``fetch_intraday`` defaults to a short recent window per interval (e.g. 5d for
+    1m/5m); with an explicit ``--start`` further back, that default would fetch
+    only the last few days and ``_restrict`` would discard them — silently
+    returning zero trades. Derive a ``"<N>d"`` period covering start→today (small
+    buffer) so the requested range is fetched. This cannot exceed the provider's
+    own hard intraday cap (yfinance ~7d for 1m, ~60d for 5m), which no period
+    beats. ``None`` (no start) keeps the fetcher's per-interval default.
+    """
+    if not start:
+        return _INTRADAY_DEFAULT_PERIOD.get(interval)  # None-safe default passthrough
+    if today is None:
+        today = pd.Timestamp(pd.Timestamp.utcnow().date())  # naive, normalized to UTC date
+    days = (today.normalize() - pd.Timestamp(start).normalize()).days + 2
+    return f"{max(2, days)}d"
 
 
 def _commission_pct() -> float:
@@ -219,7 +254,7 @@ def simulate_intraday_ticker(
 
     n = len(df)
     max_lb = max(2, int(config.INTRADAY_BACKTEST_MAX_LOOKBACK_BARS))
-    sessions = np.array([ts.date() for ts in df.index])
+    sessions = _session_dates(df.index)   # ET calendar date per bar (session key)
     # Last bar index of each session (so a trade can be forced flat at its close).
     last_of: dict[Any, int] = {}
     for idx, s in enumerate(sessions):
@@ -322,7 +357,6 @@ def backtest_intraday(
     entry: str = "breakout",
     initial_capital: float = 10_000,
     fetch: Optional[Callable[..., pd.DataFrame]] = None,
-    universe_label: Optional[str] = None,
 ) -> dict:
     """Backtest an intraday entry across ``tickers`` on historical intraday bars.
 
@@ -337,18 +371,23 @@ def backtest_intraday(
 
     fetch = fetch or fetch_intraday
     iv = str(interval or config.INTRADAY_DEFAULT_INTERVAL)
+    # Derive the fetch window from --start so a historical range is actually
+    # retrieved (the fetcher's default lookback is only a few days), bounded by
+    # the provider's own intraday history cap.
+    period = _period_for_range(start, iv)
+    min_bars = max(1, int(config.INTRADAY_BACKTEST_MIN_FRAME_BARS))
 
     all_trades: list[IntradayTrade] = []
     tested = 0
     for t in tickers:
         sym = str(t).upper()
         try:
-            df = fetch(sym, interval=iv)
+            df = fetch(sym, interval=iv, period=period)
         except Exception as exc:
             log.debug(f"{sym}: intraday fetch error: {exc}")
             continue
         df = _restrict(df, start, end)
-        if df is None or df.empty or len(df) < _MIN_FRAME_BARS:
+        if df is None or df.empty or len(df) < min_bars:
             continue
         tested += 1
         all_trades.extend(simulate_intraday_ticker(df, entry, ticker=sym))
@@ -379,7 +418,9 @@ def _intraday_minimum_check(
 ) -> dict:
     min_trades = int(config.INTRADAY_BACKTEST_MIN_TRADES)
     min_pf = float(config.INTRADAY_BACKTEST_MIN_PROFIT_FACTOR)
-    max_dd = float(config.INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT)
+    # The limit is a magnitude; accept either sign convention so a positive
+    # override (e.g. 25.0) doesn't fail every run (drawdown is <= 0).
+    max_dd = -abs(float(config.INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT))
     checks = {
         "enough_trades_ok": total_trades >= min_trades,
         # inf profit factor (no losers) trivially clears the bar.
@@ -421,7 +462,11 @@ def _compute_intraday_metrics(
         "total_trades": n,
     }
     if n == 0:
-        base["note"] = "No trades simulated — check tickers, date range, and interval availability."
+        base["note"] = (
+            "No trades simulated — check tickers, date range, and interval availability. "
+            "Intraday history is provider-capped (yfinance ~7d for 1m, ~60d for 5m), so a "
+            "--start beyond that cap returns no bars."
+        )
         base["minimum_acceptance"] = _intraday_minimum_check(
             total_trades=0, profit_factor=None, expectancy_r=0.0, max_drawdown_pct=0.0,
         )

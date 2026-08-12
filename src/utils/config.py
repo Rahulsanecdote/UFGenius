@@ -253,10 +253,16 @@ INTRADAY_BACKTEST_MIN_TRADES: int = env_int(
     "INTRADAY_BACKTEST_MIN_TRADES", _as_int(_INTRADAY_BT.get("min_trades", 30), 30)
 )
 INTRADAY_BACKTEST_MIN_PROFIT_FACTOR: float = env_float(
-    "INTRADAY_BACKTEST_MIN_PROFIT_FACTOR", float(_INTRADAY_BT.get("min_profit_factor", 1.2))
+    "INTRADAY_BACKTEST_MIN_PROFIT_FACTOR", _as_float(_INTRADAY_BT.get("min_profit_factor", 1.2), 1.2)
 )
 INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT: float = env_float(
-    "INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT", float(_INTRADAY_BT.get("max_drawdown_pct", -25.0))
+    "INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT", _as_float(_INTRADAY_BT.get("max_drawdown_pct", -25.0), -25.0)
+)
+INTRADAY_BACKTEST_MAX_TICKERS: int = env_int(
+    "INTRADAY_BACKTEST_MAX_TICKERS", _as_int(_INTRADAY_BT.get("max_tickers", 50), 50)
+)
+INTRADAY_BACKTEST_MIN_FRAME_BARS: int = env_int(
+    "INTRADAY_BACKTEST_MIN_FRAME_BARS", _as_int(_INTRADAY_BT.get("min_frame_bars", 5), 5)
 )
 
 # Catalyst gating (upgrade plan P1.4): calendar-backed earnings + catalyst-tag veto.

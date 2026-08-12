@@ -34,18 +34,21 @@ degenerate reclaim whose stop sits at/above the fill is skipped — the same gua
 # Breakout entry, default interval (5m), default universe
 python bot.py --mode intraday-backtest --entry breakout
 
-# Sweep-reclaim reversal on one ticker, 1-minute bars, a date range
-python bot.py --mode intraday-backtest --entry sweep_reclaim --ticker AAPL --interval 1m \
-    --start 2024-01-02 --end 2024-02-29
+# Sweep-reclaim reversal on one ticker, 5-minute bars, a recent date range
+python bot.py --mode intraday-backtest --entry sweep_reclaim --ticker AAPL --interval 5m --start 2024-05-01
 
 python bot.py --mode intraday-backtest --entry breakout --universe SP500 --json
 ```
 
 `--entry` is `breakout` or `sweep_reclaim`; `--interval` defaults to
-`INTRADAY_DEFAULT_INTERVAL`. Knobs live under `config.yaml` `intraday_backtest:`
-(and `INTRADAY_BACKTEST_*` env overrides): `max_lookback_bars` (trailing window
-handed to the evaluator each step — must exceed one session + the ATR warmup),
-`min_trades` (significance floor), `min_profit_factor`, `max_drawdown_pct`.
+`INTRADAY_DEFAULT_INTERVAL`. The harness derives the fetch window from `--start`,
+**but cannot exceed the provider's intraday history cap** — yfinance serves only
+~7 days of 1m and ~60 days of 5m bars, so a `--start` older than that returns no
+data (the run reports zero trades and says so). Knobs live under `config.yaml`
+`intraday_backtest:` (and `INTRADAY_BACKTEST_*` env overrides): `max_lookback_bars`
+(trailing window handed to the evaluator each step — must exceed one session + the
+ATR warmup), `max_tickers` (universe cap per run), `min_frame_bars`, `min_trades`
+(significance floor), `min_profit_factor`, `max_drawdown_pct`.
 
 ## Reading the output
 

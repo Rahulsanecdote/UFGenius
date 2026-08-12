@@ -16,9 +16,11 @@ from src.backtest import intraday_engine
 from src.backtest.intraday_engine import (
     IntradayTrade,
     _compute_intraday_metrics,
+    _period_for_range,
     backtest_intraday,
     simulate_intraday_ticker,
 )
+from src.utils import config
 
 
 # ── frame builders ────────────────────────────────────────────────────────────
@@ -48,6 +50,16 @@ def inject_test_strategy(monkeypatch):
     monkeypatch.setitem(intraday_engine._STRATEGIES, "test", _threshold_strategy)
 
 
+@pytest.fixture
+def pin_geometry(monkeypatch):
+    """Pin the config the R-band assertions depend on, so a later config.yaml
+    tuning change can't break these 'fully controlled' mechanics tests."""
+    monkeypatch.setattr(config, "TARGET_RR_RATIOS", [1.5, 2.5, 4.0])
+    monkeypatch.setattr(config, "TARGET_EXIT_PCTS", [30, 40, 30])
+    monkeypatch.setattr(config, "BACKTEST_COMMISSION_PCT", 0.001)
+    monkeypatch.setattr(config, "BACKTEST_SLIPPAGE_PCT", 0.001)
+
+
 # ── mechanics: next-open fill + session flat ──────────────────────────────────
 def test_next_open_fill_and_session_flat(inject_test_strategy):
     closes = [98, 98, 98, 98, 98, 101, 102, 102, 102, 102, 102, 102.5]
@@ -67,7 +79,7 @@ def test_next_open_fill_and_session_flat(inject_test_strategy):
     assert t.exit_ts == df.index[-1]           # flat at the session's last bar
 
 
-def test_stop_exit_is_about_minus_one_r(inject_test_strategy):
+def test_stop_exit_is_about_minus_one_r(inject_test_strategy, pin_geometry):
     closes = [98, 98, 98, 98, 98, 101, 102, 102, 102, 102, 102, 102.5]
     opens = [98, 98, 98, 98, 98, 98, 101.5, 102, 102, 102, 102, 102]
     highs = [98.2] * 6 + [103] * 6
@@ -83,7 +95,7 @@ def test_stop_exit_is_about_minus_one_r(inject_test_strategy):
     assert -1.5 < t.r_multiple < -1.0
 
 
-def test_target_exit_positive_r(inject_test_strategy):
+def test_target_exit_positive_r(inject_test_strategy, pin_geometry):
     closes = [98, 98, 98, 98, 98, 101, 102, 102, 102, 102, 102, 102.5]
     opens = [98, 98, 98, 98, 98, 98, 101.5, 102, 102, 102, 102, 102]
     highs = [98.2] * 6 + [103, 110, 103, 103, 103, 103]   # bar 7 spikes through T3 (109.5)
@@ -136,7 +148,7 @@ def test_backtest_intraday_aggregates_and_flags_small_sample(inject_test_strateg
     frames = {"AAA": frame, "BBB": frame}
     res = backtest_intraday(
         ["AAA", "BBB"], entry="test",
-        fetch=lambda s, interval=None: frames[s].copy(),
+        fetch=lambda s, interval=None, period=None: frames[s].copy(),
     )
     assert res["total_trades"] == 2
     assert res["tickers_tested"] == 2
@@ -146,13 +158,22 @@ def test_backtest_intraday_aggregates_and_flags_small_sample(inject_test_strateg
 
 
 def test_backtest_intraday_unknown_entry_errors():
-    res = backtest_intraday(["AAA"], entry="does-not-exist", fetch=lambda s, interval=None: _bars([1, 2, 3]))
+    res = backtest_intraday(["AAA"], entry="does-not-exist",
+                            fetch=lambda s, interval=None, period=None: _bars([1, 2, 3]))
     assert "error" in res
 
 
 def test_backtest_intraday_no_trades_note():
-    res = backtest_intraday(["AAA"], entry="breakout", fetch=lambda s, interval=None: pd.DataFrame())
+    res = backtest_intraday(["AAA"], entry="breakout",
+                            fetch=lambda s, interval=None, period=None: pd.DataFrame())
     assert res["total_trades"] == 0 and "note" in res
+
+
+def test_period_for_range_covers_requested_history():
+    today = pd.Timestamp("2024-03-01")
+    assert _period_for_range(None, "1m") == "5d"          # no start → interval default
+    # 10 calendar days back + 2-day buffer → request 12d so _restrict has data.
+    assert _period_for_range("2024-02-20", "1m", today=today) == "12d"
 
 
 def test_metrics_math_direct():

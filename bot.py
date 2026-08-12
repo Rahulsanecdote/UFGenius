@@ -336,10 +336,14 @@ def cmd_intraday_backtest(args) -> None:
 
     entry = args.entry or "breakout"
     interval = args.interval or config.INTRADAY_DEFAULT_INTERVAL
-    tickers = (
-        [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
-    )
+    if args.ticker:
+        tickers = [args.ticker.upper()]
+    else:
+        universe = get_universe(args.universe or config.SCAN_UNIVERSE)
+        cap = config.INTRADAY_BACKTEST_MAX_TICKERS
+        if len(universe) > cap:
+            log.info(f"Universe has {len(universe)} tickers; capping to {cap} (intraday_backtest.max_tickers)")
+        tickers = universe[:cap]
     capital = args.account_size or config.ACCOUNT_SIZE
 
     log.info(
@@ -811,6 +815,7 @@ Examples:
   python bot.py --mode scan --ticker AAPL
   python bot.py --mode scan --account-size 25000
   python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
+  python bot.py --mode intraday-backtest --entry sweep_reclaim --interval 5m  # OOS check for the intraday entries
   python bot.py --mode validate --start 2022-01-01 --end 2023-12-31
   python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31
   python bot.py --mode intraday-scan                 # Continuous intraday candidate scan (P1.2)
