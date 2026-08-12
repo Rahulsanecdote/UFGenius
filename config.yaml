@@ -94,6 +94,20 @@ sweep_reclaim:
   max_reclaim_extension_pct: 0.05  # reject if close is already >5% above the swept level (chasing)
   min_session_bars: 20         # minimum current-session bars before it can fire
 
+# Intraday backtest harness (--mode intraday-backtest). Replays the deterministic
+# intraday ENTRIES (breakout / sweep-reclaim) bar-by-bar on historical intraday
+# bars with no look-ahead: a signal on bar T fills at bar T+1's open (same
+# session only), the position is managed intrabar (stop-priority, target
+# partials) and forced FLAT at session end — day-trading, no overnight holds.
+# Reuses the daily cost model (backtest_commission_pct / backtest_slippage_pct).
+intraday_backtest:
+  max_lookback_bars: 400       # bars of history handed to the evaluator each step (bounds cost; must exceed a session + ATR warmup)
+  max_tickers: 50              # cap on universe tickers backtested per run (cost guard)
+  min_frame_bars: 5            # skip a ticker whose fetched intraday frame has fewer bars than this
+  min_trades: 30               # trades required before the acceptance check trusts the edge (significance floor)
+  min_profit_factor: 1.2       # acceptance: profit factor (gross-win R / gross-loss R) must clear this
+  max_drawdown_pct: -25.0      # acceptance: equity max drawdown must stay above this (magnitude; sign-normalized)
+
 # Catalyst gating (upgrade plan P1.4). A calendar-backed earnings source (used
 # by the RiskGuard earnings-week block) plus an optional catalyst-tag veto so
 # entries carrying a hard catalyst (halt, fraud, investigation, …) are refused —

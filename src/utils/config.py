@@ -244,6 +244,27 @@ SWEEP_MIN_SESSION_BARS: int = env_int(
     "SWEEP_MIN_SESSION_BARS", _as_int(_SWEEP.get("min_session_bars", 20), 20)
 )
 
+# Intraday backtest harness (--mode intraday-backtest).
+_INTRADAY_BT: dict = get("intraday_backtest", {})
+INTRADAY_BACKTEST_MAX_LOOKBACK_BARS: int = env_int(
+    "INTRADAY_BACKTEST_MAX_LOOKBACK_BARS", _as_int(_INTRADAY_BT.get("max_lookback_bars", 400), 400)
+)
+INTRADAY_BACKTEST_MIN_TRADES: int = env_int(
+    "INTRADAY_BACKTEST_MIN_TRADES", _as_int(_INTRADAY_BT.get("min_trades", 30), 30)
+)
+INTRADAY_BACKTEST_MIN_PROFIT_FACTOR: float = env_float(
+    "INTRADAY_BACKTEST_MIN_PROFIT_FACTOR", _as_float(_INTRADAY_BT.get("min_profit_factor", 1.2), 1.2)
+)
+INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT: float = env_float(
+    "INTRADAY_BACKTEST_MAX_DRAWDOWN_PCT", _as_float(_INTRADAY_BT.get("max_drawdown_pct", -25.0), -25.0)
+)
+INTRADAY_BACKTEST_MAX_TICKERS: int = env_int(
+    "INTRADAY_BACKTEST_MAX_TICKERS", _as_int(_INTRADAY_BT.get("max_tickers", 50), 50)
+)
+INTRADAY_BACKTEST_MIN_FRAME_BARS: int = env_int(
+    "INTRADAY_BACKTEST_MIN_FRAME_BARS", _as_int(_INTRADAY_BT.get("min_frame_bars", 5), 5)
+)
+
 # Catalyst gating (upgrade plan P1.4): calendar-backed earnings + catalyst-tag veto.
 _CATALYSTS: dict = get("catalysts", {})
 _ecal_path = env(
