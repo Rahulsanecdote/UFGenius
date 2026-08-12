@@ -1,0 +1,45 @@
+name: Keep dashboard warm
+
+# Pings the deployed dashboard's /healthz so the Render free tier doesn't sleep
+# and cold-start (30-60s) the next real visitor. Best-effort only: GitHub cron
+# is not exact and scheduled workflows are auto-disabled after 60 days of repo
+# inactivity. For a hard guarantee, use a paid Render plan or a dedicated uptime
+# monitor (e.g. UptimeRobot) instead.
+#
+# Set the target once via a repo variable:
+#   Settings → Secrets and variables → Actions → Variables →
+#   New variable: HEALTHCHECK_URL = https://ufgenius-dashboard.onrender.com/healthz
+# It falls back to that URL if the variable is unset. /healthz needs no API key.
+
+on:
+  schedule:
+    - cron: "*/13 * * * *"   # every 13 min (Render sleeps after ~15 min idle)
+  workflow_dispatch: {}
+
+# Never pile up overlapping pings.
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /healthz
+        env:
+          URL: ${{ vars.HEALTHCHECK_URL || 'https://ufgenius-dashboard.onrender.com/healthz' }}
+        run: |
+          echo "Pinging $URL"
+          # --max-time 90 tolerates a cold-start wake; retry a couple of times.
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 --retry 2 --retry-delay 5 "$URL")
+          echo "HTTP $code"
+          # 200 healthy. Anything else is worth a red run, but don't fail on a
+          # transient timeout during wake — only fail on a real error response.
+          case "$code" in
+            200) echo "Warm." ;;
+            000) echo "::warning::No response within 90s (still waking or unreachable)"; ;;
+            *)   echo "::error::Unexpected status $code"; exit 1 ;;
+          esac
