@@ -305,6 +305,30 @@ class TestExecuteTradePlan:
         assert "portfolio risk" in result["reason"]
         mock_place.assert_not_called()
 
+    def test_portfolio_gate_drawdown_halt_fires_via_peak_tracker(self, tracker, monkeypatch):
+        # The real (non-mocked) engine + peak tracker must veto a new entry once
+        # equity has fallen past the drawdown halt from a persisted prior peak.
+        import src.utils.config as cfg
+        from src.risk.peak_equity import PeakEquityTracker
+
+        monkeypatch.setattr(cfg, "PORTFOLIO_ENABLED", True)
+        monkeypatch.setattr(cfg, "PORTFOLIO_GATE_ENTRIES", True)
+        monkeypatch.setattr(cfg, "PORTFOLIO_MAX_DRAWDOWN_HALT_PCT", 15.0)
+        # Seed a prior high-water mark well above current equity (20% drawdown).
+        PeakEquityTracker.load_default().observe(62_500)
+
+        with patch(
+            "src.alpaca.executor.get_portfolio_data",
+            return_value=_portfolio(equity=50_000),
+        ):
+            with patch(
+                "src.alpaca.executor.place_entry_order", return_value=_mock_order()
+            ) as mock_place:
+                result = execute_trade_plan(_plan(), tracker)
+        assert result["ok"] is False
+        assert "drawdown" in result["reason"]
+        mock_place.assert_not_called()
+
     def test_portfolio_engine_error_fails_open(self, tracker, monkeypatch):
         # The consult is advisory: an exception inside it must not break the
         # money path — the order still places.

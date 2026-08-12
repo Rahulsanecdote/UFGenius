@@ -55,3 +55,16 @@ def _isolate_explain_ledger(tmp_path, monkeypatch):
     never touch the real ``data/explain_calls.json``.
     """
     monkeypatch.setattr(cfg, "EXPLAIN_CALL_LEDGER_PATH", str(tmp_path / "explain_calls.json"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_peak_equity_store(tmp_path, monkeypatch):
+    """Point the Phase 4 equity high-water mark at a per-test temp path.
+
+    The portfolio drawdown halt persists a peak-equity value to
+    ``config.PORTFOLIO_PEAK_EQUITY_PATH``; isolate it so gate/dashboard tests
+    never read or write the real ``data/portfolio_peak_equity.json``.
+    """
+    monkeypatch.setattr(
+        cfg, "PORTFOLIO_PEAK_EQUITY_PATH", str(tmp_path / "portfolio_peak_equity.json")
+    )

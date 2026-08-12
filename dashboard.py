@@ -4298,6 +4298,7 @@ def api_portfolio_risk():
     try:
         from src.alpaca.portfolio import get_portfolio_data
         from src.risk.engine import holdings_from_portfolio, portfolio_summary
+        from src.risk.peak_equity import PeakEquityTracker
 
         portfolio = get_portfolio_data()
         if isinstance(portfolio, dict) and "error" in portfolio:
@@ -4305,7 +4306,10 @@ def api_portfolio_risk():
                 {"available": False, "reason": f"portfolio unavailable: {portfolio['error']}"}
             )
         equity = float(portfolio.get("total_equity", 0) or 0)
-        summary = portfolio_summary(holdings_from_portfolio(portfolio), equity)
+        peak = PeakEquityTracker.load_default().observe(equity)
+        summary = portfolio_summary(
+            holdings_from_portfolio(portfolio), equity, peak_equity=peak
+        )
         summary["available"] = True
         summary["gate_entries"] = config.PORTFOLIO_GATE_ENTRIES
         return jsonify(summary)

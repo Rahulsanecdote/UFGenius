@@ -169,6 +169,7 @@ portfolio:
   max_cluster_weight_pct: 35.0   # combined weight ceiling for a correlated cluster (% of equity)
   max_correlation_penalty: 0.5   # max fractional size reduction applied as candidate↔book correlation → 1
   max_drawdown_halt_pct: 15.0    # peak-to-trough equity drawdown that vetoes NEW entries (0 disables)
+  peak_equity_path: "data/portfolio_peak_equity.json"  # persisted equity high-water mark for the drawdown halt
 
 schedule:
   pre_market: "06:00"

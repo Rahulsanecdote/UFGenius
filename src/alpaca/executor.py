@@ -466,6 +466,13 @@ def execute_trade_plan(
     # full scale-down suggestion is surfaced advisory-side via /api/portfolio-risk
     # for a human/upstream to act on). Advisory and fail-open: any error here
     # logs and proceeds, never breaking the money path.
+    #
+    # Enforced at THIS call site: gross leverage, single-name weight, portfolio
+    # heat (existing book value derived from the broker's shares×price), and the
+    # equity-drawdown halt (via the persisted high-water mark). NOT enforced
+    # here: correlated-cluster exposure — the executor does not fetch aligned
+    # intraday return histories, so that check is advisory-surface only and
+    # simply no-ops in the live gate (never a false veto).
     if config.PORTFOLIO_ENABLED and config.PORTFOLIO_GATE_ENTRIES:
         try:
             from src.risk.engine import (
@@ -473,11 +480,15 @@ def execute_trade_plan(
                 candidate_from_plan,
                 holdings_from_portfolio,
             )
+            from src.risk.peak_equity import PeakEquityTracker
 
+            equity = float(portfolio.get("total_equity", 0) or 0)
+            peak = PeakEquityTracker.load_default().observe(equity)
             decision = PortfolioRiskEngine().evaluate(
                 candidate_from_plan(risk_plan),
                 holdings_from_portfolio(portfolio),
-                equity=float(portfolio.get("total_equity", 0) or 0),
+                equity=equity,
+                peak_equity=peak,
             )
             if decision.action != "approve":
                 why = "; ".join(decision.reasons) or decision.action

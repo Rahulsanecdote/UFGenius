@@ -82,18 +82,26 @@ def candidate_from_plan(plan: dict, returns: Sequence | None = None) -> dict:
 def holdings_from_portfolio(portfolio: dict) -> list[dict]:
     """Map an Alpaca portfolio dict's holdings into the engine's holding shape.
 
-    Return history is not attached here (the live path has none readily), so the
-    correlation-cluster check is simply skipped downstream — a missing estimate
-    never produces a false veto.
+    `get_portfolio_data` emits each holding as ``shares`` + ``current`` (the
+    per-share price), NOT a precomputed ``market_value``; the position's value is
+    derived as ``shares × current`` (falling back to an explicit
+    ``market_value``/``value`` if a caller supplies one). Without stop data in
+    the snapshot, per-position open risk is unknown here, so ``risk`` is
+    best-effort (an explicit ``open_risk`` if present, else 0.0 — heat then
+    counts only the candidate's risk, never a *false* veto). Any ``returns``
+    attached by the caller are passed through so the correlation-cluster check
+    can run when return history is available.
     """
     holdings = []
     for h in portfolio.get("holdings") or []:
+        explicit_value = _f(h.get("market_value") or h.get("value"))
+        derived_value = _f(h.get("shares")) * _f(h.get("current"))
         holdings.append(
             {
                 "ticker": str(h.get("ticker", "")).upper(),
-                "value": _f(h.get("market_value") or h.get("value")),
+                "value": explicit_value or derived_value,
                 "risk": _f(h.get("open_risk")),
-                "returns": None,
+                "returns": h.get("returns"),
             }
         )
     return holdings
@@ -277,12 +285,18 @@ class PortfolioRiskEngine:
         holdings: Sequence[dict],
         equity: float,
     ) -> tuple[float, list[str]]:
-        """Combined weight of the candidate's correlated cluster (candidate + all
-        holdings connected to it via pairwise correlation ≥ threshold).
+        """Combined weight of the candidate's correlated cluster — the full
+        connected component of names linked by pairwise correlation ≥ threshold.
+
+        Correlation is transitive here: if the candidate correlates with B and B
+        correlates with C (even when candidate↔C is below the threshold), all
+        three share a cluster. Built with union-find over every name that has
+        enough return history (candidate + holdings), so holding↔holding links
+        are honoured, not just direct candidate neighbours.
 
         Returns ``(candidate_weight, [candidate])`` when the candidate has too
-        little return history to correlate — i.e. no cluster inflation, so the
-        cluster check degrades to the single-name check and never false-vetoes.
+        little return history to correlate — no cluster inflation, so the check
+        degrades to the single-name check and never false-vetoes.
         """
         cand_ticker = str(candidate.get("ticker", "")).upper() or "CANDIDATE"
         cand_returns = candidate.get("returns")
@@ -292,18 +306,37 @@ class PortfolioRiskEngine:
         if not _has_history(cand_returns, self.min_return_history):
             return cand_weight, [cand_ticker]
 
-        # Build the candidate's connected component greedily: any holding whose
-        # returns correlate with the candidate at/above the threshold joins.
-        cluster_value = cand_value
-        cluster_tickers = [cand_ticker]
+        # Node 0 is the candidate; the rest are holdings with usable history.
+        nodes = [{"ticker": cand_ticker, "returns": cand_returns, "value": cand_value}]
         for h in holdings:
-            h_returns = h.get("returns")
-            if not _has_history(h_returns, self.min_return_history):
-                continue
-            corr = average_correlation(cand_returns, [h_returns])
-            if np.isfinite(corr) and corr >= self.correlation_threshold:
-                cluster_value += _f(h.get("value"))
-                cluster_tickers.append(str(h.get("ticker", "")).upper())
+            if _has_history(h.get("returns"), self.min_return_history):
+                nodes.append(
+                    {
+                        "ticker": str(h.get("ticker", "")).upper(),
+                        "returns": h.get("returns"),
+                        "value": _f(h.get("value")),
+                    }
+                )
+
+        n = len(nodes)
+        parent = list(range(n))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]  # path compression
+                x = parent[x]
+            return x
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                corr = average_correlation(nodes[i]["returns"], [nodes[j]["returns"]])
+                if np.isfinite(corr) and corr >= self.correlation_threshold:
+                    parent[find(i)] = find(j)  # union
+
+        root = find(0)
+        members = [k for k in range(n) if find(k) == root]
+        cluster_value = sum(nodes[k]["value"] for k in members)
+        cluster_tickers = [nodes[k]["ticker"] for k in members]
 
         return (cluster_value / equity if equity > 0 else 0.0), cluster_tickers
 

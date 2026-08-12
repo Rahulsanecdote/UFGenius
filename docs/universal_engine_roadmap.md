@@ -121,23 +121,38 @@ never loosens a rule or enlarges a position.
   - `PortfolioRiskEngine.evaluate` → a `RiskDecision` (approve / scale_down /
     veto) from portfolio-wide checks `RiskGuard` cannot see: **gross leverage**,
     **single-name weight**, **portfolio heat** (Σ open risk / equity),
-    **correlated-cluster exposure** (connected component of names with pairwise
-    return-correlation ≥ threshold), and an **equity-drawdown guardrail**. A
-    cluster over its cap *scales down* (suggests a share count that fits) rather
-    than vetoing outright. **Firewalled from the money path** (no executor/broker
-    import) and fail-open: any internal error returns an *approve* tagged with
-    the error, so a bug here can never silently block trading.
+    **correlated-cluster exposure** (the full *connected component* — union-find
+    over candidate + holdings, so transitive A–B–C correlation clusters count,
+    not just direct candidate neighbours), and an **equity-drawdown guardrail**.
+    A cluster over its cap *scales down* (suggests a share count that fits)
+    rather than vetoing outright. **Firewalled from the money path** (no
+    executor/broker import) and fail-open: any internal error returns an
+    *approve* tagged with the error, so a bug here can never silently block
+    trading.
+  - `holdings_from_portfolio()` derives each position's value from the broker's
+    real fields (`shares × current`), since `get_portfolio_data` emits shares +
+    per-share price, not a precomputed market value.
   - `portfolio_summary()` — read-only book snapshot (leverage / heat / per-name
     weights vs limits) for the dashboard.
+- `src/risk/peak_equity.py` — `PeakEquityTracker`, a persisted (atomic +
+  `flock`) equity **high-water mark** so the drawdown halt has a peak to measure
+  against; fails open (no peak known → drawdown 0). Fed by both the gate and the
+  advisory endpoint.
 - **Opt-in money-path gate** (`config.PORTFOLIO_GATE_ENTRIES`, default off): when
   enabled, `execute_trade_plan` consults the engine **after** `RiskGuard` already
   approved — veto-only (proceeds only on an explicit approve; the full
   scale-down suggestion is surfaced advisory-side for a human/upstream), and
-  fail-open so it never breaks execution.
+  fail-open so it never breaks execution. **Enforced at the exec call site:**
+  gross leverage, single-name weight, portfolio heat (real book values), and the
+  drawdown halt (via the high-water mark). **Not enforced there:** correlated-
+  cluster exposure — the executor doesn't fetch aligned intraday return
+  histories, so that check is advisory-surface only and no-ops in the live gate
+  (never a false veto).
 - Surfaced via `GET /api/portfolio-risk` (advisory; `available:false` when
   disabled/unreadable). Config-driven (`config.yaml` `portfolio:` +
-  `PORTFOLIO_*` env). 50 offline tests (`tests/test_portfolio_sizing.py`,
-  `tests/test_risk_engine.py`, + dashboard-API and executor-gate cases).
+  `PORTFOLIO_*` env). 60 offline tests (`tests/test_portfolio_sizing.py`,
+  `tests/test_risk_engine.py`, `tests/test_peak_equity.py`, + dashboard-API and
+  executor-gate cases).
 
 ## Phase 5: Strategy Evaluation and Automation
 

@@ -146,6 +146,30 @@ def test_candidate_without_returns_skips_cluster_inflation():
     assert d.metrics["cluster_tickers"] == ["AAPL"]
 
 
+def test_cluster_is_transitive_connected_component():
+    # A↔B correlated and B↔C correlated, but A↔C ≈ 0 (below threshold): all three
+    # must count toward the cluster (true connected component, not just direct
+    # candidate neighbours). Bridge construction: A=x, B=x+y, C=y with x⊥y, so
+    # B correlates with both A and C while A and C are uncorrelated.
+    x = np.array([0.01, -0.02, 0.03, -0.01, 0.02, -0.03, 0.015, -0.025, 0.005, -0.015, 0.02, -0.012])
+    w = np.array([0.02, 0.031, -0.014, 0.028, 0.005, 0.012, -0.03, 0.006, -0.021, 0.026, -0.016, 0.009])
+    xc, wc = x - x.mean(), w - w.mean()
+    y = wc - (xc @ wc) / (xc @ xc) * xc  # Gram-Schmidt: y ⊥ x  → corr(A,C) ≈ 0
+    a, b, c = x, x + y, y  # A↔B ≈ 0.78, B↔C ≈ 0.62, A↔C ≈ 0.0
+    eng = _engine(max_cluster_weight_pct=25.0)
+    d = eng.evaluate(
+        {"ticker": "A", "value": 1000, "risk": 20, "price": 100, "shares": 10, "returns": a},
+        [
+            {"ticker": "B", "value": 1000, "risk": 20, "returns": b},
+            {"ticker": "C", "value": 1000, "risk": 20, "returns": c},
+        ],
+        equity=10_000,
+    )
+    # Cluster {A,B,C} = 30% > 25% cap regardless of the direct A↔C correlation.
+    assert set(d.metrics["cluster_tickers"]) == {"A", "B", "C"}
+    assert d.metrics["cluster_weight"] == pytest.approx(0.30)
+
+
 def test_cluster_already_full_vetoes():
     corr = CORR_A + 0.0003
     # existing correlated holding alone already exceeds the 35% cap
@@ -208,12 +232,36 @@ def test_candidate_from_plan_missing_fields_default_zero():
     assert cand["value"] == 0.0 and cand["shares"] == 0 and cand["price"] == 0.0
 
 
-def test_holdings_from_portfolio_maps_market_value():
+def test_holdings_from_portfolio_derives_value_from_real_alpaca_fields():
+    # get_portfolio_data emits shares + current (per-share price), NOT a
+    # precomputed market_value — value must be derived as shares × current.
     holds = holdings_from_portfolio(
-        {"holdings": [{"ticker": "aapl", "market_value": 2500}, {"ticker": "msft", "value": 1000}]}
+        {
+            "holdings": [
+                {"ticker": "aapl", "shares": 10, "current": 250.0, "avg_cost": 200.0},
+                {"ticker": "msft", "shares": 4, "current": 375.0},
+            ]
+        }
     )
     assert holds[0] == {"ticker": "AAPL", "value": 2500.0, "risk": 0.0, "returns": None}
-    assert holds[1]["value"] == 1000.0
+    assert holds[1]["value"] == 1500.0
+
+
+def test_holdings_from_portfolio_honours_explicit_value_when_supplied():
+    holds = holdings_from_portfolio(
+        {"holdings": [{"ticker": "aapl", "market_value": 3000, "shares": 10, "current": 250.0,
+                       "open_risk": 45}]}
+    )
+    # explicit market_value wins over the shares×current derivation
+    assert holds[0]["value"] == 3000.0
+    assert holds[0]["risk"] == 45.0
+
+
+def test_holdings_from_portfolio_passes_returns_through():
+    holds = holdings_from_portfolio(
+        {"holdings": [{"ticker": "aapl", "shares": 10, "current": 250.0, "returns": [0.01, -0.02]}]}
+    )
+    assert holds[0]["returns"] == [0.01, -0.02]
 
 
 # ── portfolio_summary ───────────────────────────────────────────────────────

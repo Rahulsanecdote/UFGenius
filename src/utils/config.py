@@ -343,6 +343,10 @@ PORTFOLIO_MAX_CORRELATION_PENALTY: float = env_float(
 PORTFOLIO_MAX_DRAWDOWN_HALT_PCT: float = env_float(
     "PORTFOLIO_MAX_DRAWDOWN_HALT_PCT", float(_PORTFOLIO.get("max_drawdown_halt_pct", 15.0))
 )
+PORTFOLIO_PEAK_EQUITY_PATH: str = _resolve_root(env(
+    "PORTFOLIO_PEAK_EQUITY_PATH",
+    _PORTFOLIO.get("peak_equity_path") or str(_ROOT / "data" / "portfolio_peak_equity.json"),
+))
 
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
