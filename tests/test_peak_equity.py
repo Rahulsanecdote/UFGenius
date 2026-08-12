@@ -27,12 +27,16 @@ def test_peak_persists_across_instances(tmp_path):
     assert PeakEquityTracker(path=path).observe(13_000) == 15_000
 
 
-def test_non_positive_or_nan_ignored(tmp_path):
+def test_non_positive_or_nonfinite_ignored(tmp_path):
     t = PeakEquityTracker(path=str(tmp_path / "peak.json"))
     t.observe(10_000)
     assert t.observe(0) == 10_000
     assert t.observe(-5) == 10_000
     assert t.observe(float("nan")) == 10_000
+    # +inf must NOT become the peak — else drawdown would be 1.0 forever and the
+    # gate would veto every entry once enabled.
+    assert t.observe(float("inf")) == 10_000
+    assert t.observe(float("-inf")) == 10_000
 
 
 def test_missing_store_is_no_peak(tmp_path):

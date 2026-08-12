@@ -60,6 +60,19 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _as_float(value: Any, default: float) -> float:
+    """Coerce an arbitrary value to float, falling back to default on failure.
+
+    Used for eagerly-evaluated YAML defaults: a null or non-numeric config value
+    must not raise at import (``env_float`` only guards the env-var parse, not the
+    default expression).
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def env_int(key: str, default: int) -> int:
     try:
         return int(env(key, str(default)))
@@ -313,35 +326,26 @@ PORTFOLIO_ENABLED: bool = env_bool(
 PORTFOLIO_GATE_ENTRIES: bool = env_bool(
     "PORTFOLIO_GATE_ENTRIES", bool(_PORTFOLIO.get("gate_entries", False))
 )
-PORTFOLIO_TARGET_VOLATILITY_PCT: float = env_float(
-    "PORTFOLIO_TARGET_VOLATILITY_PCT", float(_PORTFOLIO.get("target_volatility_pct", 15.0))
-)
-PORTFOLIO_VOL_LOOKBACK_DAYS: int = env_int(
-    "PORTFOLIO_VOL_LOOKBACK_DAYS", _as_int(_PORTFOLIO.get("vol_lookback_days", 20), 20)
-)
 PORTFOLIO_MIN_RETURN_HISTORY: int = env_int(
     "PORTFOLIO_MIN_RETURN_HISTORY", _as_int(_PORTFOLIO.get("min_return_history", 10), 10)
 )
 PORTFOLIO_MAX_GROSS_LEVERAGE: float = env_float(
-    "PORTFOLIO_MAX_GROSS_LEVERAGE", float(_PORTFOLIO.get("max_gross_leverage", 1.0))
+    "PORTFOLIO_MAX_GROSS_LEVERAGE", _as_float(_PORTFOLIO.get("max_gross_leverage"), 1.0)
 )
 PORTFOLIO_MAX_SINGLE_WEIGHT_PCT: float = env_float(
-    "PORTFOLIO_MAX_SINGLE_WEIGHT_PCT", float(_PORTFOLIO.get("max_single_weight_pct", 20.0))
+    "PORTFOLIO_MAX_SINGLE_WEIGHT_PCT", _as_float(_PORTFOLIO.get("max_single_weight_pct"), 20.0)
 )
 PORTFOLIO_MAX_HEAT_PCT: float = env_float(
-    "PORTFOLIO_MAX_HEAT_PCT", float(_PORTFOLIO.get("max_portfolio_heat_pct", 6.0))
+    "PORTFOLIO_MAX_HEAT_PCT", _as_float(_PORTFOLIO.get("max_portfolio_heat_pct"), 6.0)
 )
 PORTFOLIO_CORRELATION_THRESHOLD: float = env_float(
-    "PORTFOLIO_CORRELATION_THRESHOLD", float(_PORTFOLIO.get("correlation_threshold", 0.6))
+    "PORTFOLIO_CORRELATION_THRESHOLD", _as_float(_PORTFOLIO.get("correlation_threshold"), 0.6)
 )
 PORTFOLIO_MAX_CLUSTER_WEIGHT_PCT: float = env_float(
-    "PORTFOLIO_MAX_CLUSTER_WEIGHT_PCT", float(_PORTFOLIO.get("max_cluster_weight_pct", 35.0))
-)
-PORTFOLIO_MAX_CORRELATION_PENALTY: float = env_float(
-    "PORTFOLIO_MAX_CORRELATION_PENALTY", float(_PORTFOLIO.get("max_correlation_penalty", 0.5))
+    "PORTFOLIO_MAX_CLUSTER_WEIGHT_PCT", _as_float(_PORTFOLIO.get("max_cluster_weight_pct"), 35.0)
 )
 PORTFOLIO_MAX_DRAWDOWN_HALT_PCT: float = env_float(
-    "PORTFOLIO_MAX_DRAWDOWN_HALT_PCT", float(_PORTFOLIO.get("max_drawdown_halt_pct", 15.0))
+    "PORTFOLIO_MAX_DRAWDOWN_HALT_PCT", _as_float(_PORTFOLIO.get("max_drawdown_halt_pct"), 15.0)
 )
 PORTFOLIO_PEAK_EQUITY_PATH: str = _resolve_root(env(
     "PORTFOLIO_PEAK_EQUITY_PATH",

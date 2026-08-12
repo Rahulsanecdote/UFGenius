@@ -190,6 +190,26 @@ def test_none_inputs_fail_open_approve():
     assert d.action == "approve"
 
 
+def test_internal_error_fails_open_approve(monkeypatch):
+    # The fail-open guarantee is the core safety property: an exception inside
+    # _evaluate must yield an approve tagged engine_error, never propagate.
+    eng = _engine()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(eng, "_cluster_weight", _boom)
+    d = eng.evaluate(
+        {"ticker": "AAPL", "value": 1000, "risk": 30, "price": 100, "shares": 10},
+        [],
+        equity=10_000,
+    )
+    assert d.action == "approve"
+    assert d.approved is True
+    assert d.suggested_shares == 10
+    assert any("engine_error" in r for r in d.reasons)
+
+
 def test_zero_equity_skips_checks():
     d = _engine().evaluate(
         {"ticker": "AAPL", "value": 1000, "risk": 30, "price": 100, "shares": 10},
@@ -243,8 +263,10 @@ def test_holdings_from_portfolio_derives_value_from_real_alpaca_fields():
             ]
         }
     )
-    assert holds[0] == {"ticker": "AAPL", "value": 2500.0, "risk": 0.0, "returns": None}
+    # Open risk is unknown (no stop data) → None marker, not a misleading 0.0.
+    assert holds[0] == {"ticker": "AAPL", "value": 2500.0, "risk": None, "returns": None}
     assert holds[1]["value"] == 1500.0
+    assert holds[1]["risk"] is None
 
 
 def test_holdings_from_portfolio_honours_explicit_value_when_supplied():
@@ -276,6 +298,31 @@ def test_portfolio_summary_computes_book_metrics_and_breaches():
     assert summary["breaches"]["single_weight"] is True  # 25% > 20% cap
     assert summary["breaches"]["gross_leverage"] is False
     assert summary["holdings"][0]["ticker"] == "AAPL"  # sorted by weight desc
+    # both holdings supplied explicit risk → heat is measured
+    assert summary["portfolio_heat"] == pytest.approx(0.009)
+    assert summary["breaches"]["portfolio_heat"] is False
+
+
+def test_portfolio_summary_heat_unavailable_when_no_risk_supplied():
+    # Broker-derived holdings (no stop data) → heat unmeasured, reported as None
+    # (not a misleading 0.0), and its breach is None rather than False.
+    summary = portfolio_summary(
+        holdings_from_portfolio(
+            {"holdings": [{"ticker": "AAPL", "shares": 10, "current": 250.0}]}
+        ),
+        equity=10_000,
+        engine=_engine(),
+    )
+    assert summary["portfolio_heat"] is None
+    assert summary["breaches"]["portfolio_heat"] is None
+    assert summary["gross_leverage"] == pytest.approx(0.25)  # value still measured
+
+
+def test_portfolio_summary_never_raises_on_bad_holding():
+    # A non-dict holding must not raise — the read-only snapshot fails safe.
+    summary = portfolio_summary(["not-a-dict"], equity=10_000, engine=_engine())
+    assert summary["position_count"] == 0
+    assert summary["gross_leverage"] == 0.0
 
 
 def test_portfolio_summary_empty_book():
@@ -283,3 +330,4 @@ def test_portfolio_summary_empty_book():
     assert summary["gross_leverage"] == 0.0
     assert summary["position_count"] == 0
     assert summary["holdings"] == []
+    assert summary["portfolio_heat"] is None  # no holdings → heat unmeasured

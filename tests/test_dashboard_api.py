@@ -188,15 +188,17 @@ def test_portfolio_risk_endpoint_returns_book_metrics(client, monkeypatch):
         "get_portfolio_data",
         lambda: {
             "total_equity": 10_000,
-            "holdings": [{"ticker": "AAPL", "market_value": 2500, "open_risk": 60}],
+            # Real provider shape: shares + current (per-share), no market_value.
+            "holdings": [{"ticker": "AAPL", "shares": 10, "current": 250.0}],
         },
     )
     response = client.get("/api/portfolio-risk")
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["available"] is True
-    assert payload["gross_leverage"] == pytest.approx(0.25)
+    assert payload["gross_leverage"] == pytest.approx(0.25)  # 2500 / 10000
     assert payload["breaches"]["single_weight"] is True  # 25% > 20% cap
+    assert payload["portfolio_heat"] is None  # no stop data → heat unmeasured
     assert payload["gate_entries"] is False
 
 

@@ -468,7 +468,7 @@ def execute_trade_plan(
     # logs and proceeds, never breaking the money path.
     #
     # Enforced at THIS call site: gross leverage, single-name weight, portfolio
-    # heat (existing book value derived from the broker's shares×price), and the
+    # heat (existing book value derived from the broker's shares x price), and the
     # equity-drawdown halt (via the persisted high-water mark). NOT enforced
     # here: correlated-cluster exposure — the executor does not fetch aligned
     # intraday return histories, so that check is advisory-surface only and

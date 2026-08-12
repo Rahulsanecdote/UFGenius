@@ -119,21 +119,25 @@ def average_correlation(candidate_returns, book_returns: Sequence) -> float:
     series of any lengths. Pairs with < 2 overlapping points or zero variance are
     skipped. Returns ``nan`` when nothing is computable (e.g. an empty book).
     """
+    # Keep original indices (do NOT pre-filter per series): dropping non-finite
+    # points independently would misalign two series whose gaps fall at different
+    # times, pairing observations from different periods. Instead tail-align, then
+    # drop non-finite *pairs* together so surviving points stay time-aligned.
     cand = _to_1d_array(candidate_returns)
-    cand = cand[np.isfinite(cand)]
-    if cand.size < 2 or not book_returns:
+    if np.isfinite(cand).sum() < 2 or not book_returns:
         return float("nan")
 
     corrs: list[float] = []
     for other in book_returns:
         arr = _to_1d_array(other)
-        arr = arr[np.isfinite(arr)]
         k = min(cand.size, arr.size)
         if k < 2:
             continue
         a = cand[-k:]
         b = arr[-k:]
-        if np.std(a) == 0 or np.std(b) == 0:
+        both = np.isfinite(a) & np.isfinite(b)
+        a, b = a[both], b[both]
+        if a.size < 2 or np.std(a) == 0 or np.std(b) == 0:
             continue
         c = float(np.corrcoef(a, b)[0, 1])
         if math.isfinite(c):

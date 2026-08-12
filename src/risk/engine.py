@@ -47,6 +47,14 @@ class RiskDecision:
 
     ``advisory`` is always True: even when ``action == "veto"`` the engine only
     *recommends* — enforcement is the caller's choice (default: surface only).
+
+    **Consumers MUST branch on ``action``, not on ``approved`` alone.**
+    ``approved`` means "the position may proceed" — but for ``action ==
+    "scale_down"`` it is deliberately True *at the reduced ``suggested_shares``*,
+    not at the submitted size. A consumer that keys off ``approved`` and ignores
+    ``action``/``suggested_shares`` would place the full unscaled order. The
+    money-path gate is stricter still: it proceeds only on ``action == "approve"``
+    and treats scale-down as a skip (see `execute_trade_plan`).
     """
 
     approved: bool
@@ -84,23 +92,25 @@ def holdings_from_portfolio(portfolio: dict) -> list[dict]:
 
     `get_portfolio_data` emits each holding as ``shares`` + ``current`` (the
     per-share price), NOT a precomputed ``market_value``; the position's value is
-    derived as ``shares × current`` (falling back to an explicit
+    derived as ``shares x current`` (falling back to an explicit
     ``market_value``/``value`` if a caller supplies one). Without stop data in
-    the snapshot, per-position open risk is unknown here, so ``risk`` is
-    best-effort (an explicit ``open_risk`` if present, else 0.0 — heat then
-    counts only the candidate's risk, never a *false* veto). Any ``returns``
-    attached by the caller are passed through so the correlation-cluster check
-    can run when return history is available.
+    the snapshot, per-position open risk is unknown, so ``risk`` is left as
+    ``None`` when no ``open_risk`` is supplied — an explicit *unknown* marker,
+    not a misleading 0.0. The gate treats unknown risk as 0 (fail-open, never a
+    false veto); `portfolio_summary` reports heat as *unavailable* rather than
+    "no heat". Any ``returns`` the caller attaches are passed through so the
+    correlation-cluster check can run when return history is available.
     """
     holdings = []
     for h in portfolio.get("holdings") or []:
         explicit_value = _f(h.get("market_value") or h.get("value"))
         derived_value = _f(h.get("shares")) * _f(h.get("current"))
+        raw_risk = h.get("open_risk")
         holdings.append(
             {
                 "ticker": str(h.get("ticker", "")).upper(),
                 "value": explicit_value or derived_value,
-                "risk": _f(h.get("open_risk")),
+                "risk": _f(raw_risk) if raw_risk is not None else None,
                 "returns": h.get("returns"),
             }
         )
@@ -351,47 +361,75 @@ def portfolio_summary(
 
     Pure analytics: gross leverage, portfolio heat, drawdown, and per-name
     weights of the *current* holdings, alongside the configured limits so the UI
-    can flag breaches. Never raises — returns zeros on an empty/unreadable book.
+    can flag breaches. **Never raises** — on an empty/unreadable book (including a
+    non-dict holding) it returns the zero-valued snapshot rather than propagating.
+
+    Heat honesty: broker holdings carry no stop data, so per-position open risk is
+    unknown. When *no* holding supplies risk, ``portfolio_heat`` and its breach
+    are reported as ``None`` (heat **unmeasured**, not "zero heat"); heat is only
+    a number when at least one holding has explicit risk.
     """
-    eng = engine or PortfolioRiskEngine()
-    holdings = list(holdings or [])
-    equity = _f(equity)
+    try:
+        eng = engine or PortfolioRiskEngine()
+        holdings = list(holdings or [])
+        equity = _f(equity)
 
-    existing_value = sum(_f(h.get("value")) for h in holdings)
-    existing_risk = sum(_f(h.get("risk")) for h in holdings)
-    weights = []
-    if equity > 0:
-        for h in holdings:
-            w = _f(h.get("value")) / equity
-            weights.append({"ticker": str(h.get("ticker", "")).upper(), "weight": round(w, 4)})
-    weights.sort(key=lambda x: x["weight"], reverse=True)
+        existing_value = sum(_f(h.get("value")) for h in holdings)
+        risk_known = any(h.get("risk") is not None for h in holdings)
+        existing_risk = sum(_f(h.get("risk")) for h in holdings)
+        weights = []
+        if equity > 0:
+            for h in holdings:
+                w = _f(h.get("value")) / equity
+                weights.append({"ticker": str(h.get("ticker", "")).upper(), "weight": round(w, 4)})
+        weights.sort(key=lambda x: x["weight"], reverse=True)
 
-    gross_leverage = existing_value / equity if equity > 0 else 0.0
-    portfolio_heat = existing_risk / equity if equity > 0 else 0.0
-    max_single = weights[0]["weight"] if weights else 0.0
+        gross_leverage = existing_value / equity if equity > 0 else 0.0
+        max_single = weights[0]["weight"] if weights else 0.0
 
-    return {
-        "equity": round(equity, 2),
-        "position_count": len(holdings),
-        "gross_leverage": round(gross_leverage, 4),
-        "portfolio_heat": round(portfolio_heat, 4),
-        "drawdown": round(_drawdown(equity, peak_equity), 4),
-        "max_single_weight": round(max_single, 4),
-        "holdings": weights,
-        "breaches": {
-            "gross_leverage": gross_leverage > eng.max_gross_leverage,
-            "portfolio_heat": portfolio_heat > eng.max_heat,
-            "single_weight": max_single > eng.max_single_weight,
-        },
-        "limits": {
-            "max_gross_leverage": eng.max_gross_leverage,
-            "max_single_weight": eng.max_single_weight,
-            "max_portfolio_heat": eng.max_heat,
-            "max_cluster_weight": eng.max_cluster_weight,
-            "max_drawdown_halt": eng.max_drawdown_halt,
-            "correlation_threshold": eng.correlation_threshold,
-        },
-    }
+        if risk_known and equity > 0:
+            heat = existing_risk / equity
+            portfolio_heat: float | None = round(heat, 4)
+            heat_breach: bool | None = heat > eng.max_heat
+        else:
+            portfolio_heat = None  # unmeasured (no stop data on broker holdings)
+            heat_breach = None
+
+        return {
+            "equity": round(equity, 2),
+            "position_count": len(holdings),
+            "gross_leverage": round(gross_leverage, 4),
+            "portfolio_heat": portfolio_heat,
+            "drawdown": round(_drawdown(equity, peak_equity), 4),
+            "max_single_weight": round(max_single, 4),
+            "holdings": weights,
+            "breaches": {
+                "gross_leverage": gross_leverage > eng.max_gross_leverage,
+                "portfolio_heat": heat_breach,
+                "single_weight": max_single > eng.max_single_weight,
+            },
+            "limits": {
+                "max_gross_leverage": eng.max_gross_leverage,
+                "max_single_weight": eng.max_single_weight,
+                "max_portfolio_heat": eng.max_heat,
+                "max_cluster_weight": eng.max_cluster_weight,
+                "max_drawdown_halt": eng.max_drawdown_halt,
+                "correlation_threshold": eng.correlation_threshold,
+            },
+        }
+    except Exception:  # advisory read-only snapshot must never raise
+        log.exception("portfolio_summary failed; returning empty snapshot")
+        return {
+            "equity": 0.0,
+            "position_count": 0,
+            "gross_leverage": 0.0,
+            "portfolio_heat": None,
+            "drawdown": 0.0,
+            "max_single_weight": 0.0,
+            "holdings": [],
+            "breaches": {"gross_leverage": False, "portfolio_heat": None, "single_weight": False},
+            "limits": {},
+        }
 
 
 def _has_history(returns, minimum: int) -> bool:

@@ -150,7 +150,7 @@ never loosens a rule or enlarges a position.
   (never a false veto).
 - Surfaced via `GET /api/portfolio-risk` (advisory; `available:false` when
   disabled/unreadable). Config-driven (`config.yaml` `portfolio:` +
-  `PORTFOLIO_*` env). 60 offline tests (`tests/test_portfolio_sizing.py`,
+  `PORTFOLIO_*` env). 63 offline tests (`tests/test_portfolio_sizing.py`,
   `tests/test_risk_engine.py`, `tests/test_peak_equity.py`, + dashboard-API and
   executor-gate cases).
 

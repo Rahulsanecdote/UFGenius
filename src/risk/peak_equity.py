@@ -21,6 +21,7 @@ high-water mark started at deploy and is documented rather than hidden.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import threading
@@ -82,7 +83,7 @@ class PeakEquityTracker:
             eq = float(equity)
         except (TypeError, ValueError):
             return self._peak
-        if not (eq > 0 and eq == eq):  # positive and not NaN
+        if not (math.isfinite(eq) and eq > 0):  # positive and finite (rejects NaN/±inf)
             return self._peak
 
         try:
