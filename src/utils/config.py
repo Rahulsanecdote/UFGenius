@@ -288,6 +288,18 @@ EXPLAIN_CALL_LEDGER_PATH: str = _resolve_root(env(
     "EXPLAIN_CALL_LEDGER_PATH",
     _EXPLAIN.get("call_ledger_path") or str(_ROOT / "data" / "explain_calls.json"),
 ))
+# LLM provider for the explain layer. "anthropic" (default) uses the Anthropic
+# Messages API + ANTHROPIC_API_KEY. Any other value uses an OpenAI-compatible
+# Chat Completions endpoint (OpenAI, NVIDIA Nemotron, OpenRouter, a local vLLM
+# server, …): set EXPLAIN_BASE_URL + EXPLAIN_API_KEY and an EXPLAIN_MODEL id from
+# that provider's catalog. This is the only switch needed to run e.g. Nemotron
+# instead of Claude.
+EXPLAIN_PROVIDER: str = env("EXPLAIN_PROVIDER", str(_EXPLAIN.get("provider", "anthropic")))
+EXPLAIN_BASE_URL: str = env("EXPLAIN_BASE_URL", str(_EXPLAIN.get("base_url", "")))
+EXPLAIN_API_KEY: str = env("EXPLAIN_API_KEY", str(_EXPLAIN.get("api_key", "")))
+EXPLAIN_TEMPERATURE: float = env_float(
+    "EXPLAIN_TEMPERATURE", float(_EXPLAIN.get("temperature", 0.3))
+)
 
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(

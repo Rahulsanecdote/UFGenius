@@ -209,22 +209,56 @@ def _reserve_daily_call(now: datetime) -> bool:
                     lock_file.close()
 
 
+def _provider() -> str:
+    """Normalized explain provider: 'anthropic' (default) or an OpenAI-compatible one."""
+    return str(config.EXPLAIN_PROVIDER or "anthropic").strip().lower()
+
+
 def _build_client():
-    """Construct the Anthropic client (lazy import). Returns None if unavailable."""
-    if not config.env("ANTHROPIC_API_KEY"):
-        log.debug("ANTHROPIC_API_KEY not set — explainability layer skipped")
+    """Construct the LLM client (lazy import). Returns None if unavailable.
+
+    Provider-agnostic: 'anthropic' (default) uses the Anthropic Messages API;
+    any other value uses an OpenAI-compatible Chat Completions endpoint (OpenAI,
+    NVIDIA Nemotron, OpenRouter, a local vLLM server, …), so the same explain
+    layer runs on Claude or Nemotron with config changes only.
+    """
+    if _provider() == "anthropic":
+        if not config.env("ANTHROPIC_API_KEY"):
+            log.debug("ANTHROPIC_API_KEY not set — explainability layer skipped")
+            return None
+        try:
+            import anthropic
+        except ImportError:
+            log.warning("anthropic SDK not installed — explainability layer skipped")
+            return None
+        try:
+            client = anthropic.Anthropic()
+            timeout = float(config.EXPLAIN_TIMEOUT_SECONDS)
+            return client.with_options(timeout=timeout, max_retries=1)
+        except Exception as exc:
+            log.warning(f"could not build Anthropic client: {type(exc).__name__}")
+            return None
+
+    # OpenAI-compatible provider (Nemotron / OpenAI / OpenRouter / local server).
+    api_key = config.EXPLAIN_API_KEY or config.env("OPENAI_API_KEY")
+    if not api_key:
+        log.debug("EXPLAIN_API_KEY not set — explainability layer skipped")
         return None
     try:
-        import anthropic
+        from openai import OpenAI
     except ImportError:
-        log.warning("anthropic SDK not installed — explainability layer skipped")
+        log.warning("openai SDK not installed — explainability layer skipped "
+                    "(pip install openai)")
         return None
     try:
-        client = anthropic.Anthropic()
-        timeout = float(config.EXPLAIN_TIMEOUT_SECONDS)
-        return client.with_options(timeout=timeout, max_retries=1)
+        return OpenAI(
+            api_key=api_key,
+            base_url=config.EXPLAIN_BASE_URL or None,
+            timeout=float(config.EXPLAIN_TIMEOUT_SECONDS),
+            max_retries=1,
+        )
     except Exception as exc:
-        log.warning(f"could not build Anthropic client: {type(exc).__name__}")
+        log.warning(f"could not build OpenAI-compatible client: {type(exc).__name__}")
         return None
 
 
@@ -258,27 +292,48 @@ def generate_narrative(snapshot: dict, *, client=None, now: Optional[datetime] =
         f"{json.dumps(snapshot, default=str, sort_keys=True)}\n"
         "</snapshot>"
     )
+    provider = _provider()
     try:
-        resp = cli.messages.create(
-            model=str(config.EXPLAIN_MODEL),
-            max_tokens=int(config.EXPLAIN_MAX_TOKENS),
-            output_config={"effort": "low"},
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
+        if provider == "anthropic":
+            resp = cli.messages.create(
+                model=str(config.EXPLAIN_MODEL),
+                max_tokens=int(config.EXPLAIN_MAX_TOKENS),
+                output_config={"effort": "low"},
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_content}],
+            )
+        else:
+            resp = cli.chat.completions.create(
+                model=str(config.EXPLAIN_MODEL),
+                max_tokens=int(config.EXPLAIN_MAX_TOKENS),
+                temperature=float(config.EXPLAIN_TEMPERATURE),
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+            )
     except Exception as exc:  # advisory layer must never break a caller
         log.warning(f"explain narrative call failed: {type(exc).__name__}")
         return None
 
-    if getattr(resp, "stop_reason", None) == "refusal":
-        log.info("explain narrative refused by model safety classifier")
-        return None
+    if provider == "anthropic":
+        # Anthropic Messages API: honor the safety-refusal signal, then collect
+        # text blocks.
+        if getattr(resp, "stop_reason", None) == "refusal":
+            log.info("explain narrative refused by model safety classifier")
+            return None
+        text = ""
+        for block in getattr(resp, "content", []) or []:
+            if getattr(block, "type", None) == "text":
+                text += getattr(block, "text", "") or ""
+        text = text.strip()
+    else:
+        # OpenAI-compatible Chat Completions: single message string.
+        try:
+            text = (resp.choices[0].message.content or "").strip()
+        except (AttributeError, IndexError, TypeError):
+            text = ""
 
-    text = ""
-    for block in getattr(resp, "content", []) or []:
-        if getattr(block, "type", None) == "text":
-            text += getattr(block, "text", "") or ""
-    text = text.strip()
     if not text:
         return None
 

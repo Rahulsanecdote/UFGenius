@@ -231,3 +231,87 @@ def test_module_does_not_import_executor():
 def test_system_prompt_has_injection_and_no_advice_guards():
     assert "not instructions" in nar._SYSTEM_PROMPT.lower()
     assert "do not tell the reader to buy" in nar._SYSTEM_PROMPT.lower()
+
+
+# ── OpenAI-compatible provider (Nemotron / OpenAI / OpenRouter / local) ────────
+
+class _OAIMessage:
+    def __init__(self, content):
+        self.message = type("M", (), {"content": content})()
+
+
+class _OAIResp:
+    def __init__(self, text="Bull: momentum firm. Bear: extended. Net: constructive.",
+                 model="nvidia/nemotron"):
+        self.choices = [_OAIMessage(text)]
+        self.model = model
+
+
+class _FakeChatCompletions:
+    def __init__(self, resp=None, raises=None):
+        self._resp = resp or _OAIResp()
+        self._raises = raises
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._raises:
+            raise self._raises
+        return self._resp
+
+
+class _FakeOpenAIClient:
+    def __init__(self, resp=None, raises=None):
+        self.chat = type("C", (), {"completions": _FakeChatCompletions(resp, raises)})()
+
+
+@pytest.fixture()
+def _enabled_openai(monkeypatch):
+    monkeypatch.setattr(cfg, "EXPLAIN_ENABLED", True)
+    monkeypatch.setattr(cfg, "EXPLAIN_PROVIDER", "openai")
+    monkeypatch.setattr(cfg, "EXPLAIN_MODEL", "nvidia/llama-3.1-nemotron-ultra-253b-v1")
+    monkeypatch.setattr(cfg, "EXPLAIN_MAX_TOKENS", 1000)
+    monkeypatch.setattr(cfg, "EXPLAIN_TEMPERATURE", 0.3)
+    monkeypatch.setattr(cfg, "EXPLAIN_DAILY_CALL_CAP", 50)
+
+
+def test_openai_provider_produces_narrative(_enabled_openai):
+    client = _FakeOpenAIClient()
+    out = nar.generate_narrative({"ticker": "AAA", "score": 71.5}, client=client)
+    assert out is not None
+    assert out["ticker"] == "AAA"
+    assert "constructive" in out["narrative"]
+    assert out["model"] == "nvidia/nemotron"
+
+
+def test_openai_provider_sends_chat_completions_shape(_enabled_openai):
+    client = _FakeOpenAIClient()
+    nar.generate_narrative({"ticker": "AAA", "score": 71.5}, client=client)
+    call = client.chat.completions.calls[0]
+    assert call["model"] == "nvidia/llama-3.1-nemotron-ultra-253b-v1"
+    assert call["max_tokens"] == 1000
+    assert call["temperature"] == 0.3
+    roles = [m["role"] for m in call["messages"]]
+    assert roles == ["system", "user"]
+
+
+def test_openai_provider_api_error_returns_none(_enabled_openai):
+    client = _FakeOpenAIClient(raises=RuntimeError("boom"))
+    assert nar.generate_narrative({"ticker": "AAA", "score": 71.5}, client=client) is None
+
+
+def test_openai_provider_empty_text_returns_none(_enabled_openai):
+    client = _FakeOpenAIClient(resp=_OAIResp(text="   "))
+    assert nar.generate_narrative({"ticker": "AAA", "score": 71.5}, client=client) is None
+
+
+def test_provider_helper_normalizes():
+    import src.utils.config as c
+    orig = c.EXPLAIN_PROVIDER
+    try:
+        c.EXPLAIN_PROVIDER = "  OpenAI "
+        assert nar._provider() == "openai"
+        c.EXPLAIN_PROVIDER = ""
+        assert nar._provider() == "anthropic"
+    finally:
+        c.EXPLAIN_PROVIDER = orig
