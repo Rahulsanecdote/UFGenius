@@ -168,6 +168,14 @@ pytest --cov=src       # coverage
   volume, intraday-ATR stop via `src/technical/intraday_features.py`). Discovery
   + planning only — plans go to a pluggable sink (default log); execution reuses
   the gated `execute_trade_plan` path. Config: `continuous_scan:` / `intraday_signal:`.
+  An **opt-in sweep-reclaim reversal** entry (`src/signals/sweep_reclaim.py`,
+  config `sweep_reclaim:`, **default off**) is the counterpart to the breakout:
+  the consumer tries it only when the breakout doesn't fire and
+  `SWEEP_RECLAIM_ENABLED` is set — it detects a sweep of a recent swing low
+  (`lookback_bars`=15) + a reclaim close on volume (`reclaim_window_bars`=2),
+  stops just below the swept wick, and builds the plan through the same
+  `generate_trade_plan` money-path. Discovery/timing hypothesis — validate
+  out-of-sample before real money. See `docs/SWEEP_RECLAIM.md`.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`

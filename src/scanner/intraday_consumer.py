@@ -27,6 +27,7 @@ from src.data.fetcher import fetch_intraday
 from src.data.lookahead import is_stale
 from src.scanner.candidate_queue import CandidateQueue
 from src.signals.intraday_signal import build_intraday_plan, evaluate_intraday_entry
+from src.signals.sweep_reclaim import build_sweep_reclaim_plan, evaluate_sweep_reclaim
 from src.utils import config
 from src.utils.logger import get_logger
 
@@ -147,10 +148,20 @@ class IntradayConsumer:
                 if is_stale(df, interval, max_staleness_intervals=max_stale, now=now):
                     log.debug(f"{c.ticker}: intraday frame stale — skipping")
                     continue
+                # Momentum breakout first; fall back to the opt-in sweep-reclaim
+                # REVERSAL evaluator when the breakout doesn't fire and it's
+                # enabled. A breakout (momentum) and a sweep-reclaim (reversal)
+                # are distinct setups, so at most one plan is emitted per ticker.
                 decision = evaluate_intraday_entry(df, now=now)
-                if not decision.get("enter"):
+                if decision.get("enter"):
+                    plan = build_intraday_plan(c.ticker, df, decision, account_size=self.account_size)
+                elif config.SWEEP_RECLAIM_ENABLED:
+                    sweep = evaluate_sweep_reclaim(df, now=now)
+                    if not sweep.get("enter"):
+                        continue
+                    plan = build_sweep_reclaim_plan(c.ticker, df, sweep, account_size=self.account_size)
+                else:
                     continue
-                plan = build_intraday_plan(c.ticker, df, decision, account_size=self.account_size)
                 if isinstance(plan, dict) and "error" not in plan and not plan.get("skip"):
                     self.sink(plan)
                     plans.append(plan)
