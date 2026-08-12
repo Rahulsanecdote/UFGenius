@@ -46,7 +46,9 @@ paper_scorecard:
 # a bar-scaled cache TTL and the look-ahead / staleness guards.
 intraday:
   default_interval: "5m"        # default intraday bar size for fetch_intraday
-  cache_ttl_floor_sec: 30       # floor on the bar-scaled intraday cache TTL
+  cache_boundary_align: true    # expire the intraday cache at the next bar boundary (+settle) so a newly-closed bar is picked up promptly, instead of a fixed TTL from fetch time. Sub-hour clock-aligned bars (1m/2m/5m/15m/30m) only; hourly+/90m are session-phased and keep the legacy TTL
+  cache_settle_sec: 5           # grace after a bar boundary for the provider to publish the closed bar before the cache refetches
+  cache_ttl_floor_sec: 30       # floor on the bar-scaled intraday cache TTL (legacy path only — used when cache_boundary_align is false)
   max_staleness_intervals: 3    # a frame older than N bars is considered stale
   future_bar_tolerance_sec: 5   # clock-skew grace before dropping future-labelled bars
 
@@ -55,14 +57,14 @@ intraday:
 # emitting deduped candidates into an in-process queue for the entry logic (P1.3).
 # Rate/cost-aware: bounded universe, interval floor, cached bars, dedup window.
 continuous_scan:
-  # 1m bars polled every 15s (the loop floor). This tightens the *poll* cadence,
-  # not the data itself: a newly-closed bar's freshness is bounded by the 1m bar
-  # cache (~60s TTL — one provider call per bar, kept that way on purpose to avoid
-  # 4x the request rate), so the 15s loop mainly shrinks the post-expiry poll gap
-  # (<=15s vs <=45s before). Net: faster *reaction* (worst-case bar->reaction
-  # ~60s), NOT sub-minute *resolution* — 1m is the smallest bar the providers
-  # serve and the forming bar is dropped by the look-ahead guard. lookback_bars
-  # are counts, so on 1m they span minutes (6-min momentum, 20-min breakout high).
+  # 1m bars polled every 15s (the loop floor). With the boundary-aligned intraday
+  # cache (intraday.cache_boundary_align, default on) the cache expires just after
+  # each bar closes (+settle), so the first poll after a close re-fetches the new
+  # bar: reaction to a newly-closed bar tracks the ~15s poll cadence (plus a few
+  # seconds settle), still one provider call per bar. This is NOT sub-minute
+  # *resolution* — 1m is the smallest bar the providers serve and the forming bar
+  # is dropped by the look-ahead guard. lookback_bars are counts, so on 1m they
+  # span minutes (6-min momentum, 20-min breakout high).
   interval_sec: 15             # seconds between scan cycles (floored to _MIN_INTERVAL_SEC=15)
   interval: "1m"               # intraday bar size to scan (1m is the provider floor)
   universe_cap: 100            # max tickers scanned per cycle (cost guard)
