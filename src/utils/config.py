@@ -547,6 +547,11 @@ DASHBOARD_RATE_LIMIT_BACKEND: str = env("DASHBOARD_RATE_LIMIT_BACKEND", "sqlite"
 DASHBOARD_RATE_LIMIT_DB_PATH: str = env("DASHBOARD_RATE_LIMIT_DB_PATH", "/tmp/ufgenius_rate_limit.sqlite3")
 DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)
 
+# Screener presets — named pre-trade filters (config.yaml `screener.presets`).
+# A dict of {preset_name: {criteria...}} consumed by src/screener/. Empty when
+# unconfigured; unknown preset names are rejected loudly at call time.
+SCREENER_PRESETS: dict = get("screener.presets", {}) or {}
+
 # Penny stock mode — an OPT-IN low-price/small-cap profile. Default OFF. When
 # enabled it does NOT remove protection: it swaps the standard disqualifiers for
 # penny-specific HARD RAILS (below). Scan/paper only until validated — the money

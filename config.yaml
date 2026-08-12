@@ -221,6 +221,38 @@ penny:
   min_market_cap: 50000000       # FLOOR, not 0 — cuts the sub-$50M pump-and-dump zone
   max_5day_gain_pct: 30.0        # tighter chaser-trap than standard (don't buy after the pop)
 
+# Screener presets — named pre-trade filters (`python bot.py --mode screen
+# --preset <name>`). A screener finds *candidates*, not edge: the output is a
+# filtered watchlist you feed into --mode scan / --mode intraday-scan, which
+# (after validation) decide anything about money. Criteria are checked against
+# data the bot can compute (price, SMA20/50/200, RSI14, avg/rel volume, 50-day
+# high, 1d change, market cap); ROE / debt-equity are OPTIONAL and skipped when
+# the free data provider doesn't supply them. Add/edit presets freely.
+screener:
+  presets:
+    # Oversold names starting to turn up on high relative volume — the
+    # dip-reversal ("bounce play") candidates.
+    oversold-bounce:
+      description: "Oversold, turning up, on 2x relative volume"
+      min_price: 5.0
+      rsi_max: 40            # oversold-ish
+      min_rel_volume: 2.0    # 2x its normal volume
+      require_change_up: true  # already ticking back up (not a falling knife)
+    # Pulled back to between the 20- and 50-day MA, holding the 20 as support.
+    ma-bounce:
+      description: "Above the 20-day MA but below the 50-day MA, on rising volume"
+      require_above_sma: ["20"]
+      require_below_sma: ["50"]
+      min_avg_volume: 400000
+      min_rel_volume: 1.0
+    # Strong uptrend making a new 50-day high on real volume.
+    breakout:
+      description: "Above 20/50/200-day MA, new 50-day high, liquid"
+      require_above_sma: ["20", "50", "200"]
+      require_new_high_50: true
+      min_avg_volume: 100000
+      min_roe_pct: 20         # optional quality filter (skipped when ROE unknown)
+
 # Signal classification thresholds (score out of 100)
 signal_thresholds:
   - [80, "STRONG_BUY",  "VERY_HIGH"]
