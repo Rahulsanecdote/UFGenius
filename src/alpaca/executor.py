@@ -458,6 +458,44 @@ def execute_trade_plan(
             "dry_run": dry_run,
         }
 
+    # Portfolio-level risk engine (roadmap Phase 4) — an OPT-IN, default-off
+    # gate that runs ONLY after RiskGuard already approved, so it can only
+    # further tighten (never loosen). Veto-only in the money path: we proceed
+    # only on an explicit APPROVE; a veto or a scale-down recommendation skips
+    # this entry (automated mid-flight resizing is deliberately avoided — the
+    # full scale-down suggestion is surfaced advisory-side via /api/portfolio-risk
+    # for a human/upstream to act on). Advisory and fail-open: any error here
+    # logs and proceeds, never breaking the money path.
+    if config.PORTFOLIO_ENABLED and config.PORTFOLIO_GATE_ENTRIES:
+        try:
+            from src.risk.engine import (
+                PortfolioRiskEngine,
+                candidate_from_plan,
+                holdings_from_portfolio,
+            )
+
+            decision = PortfolioRiskEngine().evaluate(
+                candidate_from_plan(risk_plan),
+                holdings_from_portfolio(portfolio),
+                equity=float(portfolio.get("total_equity", 0) or 0),
+            )
+            if decision.action != "approve":
+                why = "; ".join(decision.reasons) or decision.action
+                log.warning(f"[{ticker}] Trade rejected by PortfolioRiskEngine: {why}")
+                return {
+                    "ok": False,
+                    "reason": f"portfolio risk: {why}",
+                    "ticker": ticker,
+                    "order_id": None,
+                    "shares": int(shares),
+                    "limit_price": submit_price,
+                    "dry_run": dry_run,
+                }
+        except Exception:
+            log.exception(
+                f"[{ticker}] PortfolioRiskEngine consult failed; proceeding (advisory)"
+            )
+
     if dry_run:
         log.info(
             f"[DRY RUN] Would place: {ticker} x{shares} LIMIT @ ${submit_price:.2f}"

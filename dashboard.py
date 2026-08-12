@@ -4279,6 +4279,41 @@ def api_attribution():
         return _error_response("Internal server error", 500)
 
 
+@app.route("/api/portfolio-risk")
+def api_portfolio_risk():
+    """Advisory portfolio-level risk snapshot (roadmap Phase 4).
+
+    Read-only book metrics — gross leverage, portfolio heat, per-name weights vs
+    the configured limits. Returns ``available: false`` when the portfolio layer
+    is disabled (``portfolio.enabled=false``) or the broker portfolio is
+    unreadable — never places or gates an order.
+    """
+    if not config.PORTFOLIO_ENABLED:
+        return jsonify(
+            {
+                "available": False,
+                "reason": "portfolio layer disabled (portfolio.enabled=false)",
+            }
+        )
+    try:
+        from src.alpaca.portfolio import get_portfolio_data
+        from src.risk.engine import holdings_from_portfolio, portfolio_summary
+
+        portfolio = get_portfolio_data()
+        if isinstance(portfolio, dict) and "error" in portfolio:
+            return jsonify(
+                {"available": False, "reason": f"portfolio unavailable: {portfolio['error']}"}
+            )
+        equity = float(portfolio.get("total_equity", 0) or 0)
+        summary = portfolio_summary(holdings_from_portfolio(portfolio), equity)
+        summary["available"] = True
+        summary["gate_entries"] = config.PORTFOLIO_GATE_ENTRIES
+        return jsonify(summary)
+    except Exception:
+        log.exception("Portfolio-risk endpoint error")
+        return _error_response("Internal server error", 500)
+
+
 @app.route("/api/breaker", methods=["POST"])
 def api_breaker():
     """Flip the global halt switch (P0.3). Body: {"action": "halt"|"resume", "reason": "..."}.

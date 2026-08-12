@@ -256,6 +256,76 @@ class TestExecuteTradePlan:
         assert result["ok"] is False
         assert "Incomplete" in result["reason"]
 
+    def test_portfolio_engine_gate_off_by_default_is_noop(self, tracker, monkeypatch):
+        # Phase 4 gate is off by default: the engine is never consulted, so a
+        # RiskGuard-approved plan still places even if the engine would veto.
+        import src.utils.config as cfg
+        import src.risk.engine as eng
+
+        monkeypatch.setattr(cfg, "PORTFOLIO_ENABLED", False)
+        monkeypatch.setattr(cfg, "PORTFOLIO_GATE_ENTRIES", False)
+
+        def _boom(*_a, **_k):  # must NOT be called when the gate is off
+            raise AssertionError("PortfolioRiskEngine consulted while gate disabled")
+
+        monkeypatch.setattr(eng.PortfolioRiskEngine, "evaluate", _boom)
+        with patch("src.alpaca.executor.get_portfolio_data", return_value=_portfolio()):
+            with patch(
+                "src.alpaca.executor.place_entry_order", return_value=_mock_order()
+            ) as mock_place:
+                result = execute_trade_plan(_plan(), tracker)
+        assert result["ok"] is True
+        mock_place.assert_called_once()
+
+    def test_portfolio_engine_vetoes_when_gate_enabled(self, tracker, monkeypatch):
+        # With the opt-in gate on, a non-approve engine decision skips the entry
+        # AFTER RiskGuard already approved (tighten-only, veto-in-money-path).
+        import src.utils.config as cfg
+        import src.risk.engine as eng
+        from src.risk.engine import RiskDecision
+
+        monkeypatch.setattr(cfg, "PORTFOLIO_ENABLED", True)
+        monkeypatch.setattr(cfg, "PORTFOLIO_GATE_ENTRIES", True)
+        monkeypatch.setattr(
+            eng.PortfolioRiskEngine,
+            "evaluate",
+            lambda self, *a, **k: RiskDecision(
+                approved=False,
+                action="veto",
+                suggested_shares=0,
+                reasons=["single-name weight 30.0% > cap 20.0%"],
+            ),
+        )
+        with patch("src.alpaca.executor.get_portfolio_data", return_value=_portfolio()):
+            with patch(
+                "src.alpaca.executor.place_entry_order", return_value=_mock_order()
+            ) as mock_place:
+                result = execute_trade_plan(_plan(), tracker)
+        assert result["ok"] is False
+        assert "portfolio risk" in result["reason"]
+        mock_place.assert_not_called()
+
+    def test_portfolio_engine_error_fails_open(self, tracker, monkeypatch):
+        # The consult is advisory: an exception inside it must not break the
+        # money path — the order still places.
+        import src.utils.config as cfg
+        import src.risk.engine as eng
+
+        monkeypatch.setattr(cfg, "PORTFOLIO_ENABLED", True)
+        monkeypatch.setattr(cfg, "PORTFOLIO_GATE_ENTRIES", True)
+
+        def _raise(*_a, **_k):
+            raise RuntimeError("engine boom")
+
+        monkeypatch.setattr(eng.PortfolioRiskEngine, "evaluate", _raise)
+        with patch("src.alpaca.executor.get_portfolio_data", return_value=_portfolio()):
+            with patch(
+                "src.alpaca.executor.place_entry_order", return_value=_mock_order()
+            ) as mock_place:
+                result = execute_trade_plan(_plan(), tracker)
+        assert result["ok"] is True
+        mock_place.assert_called_once()
+
 
 # ─── Monitor: _check_entry_fill ──────────────────────────────────────────── #
 

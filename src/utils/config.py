@@ -301,6 +301,49 @@ EXPLAIN_TEMPERATURE: float = env_float(
     "EXPLAIN_TEMPERATURE", float(_EXPLAIN.get("temperature", 0.3))
 )
 
+# Portfolio + Risk Engine (universal-engine roadmap Phase 4). ADVISORY and
+# default-OFF: volatility/correlation-aware sizing + portfolio-level risk metrics
+# (leverage, single-name weight, portfolio heat, correlated-cluster exposure,
+# drawdown). Never replaces RiskGuard; gate_entries is a separate opt-in that
+# lets the engine veto/scale in the money path.
+_PORTFOLIO: dict = get("portfolio", {})
+PORTFOLIO_ENABLED: bool = env_bool(
+    "PORTFOLIO_ENABLED", bool(_PORTFOLIO.get("enabled", False))
+)
+PORTFOLIO_GATE_ENTRIES: bool = env_bool(
+    "PORTFOLIO_GATE_ENTRIES", bool(_PORTFOLIO.get("gate_entries", False))
+)
+PORTFOLIO_TARGET_VOLATILITY_PCT: float = env_float(
+    "PORTFOLIO_TARGET_VOLATILITY_PCT", float(_PORTFOLIO.get("target_volatility_pct", 15.0))
+)
+PORTFOLIO_VOL_LOOKBACK_DAYS: int = env_int(
+    "PORTFOLIO_VOL_LOOKBACK_DAYS", _as_int(_PORTFOLIO.get("vol_lookback_days", 20), 20)
+)
+PORTFOLIO_MIN_RETURN_HISTORY: int = env_int(
+    "PORTFOLIO_MIN_RETURN_HISTORY", _as_int(_PORTFOLIO.get("min_return_history", 10), 10)
+)
+PORTFOLIO_MAX_GROSS_LEVERAGE: float = env_float(
+    "PORTFOLIO_MAX_GROSS_LEVERAGE", float(_PORTFOLIO.get("max_gross_leverage", 1.0))
+)
+PORTFOLIO_MAX_SINGLE_WEIGHT_PCT: float = env_float(
+    "PORTFOLIO_MAX_SINGLE_WEIGHT_PCT", float(_PORTFOLIO.get("max_single_weight_pct", 20.0))
+)
+PORTFOLIO_MAX_HEAT_PCT: float = env_float(
+    "PORTFOLIO_MAX_HEAT_PCT", float(_PORTFOLIO.get("max_portfolio_heat_pct", 6.0))
+)
+PORTFOLIO_CORRELATION_THRESHOLD: float = env_float(
+    "PORTFOLIO_CORRELATION_THRESHOLD", float(_PORTFOLIO.get("correlation_threshold", 0.6))
+)
+PORTFOLIO_MAX_CLUSTER_WEIGHT_PCT: float = env_float(
+    "PORTFOLIO_MAX_CLUSTER_WEIGHT_PCT", float(_PORTFOLIO.get("max_cluster_weight_pct", 35.0))
+)
+PORTFOLIO_MAX_CORRELATION_PENALTY: float = env_float(
+    "PORTFOLIO_MAX_CORRELATION_PENALTY", float(_PORTFOLIO.get("max_correlation_penalty", 0.5))
+)
+PORTFOLIO_MAX_DRAWDOWN_HALT_PCT: float = env_float(
+    "PORTFOLIO_MAX_DRAWDOWN_HALT_PCT", float(_PORTFOLIO.get("max_drawdown_halt_pct", 15.0))
+)
+
 # Live position store path (used by src/alpaca/position_tracker.py).
 LIVE_POSITION_STORE_PATH: str = env(
     "LIVE_POSITION_STORE_PATH",

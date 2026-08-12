@@ -102,6 +102,43 @@ multi-asset analysis and decision engine with strict separation:
 - Hard pre-trade checks: leverage, concentration, drawdown guardrails, max loss.
 - Portfolio optimization mode (baseline: constrained mean-variance / HRP).
 
+### Implemented
+
+Delivered as an **advisory, default-off** layer that *complements* — never
+replaces — the per-trade `RiskGuard`. With `portfolio.enabled=false` it is a
+no-op; it is surfaced for review and only ever *tightens* (veto / scale-down),
+never loosens a rule or enlarges a position.
+
+- `src/portfolio/sizing.py`
+  - Pure numpy/pandas (no scipy/sklearn) sizing primitives: `periodic_returns`,
+    `annualized_volatility`, `inverse_variance_weights` (naive **risk-parity**
+    baseline — the return-free, stable alternative to unstable mean-variance),
+    `volatility_target_weight`, `average_correlation`, `correlation_scaled_shares`,
+    and a `suggest_shares` orchestrator layering risk-budget → capital-cap →
+    volatility-target → correlation-penalty. Every function is total (returns
+    `nan`/empty/0 on bad input, never raises).
+- `src/risk/engine.py`
+  - `PortfolioRiskEngine.evaluate` → a `RiskDecision` (approve / scale_down /
+    veto) from portfolio-wide checks `RiskGuard` cannot see: **gross leverage**,
+    **single-name weight**, **portfolio heat** (Σ open risk / equity),
+    **correlated-cluster exposure** (connected component of names with pairwise
+    return-correlation ≥ threshold), and an **equity-drawdown guardrail**. A
+    cluster over its cap *scales down* (suggests a share count that fits) rather
+    than vetoing outright. **Firewalled from the money path** (no executor/broker
+    import) and fail-open: any internal error returns an *approve* tagged with
+    the error, so a bug here can never silently block trading.
+  - `portfolio_summary()` — read-only book snapshot (leverage / heat / per-name
+    weights vs limits) for the dashboard.
+- **Opt-in money-path gate** (`config.PORTFOLIO_GATE_ENTRIES`, default off): when
+  enabled, `execute_trade_plan` consults the engine **after** `RiskGuard` already
+  approved — veto-only (proceeds only on an explicit approve; the full
+  scale-down suggestion is surfaced advisory-side for a human/upstream), and
+  fail-open so it never breaks execution.
+- Surfaced via `GET /api/portfolio-risk` (advisory; `available:false` when
+  disabled/unreadable). Config-driven (`config.yaml` `portfolio:` +
+  `PORTFOLIO_*` env). 50 offline tests (`tests/test_portfolio_sizing.py`,
+  `tests/test_risk_engine.py`, + dashboard-API and executor-gate cases).
+
 ## Phase 5: Strategy Evaluation and Automation
 
 ### Target files

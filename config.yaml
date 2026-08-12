@@ -147,6 +147,29 @@ explain:
   daily_call_cap: 50         # max narrations per day (cost guard); <=0 disables the cap
   call_ledger_path: "data/explain_calls.json"
 
+# Portfolio + Risk Engine (universal-engine roadmap Phase 4). An ADVISORY,
+# default-OFF layer that computes volatility/correlation-aware position sizing
+# and portfolio-level risk metrics (gross leverage, single-name weight,
+# portfolio heat, correlated-cluster exposure, equity drawdown). It NEVER
+# replaces or bypasses RiskGuard — with enabled=false it is a no-op, surfaced
+# only for review (GET /api/portfolio-risk). gate_entries is a separate opt-in
+# that lets the engine veto/scale in the money path; keep it OFF until the edge
+# is validated. Estimates degrade gracefully (missing return history → those
+# checks are skipped, never a false veto).
+portfolio:
+  enabled: false                 # master switch for the advisory layer (no-op when false)
+  gate_entries: false            # opt-in: consult the engine in the money path (veto/scale). Default off
+  target_volatility_pct: 15.0    # annualized volatility target for volatility-scaled sizing
+  vol_lookback_days: 20          # window (bars) for realized-vol / correlation estimates
+  min_return_history: 10         # minimum overlapping returns before a vol/correlation estimate is trusted
+  max_gross_leverage: 1.0        # ceiling on sum(position values)/equity including the candidate
+  max_single_weight_pct: 20.0    # portfolio-level single-name weight ceiling (% of equity)
+  max_portfolio_heat_pct: 6.0    # ceiling on sum(open risk)/equity including the candidate risk
+  correlation_threshold: 0.6     # pairwise return correlation at/above which names form a cluster
+  max_cluster_weight_pct: 35.0   # combined weight ceiling for a correlated cluster (% of equity)
+  max_correlation_penalty: 0.5   # max fractional size reduction applied as candidate↔book correlation → 1
+  max_drawdown_halt_pct: 15.0    # peak-to-trough equity drawdown that vetoes NEW entries (0 disables)
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

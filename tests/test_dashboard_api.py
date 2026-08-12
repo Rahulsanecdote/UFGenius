@@ -170,6 +170,46 @@ def test_explain_endpoint_rejects_bad_ticker(client, monkeypatch):
     assert response.status_code == 400
 
 
+def test_portfolio_risk_endpoint_disabled_is_graceful(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_ENABLED", False)
+    response = client.get("/api/portfolio-risk")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is False
+
+
+def test_portfolio_risk_endpoint_returns_book_metrics(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_ENABLED", True)
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_GATE_ENTRIES", False)
+    import src.alpaca.portfolio as pf
+
+    monkeypatch.setattr(
+        pf,
+        "get_portfolio_data",
+        lambda: {
+            "total_equity": 10_000,
+            "holdings": [{"ticker": "AAPL", "market_value": 2500, "open_risk": 60}],
+        },
+    )
+    response = client.get("/api/portfolio-risk")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is True
+    assert payload["gross_leverage"] == pytest.approx(0.25)
+    assert payload["breaches"]["single_weight"] is True  # 25% > 20% cap
+    assert payload["gate_entries"] is False
+
+
+def test_portfolio_risk_endpoint_handles_unreadable_portfolio(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "PORTFOLIO_ENABLED", True)
+    import src.alpaca.portfolio as pf
+
+    monkeypatch.setattr(pf, "get_portfolio_data", lambda: {"error": "no broker keys"})
+    payload = client.get("/api/portfolio-risk").get_json()
+    assert payload["available"] is False
+    assert "no broker keys" in payload["reason"]
+
+
 def test_metrics_and_attribution_panels_present():
     # The dashboard HTML wires the new P2.3 panels + their loaders.
     assert 'id="metricsPanel"' in dashboard.HTML
