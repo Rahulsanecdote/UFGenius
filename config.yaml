@@ -1,7 +1,21 @@
 account_size: 10000
 risk_per_trade: 0.01
 max_position_pct: 0.10
-scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM
+scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM | MOVERS
+
+# Market-movers discovery (the MOVERS universe / `bot.py --mode movers`). Surfaces
+# the day's actual market-wide movers — top gainers, losers, most-actives (FMP) —
+# ranked with a long/short direction, for intraday trading. Needs FMP_KEY. The
+# standard disqualification filters + RiskGuard still run downstream, so most
+# low-quality movers (penny/illiquid/already-spiked chasers) are filtered out by
+# design — discovery is broad, the gates stay strict.
+movers:
+  sources: [gainers, losers, most_actives]  # which FMP lists to pull
+  min_price: 1.0            # drop sub-$1 names (penny/liquidity guard); lower at your own risk
+  max_price: 0              # 0 = no upper cap
+  min_change_pct: 3.0       # only consider names moving at least this % (absolute)
+  limit: 40                 # max ranked candidates returned
+  include_short_setups: true  # losers → SHORT-direction candidates
 
 safety_rules:
   max_positions: 5

@@ -659,6 +659,36 @@ def cmd_intraday_scan(args) -> None:
         print("\n  Scanner stopped.\n")
 
 
+def cmd_movers(args) -> None:
+    """Discover and rank today's market-wide movers (the MOVERS universe).
+
+    Pulls FMP top gainers / losers / most-actives, ranks them with a long/short
+    direction, and prints the list. Discovery only — no scoring or orders here;
+    set ``scan_universe: MOVERS`` (or ``--universe MOVERS``) to run the full
+    scan/RiskGuard pipeline over these tickers.
+    """
+    from src.scanner.movers import fetch_market_movers
+
+    movers = fetch_market_movers()
+    print(f"\n{'='*72}")
+    print("  MARKET MOVERS — pre-market / intraday discovery (FMP)")
+    print(f"{'='*72}")
+    if not movers:
+        print("  No movers returned. Check FMP_KEY is set, or loosen movers.min_change_pct.")
+        print(f"{'='*72}\n")
+        return
+    print(f"  {'#':>2}  {'TICKER':<7}{'PRICE':>9}{'CHG%':>9}  {'DIR':<6}{'SCORE':>6}  SOURCES")
+    print(f"  {'-'*66}")
+    for i, m in enumerate(movers, 1):
+        arrow = "LONG " if m.direction == "long" else "SHORT"
+        print(f"  {i:>2}  {m.ticker:<7}{m.price:>9.2f}{m.change_pct:>8.1f}%  {arrow:<6}"
+              f"{m.score:>6.0f}  {'+'.join(m.sources)}")
+    print(f"  {'-'*66}")
+    print(f"  {len(movers)} candidates. Set scan_universe: MOVERS to run the full")
+    print("  scoring + RiskGuard pipeline over them (risk filters still apply).")
+    print(f"{'='*72}\n")
+
+
 def cmd_earnings_calendar(args) -> None:
     """Build/refresh the P1.4 earnings calendar from the data provider.
 
@@ -825,7 +855,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -833,7 +863,7 @@ Examples:
         "--account-size", type=_positive_account_size,
         help="Portfolio size in USD (positive number)",
     )
-    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist)")
+    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST", "MOVERS"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist; MOVERS = today's FMP movers)")
     parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
     parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim"], help="Intraday entry to backtest (for --mode intraday-backtest)")
     parser.add_argument("--interval",     help="Intraday bar size for --mode intraday-backtest (e.g. 5m, 1m; default INTRADAY_DEFAULT_INTERVAL)")
@@ -935,6 +965,8 @@ Examples:
         cmd_intraday_scan(args)
     elif args.mode == "earnings-calendar":
         cmd_earnings_calendar(args)
+    elif args.mode == "movers":
+        cmd_movers(args)
     else:
         parser.print_help()
         sys.exit(1)
