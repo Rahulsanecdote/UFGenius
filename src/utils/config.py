@@ -480,6 +480,14 @@ BACKTEST_UNIVERSE_HISTORY_PATH: str | None = env(
     "BACKTEST_UNIVERSE_HISTORY_PATH", get("universe_history_path", None)
 )
 
+# How the backtest orders qualifying entry candidates when position slots are
+# scarce (audit B2). "rotate" = date-seeded, name-neutral (default, unbiased);
+# "momentum" = strongest trend first (an opt-in selection strategy);
+# "alphabetical" = the legacy biased order, for reproducing pre-fix results.
+BACKTEST_CANDIDATE_RANKING: str = env(
+    "BACKTEST_CANDIDATE_RANKING", get("candidate_ranking", "rotate")
+)
+
 SIGNAL_WEIGHTS: dict = get("signal_weights", {
     "technical": 0.35,
     "volume": 0.20,

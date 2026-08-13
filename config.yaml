@@ -330,6 +330,14 @@ monitor_interval_min: 5  # How often (minutes) to poll order fills during market
 # Backtest realism
 commission_pct: 0.001  # Per-side commission as a fraction of notional (0.001 = 0.1%)
 slippage_pct: 0.001    # Per-side adverse slippage as a fraction of notional
+# Which qualifying candidates win the scarce position slots (audit B2). Entries are
+# rare, so this ordering decides which trades the strategy actually takes.
+#   rotate       — date-seeded shuffle: reproducible AND name-neutral (default; the
+#                  unbiased estimator of the entry rule's edge)
+#   momentum     — strongest trend first (Close/SMA_200 - 1); an opt-in selection
+#                  strategy, not a neutral fix
+#   alphabetical — legacy biased order; only for reproducing pre-fix results
+candidate_ranking: "rotate"
 
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 # An edge is only VALIDATED when it clears ALL of these on HELD-OUT out-of-sample

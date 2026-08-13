@@ -400,6 +400,13 @@ then an optional intelligence layer. Every phase makes the edge more
       default off) since it requires a saved baseline; config-driven
       (`config.yaml` `paper_scorecard:` `baseline_*` / `PAPER_SCORECARD_BASELINE_*`
       env). 35 offline tests (`tests/test_baseline.py` + dashboard-API cases).
+      > ⚠️ **The mechanism is delivered; the comparison is not yet meaningful.**
+      > `AUDIT.md` B1 (open) found the backtest does not run the composite signal
+      > engine — it tests a hardcoded SMA/RSI proxy rule. So a saved baseline
+      > holds *proxy-rule* metrics while the paper scorecard measures
+      > *composite-signal* trades, and the tolerance check would compare two
+      > different strategies. Resolve B1 before relying on this gate for a
+      > real-money decision.
 - [ ] Every entry passes `RiskGuard`; **kill-switches and circuit breakers** are
       observable and enforced.
 - [ ] **Realized** slippage/cost is measured and reconciled against the model.

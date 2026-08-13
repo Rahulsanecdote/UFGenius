@@ -4,6 +4,7 @@ Backtesting engine — portfolio-level simulation with daily mark-to-market acco
 
 from __future__ import annotations
 
+import random
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -20,6 +21,10 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 RISK_FREE_RATE_ANNUAL = 0.05
+# Fixed base for the candidate shuffle. Combined with the bar date so ordering is
+# reproducible run-to-run (the validation/optimize harnesses require it) while
+# staying independent of ticker name.
+_CANDIDATE_SHUFFLE_SEED = 20240101
 ATR_STOP_MULT = 2.0
 TARGET_RR = [1.5, 2.5, 4.0]
 TARGET_EXIT_PCTS = [0.30, 0.40, 0.30]
@@ -400,7 +405,68 @@ def _entry_candidates_for_date(
         # enter_flag = prior bar's entry_signal → this bar fills at the open.
         if bool(frame.loc[date, "enter_flag"]):
             candidates.append(ticker)
-    return sorted(candidates)
+    # sorted() first so every ranking mode starts from a stable, reproducible
+    # order regardless of dict iteration order.
+    return _rank_candidates(sorted(candidates), histories, date)
+
+
+def _rank_candidates(
+    candidates: list[str],
+    histories: dict[str, pd.DataFrame],
+    date: pd.Timestamp,
+) -> list[str]:
+    """Order qualifying candidates for the slot-limited fill loop.
+
+    This ordering decides which trades the strategy actually takes: entries are
+    rare (few slots, long holds) so the caller fills slots from the head of this
+    list and drops the rest. Returning plain alphabetical order therefore let
+    ticker *name* pick the trades — on a 503-name S&P universe every one of 57
+    out-of-sample trades landed on an A-name, so a "full universe" backtest was
+    really testing ~23 alphabetically-first tickers, and widening the universe
+    could not change the result. See AUDIT.md B2.
+
+    Modes (`backtest.candidate_ranking`):
+
+    * ``rotate`` (default) — a date-seeded shuffle. Deterministic and
+      reproducible, but **name-neutral**: for measuring the entry rule's edge,
+      sampling uniformly among qualifying candidates is the unbiased estimator,
+      where alphabetical is biased by an attribute with no economic meaning.
+    * ``momentum`` — strongest trend first (`Close/SMA_200 - 1`). A real
+      selection *strategy*, not a neutral fix: it asserts stronger trends are
+      better, which is an untested claim, so it is opt-in rather than default.
+    * ``alphabetical`` — the legacy biased order, kept only to reproduce results
+      produced before this fix.
+    """
+    if len(candidates) < 2:
+        return candidates
+
+    mode = str(config.BACKTEST_CANDIDATE_RANKING or "rotate").strip().lower()
+
+    if mode == "alphabetical":
+        return candidates
+
+    if mode == "momentum":
+        def _strength(ticker: str) -> float:
+            try:
+                row = histories[ticker].loc[date]
+                sma200 = float(row["SMA_200"])
+                close = float(row["Close"])
+            except Exception:
+                return float("-inf")
+            if not (np.isfinite(sma200) and np.isfinite(close)) or sma200 <= 0:
+                return float("-inf")
+            return close / sma200 - 1.0
+
+        # Negate for descending; ticker breaks ties so the order stays total.
+        return sorted(candidates, key=lambda t: (-_strength(t), t))
+
+    # Default: name-neutral, reproducible shuffle. Seeded from the bar date (and
+    # a fixed base) so a rerun of the same backtest returns the same ordering —
+    # the engine must stay deterministic for the P0.1/P0.2 harnesses.
+    rng = random.Random(f"{_CANDIDATE_SHUFFLE_SEED}:{pd.Timestamp(date).strftime('%Y-%m-%d')}")
+    shuffled = list(candidates)
+    rng.shuffle(shuffled)
+    return shuffled
 
 
 def _position_size(cash: float, equity: float, entry_price: float, stop_price: float) -> int:
