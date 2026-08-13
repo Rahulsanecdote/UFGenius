@@ -117,6 +117,15 @@ MOVERS_ALERTS_MIN_SCORE: float = _as_float(_MOVERS_ALERTS.get("min_score", 70), 
 MOVERS_ALERTS_REQUIRE_ENRICHED: bool = bool(_MOVERS_ALERTS.get("require_enriched", True))
 MOVERS_ALERTS_DEDUP_TTL_SEC: float = _as_float(_MOVERS_ALERTS.get("dedup_ttl_sec", 1800), 1800.0)
 MOVERS_ALERTS_MAX_PER_RUN: int = _as_int(_MOVERS_ALERTS.get("max_per_run", 10), 10)
+# Phase 4 — post-open monitoring + invalidation.
+_MOVERS_MONITOR: dict = _MOVERS.get("monitor", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_MONITOR_ENABLED: bool = env_bool("MOVERS_MONITOR_ENABLED", bool(_MOVERS_MONITOR.get("enabled", False)))
+MOVERS_MONITOR_POLL_INTERVAL_SEC: float = _as_float(_MOVERS_MONITOR.get("poll_interval_sec", 60), 60.0)
+MOVERS_MONITOR_RVOL_FLOOR: float = _as_float(_MOVERS_MONITOR.get("rel_volume_floor", 1.0), 1.0)
+MOVERS_MONITOR_MOMENTUM_FLIP: float = _as_float(_MOVERS_MONITOR.get("momentum_flip", -0.5), -0.5)
+MOVERS_MONITOR_REQUIRE_VWAP_HOLD: bool = bool(_MOVERS_MONITOR.get("require_vwap_hold", True))
+MOVERS_MONITOR_MIN_SCORE: float = _as_float(_MOVERS_MONITOR.get("min_score", 50), 50.0)
+MOVERS_MONITOR_ALERT_ON_INVALIDATION: bool = bool(_MOVERS_MONITOR.get("alert_on_invalidation", True))
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])

@@ -709,6 +709,60 @@ def cmd_movers(args) -> None:
     print(f"{'='*72}\n")
 
 
+def cmd_movers_monitor(args) -> None:
+    """Discover → alert → post-open monitoring + invalidation loop (MOVERS Phase 4).
+
+    Surfaces today's movers, fires screener alerts on the qualifying ones, then
+    keeps re-evaluating them and invalidates a signal when the setup breaks down
+    (momentum turns against it, loses VWAP, volume fades, or the score collapses).
+    Discovery + monitoring only — no orders. Ctrl-C to stop.
+    """
+    import time as _time
+    from datetime import datetime as _dt
+
+    from src.alerts.telegram_alert import send_text_alert
+    from src.scanner.movers import fetch_market_movers
+    from src.scanner.movers_alerts import MoversAlerter
+    from src.scanner.movers_monitor import MoversMonitor
+
+    movers = fetch_market_movers()
+    watch = [m for m in movers if m.score >= config.MOVERS_ALERTS_MIN_SCORE]
+    alerter = MoversAlerter()
+    monitor = MoversMonitor()
+    alerter.process(movers)          # initial screener alerts (opt-in)
+    monitor.watch(watch)
+
+    interval = max(15.0, float(config.MOVERS_MONITOR_POLL_INTERVAL_SEC))
+    print(f"\n{'='*72}")
+    print("  MOVERS MONITOR — post-open watch + invalidation (Phase 4)")
+    print(f"{'='*72}")
+    print(f"  Watching {len(monitor.active())} candidates (score >= "
+          f"{config.MOVERS_ALERTS_MIN_SCORE:.0f}); re-evaluating every {interval:.0f}s.")
+    for s in monitor.active():
+        c = s.candidate
+        print(f"    • {c.direction.upper():<5} {c.ticker:<6} score {c.score:.0f}")
+    if not monitor.active():
+        print("  Nothing cleared the watch threshold. Lower movers.alerts.min_score to widen it.")
+        print(f"{'='*72}\n")
+        return
+    print("  Ctrl-C to stop.")
+    print(f"{'='*72}\n")
+
+    try:
+        while monitor.active():
+            _time.sleep(interval)
+            transitions = monitor.evaluate(alert=send_text_alert)
+            stamp = _dt.now().strftime("%H:%M:%S")
+            for t in transitions:
+                print(f"  [{stamp}] ⚠️  INVALIDATED {t['direction'].upper():<5} {t['ticker']:<6}"
+                      f" — {t['reason']} (score {t['entry_score']:.0f}→{t['score']:.0f})")
+            if not transitions:
+                print(f"  [{stamp}] {len(monitor.active())} still valid.")
+        print("\n  All watched signals invalidated — nothing left to monitor.\n")
+    except KeyboardInterrupt:
+        print("\n  Monitor stopped.\n")
+
+
 def cmd_earnings_calendar(args) -> None:
     """Build/refresh the P1.4 earnings calendar from the data provider.
 
@@ -875,7 +929,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -987,6 +1041,8 @@ Examples:
         cmd_earnings_calendar(args)
     elif args.mode == "movers":
         cmd_movers(args)
+    elif args.mode == "movers-monitor":
+        cmd_movers_monitor(args)
     else:
         parser.print_help()
         sys.exit(1)
