@@ -52,9 +52,10 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
 Nothing from **this (2026-08-03) round's** still-open list remains. A later round
-opened one new High finding that is still open — see
-[Second audit round](#second-audit-round-2026-08-12--backtest-validity) (B1).
-Same-bar entry (M4) and
+opened two further High findings, both now fixed — see
+[Second audit round](#second-audit-round-2026-08-12--backtest-validity) (B1 is
+fixed only *partially*, by necessity: three of the five composite dimensions
+cannot be reconstructed point-in-time). Same-bar entry (M4) and
 survivorship gating (M11) are fixed — see the table above; no point-in-time
 membership *dataset* ships with the repo, so M11's fix activates only when
 the user supplies one.
@@ -121,7 +122,7 @@ a validation gate exists to prevent.
 
 | ID | Sev | Finding | Status |
 |---|---|---|---|
-| B1 | **High** | The backtest does not test the composite signal engine; it tests a hardcoded SMA/RSI rule, undisclosed | **Open — needs a design decision** |
+| B1 | **High** | The backtest does not test the composite signal engine; it tests a hardcoded SMA/RSI rule, undisclosed | **Fixed (partial by necessity — see below)** |
 | B2 | **High** | Entry candidates were ranked alphabetically, so ticker *name* selected the trades | **Fixed** |
 
 ### B2 — Alphabetical entry bias made universe size meaningless *(verified; fixed)*
@@ -199,14 +200,55 @@ These are two different strategies.
 **Not disclosed anywhere.** `bias_disclosures` covers survivorship and daily
 granularity only; no doc notes the entry-rule substitution.
 
-**Fix (needs a decision, deliberately not taken here):** either wire the backtest
-to `generate_signal` so it tests the shipped strategy — the honest option, and a
-significant change, since the composite needs sentiment/fundamental/macro inputs
-that are hard to reconstruct point-in-time — or keep the proxy rule and state
-loudly in `bias_disclosures`, `CLAUDE.md`, and the `--mode validate` output that
-the harness validates a trend proxy, not the composite, so no verdict is read as
-clearing the composite for capital. Until one is done, treat all
-`--mode validate` / `--mode optimize` output as describing the proxy rule.
+**Fixed — the backtest can now replay the live scorer, and both modes disclose
+which strategy they measured.**
+
+`src/backtest/composite_signal.py` replays `generate_signal` bar by bar, handing
+it a frame sliced to the bar being scored. Selected with
+`backtest.signal_source` / `BACKTEST_SIGNAL_SOURCE`:
+
+* `composite` — replay the **live scorer**, its real `SIGNAL_THRESHOLDS` bands
+  and labels; entries fire on STRONG_BUY/BUY at or above
+  `composite_min_score` (default 65 — the live BUY threshold), so the backtest
+  enters where the executor would rather than on a separately-tuned number.
+* `proxy` — the legacy SMA/RSI rule, retained as the fast default.
+
+**The replay is necessarily PARTIAL, and this is the honest limit of the fix.**
+Only technical and volume are reconstructible for a past bar. No provider serves
+the news/social/insider mood of a historical date, and fundamentals and the macro
+regime are served only as of *today* — scoring them would stamp present-day
+values onto every past bar, which is precisely the look-ahead the P1.1 guards and
+the M4 same-bar fix exist to prevent. So `generate_signal(point_in_time=True)`:
+
+* never calls the sentiment sources (no network, no current-date leak),
+* never calls `detect_market_regime()` (it reports *now*),
+* skips the fundamentals-derived disqualifiers (`run_disqualification_filters`
+  with `point_in_time=True`) — the live fail-closed behaviour, unknown market cap
+  ⇒ disqualify, would otherwise reject every ticker on every bar,
+* and **zeroes the sentiment/fundamental/macro weights and renormalises the
+  rest**. Leaving them at a neutral 50 would not be harmless: it drags every
+  composite toward the middle by a constant, compressing the spread the label
+  bands are calibrated against, so the replay would under-produce BUY labels for
+  reasons unrelated to the strategy.
+
+So `composite` measures the **technical+volume composite, renormalised** — ~55%
+of live weight carrying 100% of the decision — with the real scorers, thresholds
+and labels. Far closer to the shipped strategy than an unrelated trend rule, but
+still a subset, and every result says so in `bias_disclosures`. **A VALIDATED
+verdict in this mode does not clear the full composite for capital**, because the
+sentiment and fundamental dimensions were never tested.
+
+**Cost:** ~28 ms/bar (the scorer is built for one point-in-time call, not a
+vectorised sweep), so a full 503-ticker run is hours at `composite_stride: 1`.
+`composite_stride` scores every Nth bar; measured on a 12-ticker/1-year run,
+stride 5 (weekly) returned 13 trades / +2.69% against stride 1's 14 / +2.79% in
+**7.6 s versus 117 s**. Skipped bars cannot open a position, and a strided result
+discloses its stride.
+
+Default remains `proxy` so existing runs are unchanged and fast — but a proxy run
+now carries a disclosure stating plainly that it says nothing about the composite.
+Every `--mode validate` / `--mode optimize` result predating this change describes
+the proxy rule.
 
 ---
 

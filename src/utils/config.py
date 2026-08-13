@@ -488,6 +488,24 @@ BACKTEST_CANDIDATE_RANKING: str = env(
     "BACKTEST_CANDIDATE_RANKING", get("candidate_ranking", "rotate")
 )
 
+# Which entry signal the backtest replays (audit B1). "composite" replays the
+# live generate_signal scorer point-in-time (technical+volume renormalised — the
+# reconstructible part); "proxy" is the legacy hardcoded SMA/RSI rule, which is
+# faster but is NOT the strategy that trades live.
+BACKTEST_SIGNAL_SOURCE: str = env("BACKTEST_SIGNAL_SOURCE", get("signal_source", "proxy"))
+# Composite score at/above which the replay takes an entry. Default 65 is the
+# live BUY threshold in signal_thresholds, so the backtest enters where the live
+# executor would rather than on a separately-tuned number.
+BACKTEST_COMPOSITE_MIN_SCORE: float = env_float(
+    "BACKTEST_COMPOSITE_MIN_SCORE", _as_float(get("composite_min_score"), 65.0)
+)
+# Score every Nth bar in composite mode. Replaying the real scorer costs ~28ms
+# per bar, so a full 503-ticker run is hours at 1; 5 (weekly) is the practical
+# setting. Skipped bars cannot open a position, and the result discloses it.
+BACKTEST_COMPOSITE_STRIDE: int = _as_int(
+    env("BACKTEST_COMPOSITE_STRIDE", "") or get("composite_stride", 1), 1
+)
+
 SIGNAL_WEIGHTS: dict = get("signal_weights", {
     "technical": 0.35,
     "volume": 0.20,

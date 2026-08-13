@@ -605,13 +605,26 @@ def _prepare_ticker_history(
     df["SMA_200"] = sma200
     df["RSI_14"] = rsi14
     df["ATR_14"] = atr14
-    df["entry_signal"] = (
-        (df["Close"] > df["SMA_50"])
-        & (df["SMA_50"] > df["SMA_200"])
-        & (df["RSI_14"] >= _ACTIVE_PARAMS.entry_rsi_min)
-        & (df["RSI_14"] <= _ACTIVE_PARAMS.entry_rsi_max)
-        & (df["ATR_14"] > 0)
-    ).fillna(False)
+    if str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower() == "composite":
+        # Audit B1: replay the LIVE composite scorer point-in-time instead of the
+        # proxy rule below, so --mode validate actually measures the strategy
+        # that places orders. Only technical+volume are reconstructible for a
+        # past bar; the rest are dropped and the weights renormalised (see
+        # src/backtest/composite_signal.py).
+        from src.backtest.composite_signal import evaluate_series
+
+        replay = evaluate_series(ticker, df)
+        df["signal_label"] = replay["signal_label"]
+        df["signal_score"] = replay["signal_score"]
+        df["entry_signal"] = replay["entry_signal"].astype(bool)
+    else:
+        df["entry_signal"] = (
+            (df["Close"] > df["SMA_50"])
+            & (df["SMA_50"] > df["SMA_200"])
+            & (df["RSI_14"] >= _ACTIVE_PARAMS.entry_rsi_min)
+            & (df["RSI_14"] <= _ACTIVE_PARAMS.entry_rsi_max)
+            & (df["ATR_14"] > 0)
+        ).fillna(False)
     # Shift BEFORE slicing so a signal on the bar just before start_date still
     # produces an entry on the first in-range bar (next-open fills, audit M4).
     df["enter_flag"] = df["entry_signal"].shift(1, fill_value=False).astype(bool)
@@ -719,6 +732,28 @@ def _compute_metrics(
                 "run time; delisted/renamed names never appear, so returns are "
                 "upward-biased. Supply a point-in-time membership file "
                 "(universe_history_path) to mitigate this bias."
+            ),
+            (
+                # Audit B1: never let a reader assume the verdict covers the
+                # strategy that trades live — say which one was measured.
+                "SIGNAL_SOURCE (composite, PARTIAL): entries replay the live "
+                "generate_signal scorer point-in-time, but only technical+volume "
+                "are reconstructible for a past bar — sentiment, fundamentals and "
+                "the macro regime are served only as of today, so their weights "
+                "are dropped and the rest renormalised. This measures a SUBSET of "
+                "the live composite (~55% of its weight), not the whole signal."
+                + (
+                    f" Scored every {config.BACKTEST_COMPOSITE_STRIDE} bars "
+                    "(composite_stride), so bars in between could not open a "
+                    "position."
+                    if int(config.BACKTEST_COMPOSITE_STRIDE) > 1
+                    else ""
+                )
+                if str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower() == "composite"
+                else "SIGNAL_SOURCE (proxy): entries use a hardcoded "
+                "SMA50/SMA200 + RSI-band rule, NOT the composite signal engine "
+                "that trades live. This result says nothing about the composite "
+                "strategy — set backtest.signal_source=composite to test that."
             ),
             "DAILY_GRANULARITY: exits are evaluated on daily closes only; "
             "intraday stop/target sequencing within a bar is approximated.",

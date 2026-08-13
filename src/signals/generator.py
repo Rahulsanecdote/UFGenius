@@ -64,6 +64,35 @@ def _is_default_insider_sentiment(payload: dict) -> bool:
     )
 
 
+# Neutral macro regime for point-in-time replay: no directional tilt and no size
+# multiplier, so the historical bar is scored on reconstructible evidence only.
+_PIT_NEUTRAL_REGIME: dict = {
+    "regime": "NEUTRAL",
+    "regime_score": 0,
+    "strategy": {"position_size_multiplier": 1.0},
+    "_point_in_time_placeholder": True,
+}
+
+
+def _pit_neutral_sentiment() -> tuple[dict, dict, dict]:
+    """Neutral news/social/insider payloads for point-in-time replay.
+
+    Shaped like the real analysers (the composite reads `signal`/`flags`/summary
+    fields downstream), but computed from nothing — the sentiment weight is
+    dropped, so these values never reach the score.
+    """
+    base = {
+        "signal": "NEUTRAL",
+        "summary": "not reconstructible for a historical bar",
+        "flags": [],
+        "_point_in_time_placeholder": True,
+    }
+    news = {**base, "sentiment_score_0_100": 50.0, "article_count": 0}
+    social = {**base, "sentiment_score_0_100": 50.0, "post_count": 0}
+    insider = {**base, "insider_score": 50.0, "transaction_count": 0}
+    return news, social, insider
+
+
 def _neutral_fundamental_score(ticker: str, fundamentals_raw: dict | None = None) -> dict:
     raw = fundamentals_raw if isinstance(fundamentals_raw, dict) else {}
     return {
@@ -87,12 +116,33 @@ def generate_signal(
     price_df: pd.DataFrame | None = None,
     ticker_info: dict | None = None,
     provider: TickerSnapshotProvider | None = None,
+    point_in_time: bool = False,
 ) -> dict:
     """
     Run full multi-dimensional analysis and return a signal dict.
 
     Callers can provide a pre-built SignalContext or partial prefetch data to avoid
     duplicate network fetches.
+
+    ``point_in_time`` puts the scorer in **historical-replay** mode for the
+    backtest (audit B1). Three of the five dimensions cannot be reconstructed for
+    a past date — news/social/insider sentiment is only ever *current*, and
+    providers serve fundamentals and the macro regime as of today — so scoring
+    them would inject look-ahead into every bar. In this mode:
+
+    * sentiment sources are **not called** (no network, no current-date leak),
+    * fundamentals-derived disqualifiers are skipped (see
+      ``run_disqualification_filters``),
+    * the macro regime must be supplied by the caller; it is never detected live,
+    * and the sentiment/fundamental/macro weights are **zeroed and
+      redistributed** onto the reconstructible dimensions, so the composite is a
+      renormalised technical+volume score rather than one dragged toward a
+      constant by neutral placeholders.
+
+    The result is an honest replay of the *reconstructible part* of the live
+    composite — the real scorers, thresholds and labels — not the whole thing.
+    Callers must disclose the omission. Default ``False`` leaves the live path
+    byte-for-byte unchanged.
     """
     symbol = ticker.upper()
     log.info(f"Analyzing {symbol} ...")
@@ -128,6 +178,7 @@ def generate_signal(
         df,
         fundamental_score=fundamental,
         fundamentals_raw=context.fundamentals_raw,
+        point_in_time=point_in_time,
     )
     if disqualifiers:
         return _filtered_signal(
@@ -152,9 +203,15 @@ def generate_signal(
 
     # ── Sentiment ──────────────────────────────────────────────────────────
     company_name = context.ticker_info.get("longName", symbol)
-    news = analyze_news_sentiment(symbol, company_name)
-    social = analyze_social_sentiment(symbol)
-    insider = analyze_insider_activity(symbol)
+    if point_in_time:
+        # Never call the sentiment sources during historical replay: they return
+        # TODAY's sentiment, which for a past bar is pure look-ahead (and 4.3s of
+        # network per bar). Neutral placeholders; the weight is dropped below.
+        news, social, insider = _pit_neutral_sentiment()
+    else:
+        news = analyze_news_sentiment(symbol, company_name)
+        social = analyze_social_sentiment(symbol)
+        insider = analyze_insider_activity(symbol)
 
     # Composite sentiment (news 50%, social 30%, insider 20%)
     sentiment_score = (
@@ -165,7 +222,9 @@ def generate_signal(
 
     # ── Macro ──────────────────────────────────────────────────────────────
     if macro_regime is None:
-        macro_regime = detect_market_regime()
+        # detect_market_regime() reports the CURRENT regime, so calling it during
+        # historical replay would stamp today's VIX/breadth onto a past bar.
+        macro_regime = _PIT_NEUTRAL_REGIME.copy() if point_in_time else detect_market_regime()
 
     # Normalise regime_score (-100..+100) to 0..100
     macro_score_norm = (macro_regime.get("regime_score", 0) + 100) / 2
@@ -185,13 +244,37 @@ def generate_signal(
         log.warning(f"{symbol}: signal weights sum to {_weight_total:.3f}, expected ~1.0 — check config")
 
     sentiment_weight_redistributed = False
+    point_in_time_dropped: list[str] = []
+
+    if point_in_time:
+        # Drop every dimension that could not be reconstructed for this bar and
+        # renormalise the rest. Leaving them in at a neutral 50 would not be
+        # harmless: it pulls every composite toward 50 by a constant, compressing
+        # the spread the SIGNAL_THRESHOLDS bands are calibrated against, so the
+        # replay would under-produce BUY/STRONG_BUY labels for reasons that have
+        # nothing to do with the strategy.
+        for key in ("sentiment", "fundamental", "macro"):
+            if effective_weights.get(key, 0.0) > 0.0:
+                point_in_time_dropped.append(key)
+            effective_weights[key] = 0.0
+        _pit_total = sum(max(0.0, float(v)) for v in effective_weights.values())
+        if _pit_total > 0:
+            effective_weights = {
+                k: max(0.0, float(v)) / _pit_total for k, v in effective_weights.items()
+            }
+        else:
+            # Config zeroed technical+volume too — nothing reconstructible is
+            # left to score, so refuse rather than emit a meaningless 0.
+            return _error_signal(
+                symbol, "point-in-time replay has no reconstructible weight to score"
+            )
 
     all_sentiment_default_neutral = (
         _is_default_news_sentiment(news)
         and _is_default_social_sentiment(social)
         and _is_default_insider_sentiment(insider)
     )
-    if all_sentiment_default_neutral and effective_weights.get("sentiment", 0.0) > 0.0:
+    if (not point_in_time) and all_sentiment_default_neutral and effective_weights.get("sentiment", 0.0) > 0.0:
         effective_weights["sentiment"] = 0.0
         total = sum(max(0.0, float(value)) for value in effective_weights.values())
         if total > 0:
@@ -232,6 +315,12 @@ def generate_signal(
     )
     if sentiment_weight_redistributed:
         reasons.append("Sentiment unavailable — weight redistributed")
+    if point_in_time_dropped:
+        reasons.append(
+            "Point-in-time replay: "
+            + "/".join(point_in_time_dropped)
+            + " not reconstructible — weight redistributed to technical/volume"
+        )
 
     return {
         "ticker": symbol,
@@ -260,6 +349,8 @@ def generate_signal(
         "_feature_cache_key": feature_bundle.get("feature_cache_key"),
         "_feature_version": feature_bundle.get("feature_version"),
         "_weights": effective_weights,
+        "_point_in_time": bool(point_in_time),
+        "_point_in_time_dropped": point_in_time_dropped,
     }
 
 

@@ -321,6 +321,19 @@ positive market-cap floor (not 0), a price band, a tighter chaser-trap, and the
 bankruptcy check **stays on**. Scan/paper only until validated. See
 `docs/PENNY_MODE.md`.
 
+**Which strategy the backtest tests** (`signal_source`, audit B1): `composite`
+replays the **live `generate_signal` scorer** point-in-time
+(`src/backtest/composite_signal.py`) — real thresholds and labels, entering on
+STRONG_BUY/BUY at ≥ `composite_min_score`. Only technical+volume are
+reconstructible for a past bar (sentiment/fundamentals/macro are served only as
+of today), so those weights are dropped and the rest renormalised — a **subset**
+of the live composite, disclosed in every result. `proxy` (the default) is the
+legacy hardcoded SMA/SMA/RSI rule and says nothing about the composite. Composite
+mode costs ~28 ms/bar; `composite_stride` scores every Nth bar to trade fidelity
+for runtime. Candidate ordering when position slots are scarce is
+`candidate_ranking` (default `rotate`, a name-neutral date-seeded shuffle —
+audit B2 found plain alphabetical order let ticker *name* pick the trades).
+
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env).
 Entries fill at the **next bar's open** after a signal (no same-bar lookahead);

@@ -338,6 +338,19 @@ slippage_pct: 0.001    # Per-side adverse slippage as a fraction of notional
 #                  strategy, not a neutral fix
 #   alphabetical — legacy biased order; only for reproducing pre-fix results
 candidate_ranking: "rotate"
+# Which entry signal the backtest replays (audit B1).
+#   composite — replay the LIVE generate_signal scorer point-in-time. Only the
+#               technical+volume dimensions are reconstructible for a past bar
+#               (sentiment/fundamentals/macro are only ever served as of today),
+#               so those weights are dropped and the rest renormalised. This is a
+#               SUBSET of the live composite — results disclose it.
+#   proxy     — legacy hardcoded SMA/RSI rule. Faster, but NOT the strategy that
+#               trades live; a verdict from it says nothing about the composite.
+signal_source: "proxy"
+composite_min_score: 65   # enter at/above this composite score (65 = the live BUY threshold)
+composite_stride: 1       # score every Nth bar in composite mode. ~28ms/bar means a full
+                          # 503-ticker run is hours at 1; 5 (weekly) is practical. Skipped
+                          # bars cannot open a position — an approximation, and disclosed.
 
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 # An edge is only VALIDATED when it clears ALL of these on HELD-OUT out-of-sample

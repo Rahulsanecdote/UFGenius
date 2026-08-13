@@ -49,6 +49,8 @@ def run_disqualification_filters(
     df: pd.DataFrame,
     fundamental_score: dict,
     fundamentals_raw: dict | None = None,
+    *,
+    point_in_time: bool = False,
 ) -> list:
     """
     Return a list of disqualification reasons.
@@ -99,6 +101,16 @@ def run_disqualification_filters(
                 f"${t['min_dollar_volume']:,.0f}"
             )
 
+    # ── Fundamentals-derived checks ──────────────────────────────────────────
+    # These read the balance sheet and market cap, which providers serve only as
+    # of *today*. In point-in-time mode (the backtest) there is no honest value
+    # for a historical bar: using today's would be look-ahead, and the live
+    # fail-closed behaviour (unknown market cap ⇒ disqualify) would reject every
+    # ticker on every bar. So they are skipped, and the caller discloses it.
+    # Live callers never pass point_in_time, so their behaviour is unchanged.
+    if point_in_time:
+        return reasons + _price_derived_surge_reasons(df, current_price, t)
+
     # Altman Z-Score bankruptcy risk
     z_score = fundamental_score.get("altman_z_score")
     if z_score is not None and z_score < t["bankruptcy_z"]:
@@ -127,7 +139,15 @@ def run_disqualification_filters(
             f"MICRO_CAP: Market cap ${market_cap:,.0f} < ${t['min_market_cap']:,.0f}"
         )
 
-    # 5-day surge (chaser trap)
+    return reasons + _price_derived_surge_reasons(df, current_price, t)
+
+
+def _price_derived_surge_reasons(df: pd.DataFrame, current_price: float, t: dict) -> list:
+    """5-day surge (chaser trap) — derived purely from the price frame.
+
+    Shared by the live and point-in-time paths so the two cannot drift apart.
+    """
+    reasons: list = []
     if len(df) >= 6:
         price_5d_ago = float(df["Close"].iloc[-6])
         if price_5d_ago > 0:
@@ -136,5 +156,4 @@ def run_disqualification_filters(
                 reasons.append(
                     f"CHASER_TRAP: Already up {gain_5d:.0f}% in 5 days (max {t['max_5day_gain_pct']}%)"
                 )
-
     return reasons
