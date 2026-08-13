@@ -97,6 +97,35 @@ ACCOUNT_SIZE: float = float(get("account_size", 10_000))
 RISK_PER_TRADE: float = float(get("risk_per_trade", 0.01))
 MAX_POSITION_PCT: float = float(get("max_position_pct", 0.10))
 SCAN_UNIVERSE: str = get("scan_universe", "SP500")
+
+# Market-movers discovery (MOVERS universe / --mode movers).
+_MOVERS: dict = get("movers", {})
+MOVERS_SOURCES: list = list(_MOVERS.get("sources", ["gainers", "losers", "most_actives"]))
+MOVERS_MIN_PRICE: float = _as_float(_MOVERS.get("min_price", 1.0), 1.0)
+MOVERS_MAX_PRICE: float = _as_float(_MOVERS.get("max_price", 0), 0.0)
+MOVERS_MIN_CHANGE_PCT: float = _as_float(_MOVERS.get("min_change_pct", 3.0), 3.0)
+MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
+MOVERS_INCLUDE_SHORT: bool = bool(_MOVERS.get("include_short_setups", True))
+# Phase 2 — intraday enrichment / early-momentum ranking.
+MOVERS_ENRICH_INTRADAY: bool = bool(_MOVERS.get("enrich_intraday", True))
+MOVERS_ENRICH_INTERVAL: str = str(_MOVERS.get("enrich_interval", "5m"))
+MOVERS_ENRICH_MAX: int = _as_int(_MOVERS.get("enrich_max", 40), 40)
+# Phase 3 — screener-style movers alerts (opt-in, default off).
+_MOVERS_ALERTS: dict = _MOVERS.get("alerts", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_ALERTS_ENABLED: bool = env_bool("MOVERS_ALERTS_ENABLED", bool(_MOVERS_ALERTS.get("enabled", False)))
+MOVERS_ALERTS_MIN_SCORE: float = _as_float(_MOVERS_ALERTS.get("min_score", 70), 70.0)
+MOVERS_ALERTS_REQUIRE_ENRICHED: bool = bool(_MOVERS_ALERTS.get("require_enriched", True))
+MOVERS_ALERTS_DEDUP_TTL_SEC: float = _as_float(_MOVERS_ALERTS.get("dedup_ttl_sec", 1800), 1800.0)
+MOVERS_ALERTS_MAX_PER_RUN: int = _as_int(_MOVERS_ALERTS.get("max_per_run", 10), 10)
+# Phase 4 — post-open monitoring + invalidation.
+_MOVERS_MONITOR: dict = _MOVERS.get("monitor", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_MONITOR_ENABLED: bool = env_bool("MOVERS_MONITOR_ENABLED", bool(_MOVERS_MONITOR.get("enabled", False)))
+MOVERS_MONITOR_POLL_INTERVAL_SEC: float = _as_float(_MOVERS_MONITOR.get("poll_interval_sec", 60), 60.0)
+MOVERS_MONITOR_RVOL_FLOOR: float = _as_float(_MOVERS_MONITOR.get("rel_volume_floor", 1.0), 1.0)
+MOVERS_MONITOR_MOMENTUM_FLIP: float = _as_float(_MOVERS_MONITOR.get("momentum_flip", -0.5), -0.5)
+MOVERS_MONITOR_REQUIRE_VWAP_HOLD: bool = bool(_MOVERS_MONITOR.get("require_vwap_hold", True))
+MOVERS_MONITOR_MIN_SCORE: float = _as_float(_MOVERS_MONITOR.get("min_score", 50), 50.0)
+MOVERS_MONITOR_ALERT_ON_INVALIDATION: bool = bool(_MOVERS_MONITOR.get("alert_on_invalidation", True))
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])

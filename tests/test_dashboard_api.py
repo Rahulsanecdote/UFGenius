@@ -342,3 +342,40 @@ def test_api_responses_are_not_cached(client):
     response = client.get("/api/scan-ticker?ticker=BAD$$$")  # any /api/* response
     assert response.headers["Cache-Control"] == "no-store"
     assert "Access-Control-Allow-Origin" not in response.headers
+
+
+# ── /api/movers ───────────────────────────────────────────────────────────────
+
+def test_movers_unavailable_without_fmp_key(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "FMP_KEY", "")
+    r = client.get("/api/movers")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["available"] is False and data["movers"] == []
+
+
+def test_movers_returns_ranked_list(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
+    from src.scanner.movers import MoverCandidate
+
+    fake = [
+        MoverCandidate(ticker="NBIS", price=259.2, change_pct=34.1, direction="long",
+                       sources=["gainers", "most_actives"], score=89.0, enriched=True,
+                       rel_volume=10.3, momentum_pct=3.7, vwap_pct=6.4, is_breakout=True),
+        MoverCandidate(ticker="BOXL", price=7.87, change_pct=167.7, direction="long",
+                       sources=["gainers"], score=17.0, enriched=True,
+                       rel_volume=0.1, momentum_pct=-17.8, vwap_pct=0.1),
+    ]
+
+    def _fake_fetch(**kwargs):
+        assert "limit" in kwargs and "enrich" in kwargs   # endpoint passes both
+        return fake
+
+    monkeypatch.setattr("src.scanner.movers.fetch_market_movers", _fake_fetch)
+    r = client.get("/api/movers?enrich=true&limit=25")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["available"] is True
+    assert data["count"] == 2 and data["enriched"] == 2 and data["enrich_requested"] is True
+    assert data["movers"][0]["ticker"] == "NBIS"
+    assert data["movers"][0]["direction"] == "long"

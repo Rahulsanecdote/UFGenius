@@ -133,7 +133,12 @@ def generate_signal(
     * sentiment sources are **not called** (no network, no current-date leak),
     * fundamentals-derived disqualifiers are skipped (see
       ``run_disqualification_filters``),
-    * the macro regime must be supplied by the caller; it is never detected live,
+    * the macro regime is never detected live: callers may pass a historical one,
+      and omitting it uses a neutral placeholder rather than today's regime.
+      Note the regime still reaches the score through
+      ``strategy.position_size_multiplier`` even though its *weight* is dropped —
+      the neutral placeholder's multiplier is 1.0, so replay is unaffected, but a
+      caller passing a real historical regime would reintroduce that influence,
     * and the sentiment/fundamental/macro weights are **zeroed and
       redistributed** onto the reconstructible dimensions, so the composite is a
       renormalised technical+volume score rather than one dragged toward a

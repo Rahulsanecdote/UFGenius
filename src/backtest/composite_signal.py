@@ -130,6 +130,15 @@ def evaluate_series(
     N bars". With median holds of 26–118 days a weekly stride is a modest
     approximation, but it IS an approximation and the result discloses it.
 
+    The grid is anchored to the **last** bar of ``history`` so the newest bar is
+    always scored — which is what a live-like replay wants, since the most recent
+    bar is the one a real run would act on. The consequence is that the scored
+    set depends on where the series ends: two runs over overlapping windows will
+    not score identical dates at stride > 1. Pass ``stride=1`` when comparing
+    runs bar-for-bar (a calendar-anchored grid would fix the dates but would
+    space unevenly across weekends and holidays, and could leave the newest bar
+    unscored).
+
     The caller is responsible for shifting ``entry_signal`` by one bar to fill at
     the next open — this function never looks past the bar it is scoring.
     """

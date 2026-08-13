@@ -447,11 +447,21 @@ def _rank_candidates(
 
     if mode == "momentum":
         def _strength(ticker: str) -> float:
+            # Read the SIGNAL bar's strength, never the fill bar's (look-ahead).
             try:
-                row = histories[ticker].loc[date]
-                sma200 = float(row["SMA_200"])
-                close = float(row["Close"])
-            except Exception:
+                frame = histories[ticker]
+                if "mom_entry" in frame.columns:
+                    value = float(frame.loc[date, "mom_entry"])
+                    return value if np.isfinite(value) else float("-inf")
+                # Frames from older callers/tests have no precomputed column:
+                # fall back to the PRIOR row rather than this one.
+                pos = frame.index.get_loc(date)
+                if not isinstance(pos, int) or pos < 1:
+                    return float("-inf")
+                prior = frame.iloc[pos - 1]
+                sma200 = float(prior["SMA_200"])
+                close = float(prior["Close"])
+            except (KeyError, IndexError, TypeError, ValueError):
                 return float("-inf")
             if not (np.isfinite(sma200) and np.isfinite(close)) or sma200 <= 0:
                 return float("-inf")
@@ -569,7 +579,16 @@ def _prepare_ticker_history(
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
 ) -> pd.DataFrame:
-    warm_start = start_date - timedelta(days=260)
+    # Composite replay needs MIN_WARMUP_BARS (200) *trading* bars before it will
+    # score anything — about 290 calendar days. The 260-day proxy warmup would
+    # leave the first ~3 weeks of the requested period silently unscored, so
+    # composite runs would drop the earliest entries of the window.
+    if str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower() == "composite":
+        from src.backtest.composite_signal import MIN_WARMUP_BARS
+
+        warm_start = start_date - timedelta(days=int(MIN_WARMUP_BARS * 1.45) + 30)
+    else:
+        warm_start = start_date - timedelta(days=260)
     df = fetch_ohlcv(ticker, period="max")
     if df.empty or len(df) < 220:
         return pd.DataFrame()
@@ -629,6 +648,13 @@ def _prepare_ticker_history(
     # produces an entry on the first in-range bar (next-open fills, audit M4).
     df["enter_flag"] = df["entry_signal"].shift(1, fill_value=False).astype(bool)
     df["atr_entry"] = df["ATR_14"].shift(1)
+    # Selection strength as known at the fill bar's OPEN — i.e. the SIGNAL bar's
+    # values. Ranking on the fill bar's close would be same-bar look-ahead, and
+    # since the caller fills scarce slots from the head of the ranked list, that
+    # would leak the future into which trades get taken (the same reason
+    # atr_entry above is shifted).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["mom_entry"] = (df["Close"] / df["SMA_200"].replace(0, np.nan) - 1.0).shift(1)
 
     return df.loc[(df.index >= start_date) & (df.index <= end_date)].copy()
 

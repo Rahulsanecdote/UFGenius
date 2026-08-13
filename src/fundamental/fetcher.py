@@ -1,4 +1,11 @@
-"""Fundamental data fetcher — yfinance .info as primary source."""
+"""Fundamental data fetcher — yfinance .info primary, FMP fallback.
+
+yfinance is the primary source, but its ``.info`` endpoint rate-limits hard;
+when it returns nothing (so ``market_cap`` is unknown and the disqualification
+filter would reject the ticker), fall back to Financial Modeling Prep — which
+the operator already supplies a key for — to fill the gaps. Mirrors the
+multi-provider fallback the price layer (``src/data/fetcher``) already has.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +13,14 @@ from typing import Any
 
 from src.data.fetcher import fetch_ticker_info
 from src.utils import config
+from src.utils.http import get_retry_session
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+# FMP's current ("stable") quote endpoint. The legacy /api/v3/quote path now
+# returns 403 for keys issued after Aug 2025, so use /stable with ?symbol=.
+_FMP_QUOTE_URL = "https://financialmodelingprep.com/stable/quote"
 
 
 def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
@@ -20,7 +32,15 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
     """
     info = info if info is not None else fetch_ticker_info(ticker)
     if not info:
-        return _backfill_from_finviz(ticker, _empty_fundamentals())
+        # yfinance gave nothing (commonly a rate-limit). Try FMP outright rather
+        # than returning all-None, which would trip UNKNOWN_MARKET_CAP, then let
+        # Finviz fill anything FMP still left missing.
+        fmp = _fetch_fmp_fundamentals(ticker)
+        base = _empty_fundamentals()
+        if fmp:
+            base.update(fmp)
+            base["ticker"] = ticker
+        return _backfill_from_finviz(ticker, base)
 
     def _get(*keys, default=None):
         for k in keys:
@@ -45,7 +65,7 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
         if bvps is not None:
             total_equity = bvps * shares
 
-    out = {
+    result: dict = {
         "ticker":        ticker,
         "price":         price,
         "market_cap":    market_cap,
@@ -93,7 +113,17 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
         "total_assets_prev":   None,
         "revenue_prev":        None,
     }
-    return _backfill_from_finviz(ticker, out)
+
+    # Source precedence: yfinance is authoritative; FMP fills what it omitted;
+    # Finviz fills last, being the scraped (most fragile) source. Each stage only
+    # ever writes keys that are still None.
+    if result.get("market_cap") is None:
+        fmp = _fetch_fmp_fundamentals(ticker)
+        for key, value in fmp.items():
+            if value is not None and result.get(key) is None:
+                result[key] = value
+
+    return _backfill_from_finviz(ticker, result)
 
 
 def _backfill_from_finviz(ticker: str, out: dict) -> dict:
@@ -124,6 +154,56 @@ def _backfill_from_finviz(ticker: str, out: dict) -> dict:
     except Exception as exc:  # never break scoring on a supplementary source
         log.debug(f"{ticker}: Finviz backfill unavailable ({exc})")
     return out
+
+
+def _fetch_fmp_fundamentals(ticker: str) -> dict:
+    """Best-effort fundamentals from Financial Modeling Prep (/quote).
+
+    Returns a partial fundamentals dict (only the fields FMP's quote supplies),
+    or {} when no key is configured or the request fails. Never raises — this is
+    a fallback, so any error just yields no fill.
+    """
+    key = config.FMP_KEY
+    if not key:
+        return {}
+    try:
+        resp = get_retry_session().get(
+            _FMP_QUOTE_URL,
+            params={"symbol": ticker, "apikey": key},
+            timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # network / JSON / HTTP — fallback must never raise
+        log.warning(f"{ticker}: FMP fundamentals fallback failed ({type(exc).__name__})")
+        return {}
+
+    # FMP /quote returns a list with a single object.
+    row = payload[0] if isinstance(payload, list) and payload else None
+    if not isinstance(row, dict):
+        return {}
+
+    def _num(*keys):
+        for k in keys:
+            v = row.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    out = {
+        "price":              _num("price"),
+        "market_cap":         _num("marketCap"),
+        "shares_outstanding": _num("sharesOutstanding"),
+        "eps":                _num("eps"),
+        "pe_ratio":           _num("pe"),
+    }
+    if out.get("market_cap") is not None:
+        log.info(f"{ticker}: market cap filled from FMP fallback")
+    # Drop Nones so the caller's gap-fill only sees real values.
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def _empty_fundamentals() -> dict:

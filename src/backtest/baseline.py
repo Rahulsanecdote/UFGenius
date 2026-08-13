@@ -193,6 +193,11 @@ def save_baseline(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(baseline, f, indent=2)
+            # os.replace is atomic for readers but does not flush to disk. Without
+            # this, a crash between write and physical flush can leave a truncated
+            # target, which reads back as "no baseline" and blocks the gate.
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, str(target))
     except Exception as exc:
         log.error(f"Failed to save validated baseline to {target}: {exc}", exc_info=True)
@@ -256,6 +261,15 @@ def compare_paper_to_baseline(
         max_age_days if max_age_days is not None
         else config.PAPER_SCORECARD_BASELINE_MAX_AGE_DAYS
     )
+    # Clamp for the same reason as `tol`: a negative limit would make the
+    # `max_age > 0` test below false and silently skip the staleness refusal,
+    # letting an arbitrarily old baseline through. Only an explicit 0 disables it.
+    if max_age is not None and max_age < 0:
+        log.warning(
+            f"baseline_max_age_days={max_age} is negative; treating it as 0 "
+            "(staleness check disabled) rather than silently skipping the check."
+        )
+        max_age = 0.0
 
     card = scorecard or {}
     if baseline is None:

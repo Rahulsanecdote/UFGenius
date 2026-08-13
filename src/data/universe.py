@@ -131,6 +131,7 @@ def get_universe(universe: str = "SP500") -> List[str]:
       RUSSELL1000 — Russell 1000 (falls back to SP500)
       WATCHLIST   — Custom watchlist from CUSTOM_WATCHLIST env var
       CUSTOM      — Same as WATCHLIST
+      MOVERS      — Today's market-wide movers (FMP gainers/losers/most-actives)
     """
     universe_upper = universe.upper()
 
@@ -140,6 +141,11 @@ def get_universe(universe: str = "SP500") -> List[str]:
         return get_sp500_tickers()
     elif universe_upper == "RUSSELL1000":
         return get_russell1000_tickers()
+    elif universe_upper == "MOVERS":
+        # Discovery source (needs FMP_KEY). Empty → nothing to scan; the caller
+        # logs the empty universe. Import here to avoid a scanner import cycle.
+        from src.scanner.movers import get_movers_universe
+        return get_movers_universe()
     else:
         log.warning(f"Unknown universe '{universe}', using SP500")
         return get_sp500_tickers()

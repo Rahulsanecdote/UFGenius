@@ -372,9 +372,13 @@ then an optional intelligence layer. Every phase makes the edge more
 ## Acceptance criteria (definition of "production-grade")
 - [ ] Edge is demonstrated on a **held-out out-of-sample** period, with
       confidence intervals — not just in-sample metrics.
-- [x] Live **paper** performance matches the validated backtest within tolerance
+- [ ] Live **paper** performance matches the validated backtest within tolerance
       before any real-money flag is enabled.
-      **Delivered:** `src/backtest/baseline.py`. `python bot.py --mode validate
+      **Tooling delivered — the criterion itself is still OPEN.** No baseline has
+      been saved from a `signal_source: composite` run, no paper record has been
+      compared against one, and the gate ships default-off. Do not read this item
+      as "paper has matched"; it has not. The mechanism:
+      `src/backtest/baseline.py`. `python bot.py --mode validate
       --save-baseline` persists the run's **held-out out-of-sample** metrics as a
       reference (with provenance: span, ticker count, capital, seed, timestamp,
       and the run's own `validated` verdict);

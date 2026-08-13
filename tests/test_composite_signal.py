@@ -63,8 +63,10 @@ def test_score_is_unchanged_by_future_bars():
 def test_series_entry_flags_ignore_the_future():
     df = _frame(400)
     cut = df.index[350]
-    full = evaluate_series("T", df).loc[:cut, "entry_signal"]
-    partial = evaluate_series("T", df.loc[:cut])["entry_signal"]
+    # stride pinned: the default is configurable, and a stride > 1 anchors its
+    # grid to the last bar, so the two calls would score different bars.
+    full = evaluate_series("T", df, stride=1).loc[:cut, "entry_signal"]
+    partial = evaluate_series("T", df.loc[:cut], stride=1)["entry_signal"]
     pd.testing.assert_series_equal(full, partial, check_names=False)
 
 

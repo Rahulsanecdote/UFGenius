@@ -729,6 +729,110 @@ def cmd_intraday_scan(args) -> None:
         print("\n  Scanner stopped.\n")
 
 
+def cmd_movers(args) -> None:
+    """Discover and rank today's market-wide movers (the MOVERS universe).
+
+    Pulls FMP top gainers / losers / most-actives, ranks them with a long/short
+    direction, and prints the list. Discovery only — no scoring or orders here;
+    set ``scan_universe: MOVERS`` (or ``--universe MOVERS``) to run the full
+    scan/RiskGuard pipeline over these tickers.
+    """
+    from src.scanner.movers import fetch_market_movers
+
+    movers = fetch_market_movers()
+    print(f"\n{'='*72}")
+    print("  MARKET MOVERS — pre-market / intraday discovery (FMP)")
+    print(f"{'='*72}")
+    if not movers:
+        print("  No movers returned. Check FMP_KEY is set, or loosen movers.min_change_pct.")
+        print(f"{'='*72}\n")
+        return
+    def _fmt(v, suffix="", width=7):
+        return (f"{v:.1f}{suffix}".rjust(width)) if v is not None else "—".rjust(width)
+
+    print(f"  {'#':>2}  {'TICKER':<7}{'PRICE':>9}{'CHG%':>8}  {'DIR':<6}{'SCORE':>6}"
+          f"{'RVOL':>7}{'MOM%':>8}{'VWAP%':>8}  SOURCES")
+    print(f"  {'-'*88}")
+    for i, m in enumerate(movers, 1):
+        arrow = "LONG " if m.direction == "long" else "SHORT"
+        brk = " ⬆" if m.is_breakout else ""
+        print(f"  {i:>2}  {m.ticker:<7}{m.price:>9.2f}{m.change_pct:>7.1f}%  {arrow:<6}"
+              f"{m.score:>6.0f}{_fmt(m.rel_volume, 'x')}{_fmt(m.momentum_pct, '%', 8)}"
+              f"{_fmt(m.vwap_pct, '%', 8)}  {'+'.join(m.sources)}{brk}")
+    print(f"  {'-'*88}")
+    enriched = sum(1 for m in movers if m.enriched)
+    print(f"  {len(movers)} candidates ({enriched} intraday-enriched). Rank blends the")
+    print("  raw move with relative volume, momentum, and VWAP position (early-momentum")
+    print("  quality). Set scan_universe: MOVERS to run the full scoring + RiskGuard")
+    print("  pipeline over them (risk filters still apply).")
+
+    # Phase 3: fire screener-style alerts for candidates clearing the criteria
+    # (opt-in via movers.alerts.enabled + Telegram credentials).
+    if config.MOVERS_ALERTS_ENABLED:
+        from src.scanner.movers_alerts import MoversAlerter
+        fired = MoversAlerter().process(movers)
+        sent = sum(1 for f in fired if f["sent"])
+        print(f"  Alerts: {len(fired)} qualifying (score >= {config.MOVERS_ALERTS_MIN_SCORE:.0f})"
+              f", {sent} sent via Telegram.")
+        for f in fired:
+            print(f"    • {f['direction'].upper():<5} {f['ticker']:<6} score {f['score']:.0f}")
+    print(f"{'='*72}\n")
+
+
+def cmd_movers_monitor(args) -> None:
+    """Discover → alert → post-open monitoring + invalidation loop (MOVERS Phase 4).
+
+    Surfaces today's movers, fires screener alerts on the qualifying ones, then
+    keeps re-evaluating them and invalidates a signal when the setup breaks down
+    (momentum turns against it, loses VWAP, volume fades, or the score collapses).
+    Discovery + monitoring only — no orders. Ctrl-C to stop.
+    """
+    import time as _time
+    from datetime import datetime as _dt
+
+    from src.alerts.telegram_alert import send_text_alert
+    from src.scanner.movers import fetch_market_movers
+    from src.scanner.movers_alerts import MoversAlerter
+    from src.scanner.movers_monitor import MoversMonitor
+
+    movers = fetch_market_movers()
+    watch = [m for m in movers if m.score >= config.MOVERS_ALERTS_MIN_SCORE]
+    alerter = MoversAlerter()
+    monitor = MoversMonitor()
+    alerter.process(movers)          # initial screener alerts (opt-in)
+    monitor.watch(watch)
+
+    interval = max(15.0, float(config.MOVERS_MONITOR_POLL_INTERVAL_SEC))
+    print(f"\n{'='*72}")
+    print("  MOVERS MONITOR — post-open watch + invalidation (Phase 4)")
+    print(f"{'='*72}")
+    print(f"  Watching {len(monitor.active())} candidates (score >= "
+          f"{config.MOVERS_ALERTS_MIN_SCORE:.0f}); re-evaluating every {interval:.0f}s.")
+    for s in monitor.active():
+        c = s.candidate
+        print(f"    • {c.direction.upper():<5} {c.ticker:<6} score {c.score:.0f}")
+    if not monitor.active():
+        print("  Nothing cleared the watch threshold. Lower movers.alerts.min_score to widen it.")
+        print(f"{'='*72}\n")
+        return
+    print("  Ctrl-C to stop.")
+    print(f"{'='*72}\n")
+
+    try:
+        while monitor.active():
+            _time.sleep(interval)
+            transitions = monitor.evaluate(alert=send_text_alert)
+            stamp = _dt.now().strftime("%H:%M:%S")
+            for t in transitions:
+                print(f"  [{stamp}] ⚠️  INVALIDATED {t['direction'].upper():<5} {t['ticker']:<6}"
+                      f" — {t['reason']} (score {t['entry_score']:.0f}→{t['score']:.0f})")
+            if not transitions:
+                print(f"  [{stamp}] {len(monitor.active())} still valid.")
+        print("\n  All watched signals invalidated — nothing left to monitor.\n")
+    except KeyboardInterrupt:
+        print("\n  Monitor stopped.\n")
+
+
 def cmd_earnings_calendar(args) -> None:
     """Build/refresh the P1.4 earnings calendar from the data provider.
 
@@ -895,7 +999,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -903,7 +1007,7 @@ Examples:
         "--account-size", type=_positive_account_size,
         help="Portfolio size in USD (positive number)",
     )
-    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist)")
+    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST", "MOVERS"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist; MOVERS = today's FMP movers)")
     parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
     parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim"], help="Intraday entry to backtest (for --mode intraday-backtest)")
     parser.add_argument("--interval",     help="Intraday bar size for --mode intraday-backtest (e.g. 5m, 1m; default INTRADAY_DEFAULT_INTERVAL)")
@@ -1014,6 +1118,10 @@ Examples:
         cmd_intraday_scan(args)
     elif args.mode == "earnings-calendar":
         cmd_earnings_calendar(args)
+    elif args.mode == "movers":
+        cmd_movers(args)
+    elif args.mode == "movers-monitor":
+        cmd_movers_monitor(args)
     else:
         parser.print_help()
         sys.exit(1)

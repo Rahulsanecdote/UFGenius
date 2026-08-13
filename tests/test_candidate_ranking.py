@@ -148,3 +148,54 @@ def test_missing_date_is_skipped():
 def test_short_lists_pass_through_untouched():
     assert _rank_candidates([], {}, DATE) == []
     assert _rank_candidates(["ONE"], {}, DATE) == ["ONE"]
+
+
+# ── momentum must not peek at the fill bar (PR #57 review) ───────────────────
+
+def _two_bar_frame(date, *, prior_close, prior_sma, fill_close) -> pd.DataFrame:
+    """Signal bar then fill bar. Ranking must read the SIGNAL bar."""
+    prior = date - pd.Timedelta(days=1)
+    return pd.DataFrame(
+        {
+            "enter_flag": [True, True],
+            "Close": [prior_close, fill_close],
+            "SMA_200": [prior_sma, prior_sma],
+        },
+        index=[prior, date],
+    )
+
+
+def test_momentum_ranks_on_the_signal_bar_not_the_fill_bar(monkeypatch):
+    """The fill bar's close is unknown at the open the entry fills at.
+
+    WEAK is weaker on the signal bar but explodes on the fill bar. Ranking on the
+    fill bar would promote it — that is same-bar look-ahead deciding which trades
+    get taken, since the caller fills scarce slots from the head of this list.
+    """
+    monkeypatch.setattr(cfg, "BACKTEST_CANDIDATE_RANKING", "momentum")
+    hist = {
+        "STRONG": _two_bar_frame(DATE, prior_close=150.0, prior_sma=100.0, fill_close=151.0),
+        "WEAK": _two_bar_frame(DATE, prior_close=101.0, prior_sma=100.0, fill_close=500.0),
+    }
+    assert _entry_candidates_for_date(hist, {}, DATE) == ["STRONG", "WEAK"]
+
+
+def test_momentum_prefers_the_precomputed_shifted_column(monkeypatch):
+    """When the engine supplies mom_entry, ranking uses it verbatim."""
+    monkeypatch.setattr(cfg, "BACKTEST_CANDIDATE_RANKING", "momentum")
+    hist = {}
+    for name, mom, close in (("A", 0.02, 999.0), ("B", 0.40, 1.0)):
+        f = _frame(DATE, close=close, sma200=100.0)
+        f["mom_entry"] = [mom]
+        hist[name] = f
+    # B wins on the shifted column despite a far lower current close.
+    assert _entry_candidates_for_date(hist, {}, DATE) == ["B", "A"]
+
+
+def test_momentum_without_a_prior_bar_sorts_last(monkeypatch):
+    monkeypatch.setattr(cfg, "BACKTEST_CANDIDATE_RANKING", "momentum")
+    hist = {
+        "NOPRIOR": _frame(DATE, close=500.0, sma200=100.0),  # single bar only
+        "OK": _two_bar_frame(DATE, prior_close=120.0, prior_sma=100.0, fill_close=121.0),
+    }
+    assert _entry_candidates_for_date(hist, {}, DATE)[0] == "OK"
