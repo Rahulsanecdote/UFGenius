@@ -22,6 +22,16 @@ movers:
   enrich_intraday: true     # blend intraday signals into the rank
   enrich_interval: "5m"     # intraday bar size for enrichment
   enrich_max: 40            # cap how many candidates get the intraday fetch (cost guard)
+  # Phase 3 — screener-style alerts. When a mover clears these criteria, send a
+  # Telegram alert (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID) explaining why,
+  # with the supporting metrics, a confidence score, and long/short direction.
+  # Opt-in, default OFF (no spam).
+  alerts:
+    enabled: false          # master switch
+    min_score: 70           # only alert candidates scoring >= this (0-100)
+    require_enriched: true   # only alert when live intraday signals are present
+    dedup_ttl_sec: 1800     # don't re-alert the same ticker+direction within this window
+    max_per_run: 10         # cap alerts per scan cycle (spam guard)
 
 safety_rules:
   max_positions: 5

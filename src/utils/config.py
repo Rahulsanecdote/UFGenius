@@ -110,6 +110,13 @@ MOVERS_INCLUDE_SHORT: bool = bool(_MOVERS.get("include_short_setups", True))
 MOVERS_ENRICH_INTRADAY: bool = bool(_MOVERS.get("enrich_intraday", True))
 MOVERS_ENRICH_INTERVAL: str = str(_MOVERS.get("enrich_interval", "5m"))
 MOVERS_ENRICH_MAX: int = _as_int(_MOVERS.get("enrich_max", 40), 40)
+# Phase 3 — screener-style movers alerts (opt-in, default off).
+_MOVERS_ALERTS: dict = _MOVERS.get("alerts", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_ALERTS_ENABLED: bool = env_bool("MOVERS_ALERTS_ENABLED", bool(_MOVERS_ALERTS.get("enabled", False)))
+MOVERS_ALERTS_MIN_SCORE: float = _as_float(_MOVERS_ALERTS.get("min_score", 70), 70.0)
+MOVERS_ALERTS_REQUIRE_ENRICHED: bool = bool(_MOVERS_ALERTS.get("require_enriched", True))
+MOVERS_ALERTS_DEDUP_TTL_SEC: float = _as_float(_MOVERS_ALERTS.get("dedup_ttl_sec", 1800), 1800.0)
+MOVERS_ALERTS_MAX_PER_RUN: int = _as_int(_MOVERS_ALERTS.get("max_per_run", 10), 10)
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])

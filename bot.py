@@ -695,6 +695,17 @@ def cmd_movers(args) -> None:
     print("  raw move with relative volume, momentum, and VWAP position (early-momentum")
     print("  quality). Set scan_universe: MOVERS to run the full scoring + RiskGuard")
     print("  pipeline over them (risk filters still apply).")
+
+    # Phase 3: fire screener-style alerts for candidates clearing the criteria
+    # (opt-in via movers.alerts.enabled + Telegram credentials).
+    if config.MOVERS_ALERTS_ENABLED:
+        from src.scanner.movers_alerts import MoversAlerter
+        fired = MoversAlerter().process(movers)
+        sent = sum(1 for f in fired if f["sent"])
+        print(f"  Alerts: {len(fired)} qualifying (score >= {config.MOVERS_ALERTS_MIN_SCORE:.0f})"
+              f", {sent} sent via Telegram.")
+        for f in fired:
+            print(f"    • {f['direction'].upper():<5} {f['ticker']:<6} score {f['score']:.0f}")
     print(f"{'='*72}\n")
 
 
