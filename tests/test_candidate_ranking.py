@@ -102,26 +102,36 @@ def test_alphabetical_mode_reproduces_legacy_order(monkeypatch):
 
 
 def test_momentum_mode_ranks_strongest_trend_first(monkeypatch):
+    """Names are deliberately anti-alphabetical to the expected order.
+
+    Ranking falls back to a ticker tie-break when it cannot read a strength, so a
+    fixture whose momentum order matches its alphabetical order proves nothing.
+    Here the strongest name sorts LAST alphabetically, so only real momentum
+    ranking can produce the expected result.
+    """
     monkeypatch.setattr(cfg, "BACKTEST_CANDIDATE_RANKING", "momentum")
     hist = {
-        "ZWEAK": _frame(DATE, close=100.0, sma200=99.0),    # +1%
-        "ASTRONG": _frame(DATE, close=150.0, sma200=100.0),  # +50%
-        "MMID": _frame(DATE, close=120.0, sma200=100.0),     # +20%
+        "AWEAK": _two_bar_frame(DATE, prior_close=100.0, prior_sma=99.0, fill_close=100.0),
+        "ZSTRONG": _two_bar_frame(DATE, prior_close=150.0, prior_sma=100.0, fill_close=150.0),
+        "MMID": _two_bar_frame(DATE, prior_close=120.0, prior_sma=100.0, fill_close=120.0),
     }
-    assert _entry_candidates_for_date(hist, {}, DATE) == ["ASTRONG", "MMID", "ZWEAK"]
+    assert _entry_candidates_for_date(hist, {}, DATE) == ["ZSTRONG", "MMID", "AWEAK"]
 
 
 def test_momentum_mode_survives_bad_rows(monkeypatch):
-    """A missing/zero SMA must not raise — it sorts last."""
+    """A missing/zero SMA must not raise — it sorts last, behind a real value."""
     monkeypatch.setattr(cfg, "BACKTEST_CANDIDATE_RANKING", "momentum")
     hist = {
-        "GOOD": _frame(DATE, close=150.0, sma200=100.0),
-        "ZERO": _frame(DATE, close=100.0, sma200=0.0),
-        "NAN": _frame(DATE, close=float("nan"), sma200=100.0),
+        # 'ZGOOD' sorts last alphabetically, so leading requires real ranking.
+        "ZGOOD": _two_bar_frame(DATE, prior_close=150.0, prior_sma=100.0, fill_close=150.0),
+        "AZERO": _two_bar_frame(DATE, prior_close=100.0, prior_sma=0.0, fill_close=100.0),
+        "ANAN": _two_bar_frame(
+            DATE, prior_close=float("nan"), prior_sma=100.0, fill_close=100.0
+        ),
     }
     ranked = _entry_candidates_for_date(hist, {}, DATE)
-    assert ranked[0] == "GOOD"
-    assert sorted(ranked) == ["GOOD", "NAN", "ZERO"]
+    assert ranked[0] == "ZGOOD"
+    assert sorted(ranked) == ["ANAN", "AZERO", "ZGOOD"]
 
 
 def test_unknown_mode_falls_back_to_neutral_rotation(monkeypatch):
