@@ -101,6 +101,17 @@ EXTRA_FIELDS: dict[str, str] = {
 
 _MULTIPLIER = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 
+# Canonical growth fields are stored as DECIMALS (yfinance's `revenueGrowth` is
+# 0.061 for 6.1%), and `fundamental/scorer.py::_growth_metrics` multiplies by 100
+# on the way out. Finviz prints these as percentages, so they must be converted
+# on the way in — otherwise 6.1% growth reaches the scorer as 610% and maxes the
+# 30-point growth component. The EXTRA_FIELDS percentages keep their `_pct`
+# names and units: they are Finviz-native, not part of the canonical contract,
+# and the backfill never copies them into it.
+_CANONICAL_DECIMAL_FIELDS = frozenset(
+    {"revenue_growth_yoy", "eps_growth_yoy", "earnings_growth_rate"}
+)
+
 
 def _parse_number(raw: Any) -> Optional[float]:
     """Parse a Finviz cell: '3013.45B', '12.5%', '1,234', '-', '12.34'.
@@ -222,7 +233,10 @@ def fetch_fundamentals(ticker: str, *, use_cache: bool = True) -> Optional[dict]
     for label, value in pairs.items():
         canonical = FIELD_MAP.get(label)
         if canonical:
-            out[canonical] = _parse_number(value)
+            parsed = _parse_number(value)
+            if parsed is not None and canonical in _CANONICAL_DECIMAL_FIELDS:
+                parsed /= 100.0  # Finviz prints a percent; the contract wants a decimal
+            out[canonical] = parsed
             continue
         extra = EXTRA_FIELDS.get(label)
         if extra == "earnings_date_raw":

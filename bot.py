@@ -491,6 +491,16 @@ def cmd_validate(args) -> None:
             initial_capital=capital, seed=args.seed,
         )
         print(f"  Baseline saved → {config.PAPER_SCORECARD_BASELINE_PATH}")
+        source = (saved.get("provenance") or {}).get("signal_source")
+        print(f"  Signal source:  {source}")
+        if source != "composite":
+            # Say this at save time, not when a live entry is mysteriously
+            # blocked weeks later: the gate refuses a proxy baseline outright.
+            print("  ⚠️  This baseline measures the SMA/RSI PROXY rule, not the composite "
+                  "signal that trades live.\n"
+                  "      The paper-vs-backtest gate will refuse it. Re-run with "
+                  "backtest.signal_source=composite\n"
+                  "      (or BACKTEST_SIGNAL_SOURCE=composite) to save a usable reference.")
         if not saved["validated"]:
             # Saved for the record, but the tolerance gate refuses an unvalidated
             # reference — say so here rather than letting an operator discover it

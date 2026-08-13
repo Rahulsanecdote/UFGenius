@@ -60,6 +60,10 @@ def _baseline_config(monkeypatch):
     monkeypatch.setattr(cfg, "PAPER_SCORECARD_BASELINE_TOLERANCE_PCT", 30.0)
     monkeypatch.setattr(cfg, "PAPER_SCORECARD_BASELINE_MAX_AGE_DAYS", 180.0)
     monkeypatch.setattr(cfg, "PAPER_SCORECARD_BASELINE_GATE_ENABLED", True)
+    # These tests are about the tolerance comparison, so they assume a baseline
+    # built the only way the gate accepts — from a composite run. The
+    # signal-source guard itself is exercised separately at the end of the file.
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "composite")
 
 
 # ── build / persist ───────────────────────────────────────────────────────────
@@ -424,3 +428,55 @@ def test_riskguard_paper_path_ignores_the_baseline_gate(
 
     ok, reason = RiskGuard().check(_entry_plan(), _portfolio(), tracker)
     assert ok is True, reason
+
+
+# ── signal-source guard (PR #57 review, audit B1) ─────────────────────────────
+
+def test_baseline_records_the_signal_source(monkeypatch):
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "composite")
+    assert _baseline()["provenance"]["signal_source"] == "composite"
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "proxy")
+    assert _baseline()["provenance"]["signal_source"] == "proxy"
+
+
+def test_proxy_baseline_is_refused_by_the_gate(monkeypatch):
+    """A proxy baseline measures the SMA/RSI rule; paper measures the composite.
+
+    Comparing them would emit a confident verdict from two unrelated strategies,
+    so the gate must refuse rather than compare.
+    """
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "proxy")
+    cmp_ = compare_paper_to_baseline(_card(), _baseline(), now=NOW)
+    assert cmp_["all_pass"] is False
+    assert "signal_source=proxy" in cmp_["reason"]
+    assert "composite" in cmp_["reason"]
+
+
+def test_composite_baseline_is_accepted(monkeypatch):
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "composite")
+    assert compare_paper_to_baseline(_card(), _baseline(), now=NOW)["all_pass"] is True
+
+
+def test_baseline_without_a_recorded_source_is_refused(monkeypatch):
+    """Baselines saved before the source was recorded must fail closed."""
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "composite")
+    b = _baseline()
+    b["provenance"].pop("signal_source")
+    cmp_ = compare_paper_to_baseline(_card(), b, now=NOW)
+    assert cmp_["all_pass"] is False
+    assert "unknown" in cmp_["reason"]
+
+
+def test_source_guard_applies_on_the_live_gate(tracker, monkeypatch, tmp_path, _floors_pass):
+    """End-to-end: a proxy baseline must not let real-money entries through."""
+    monkeypatch.setattr(cfg, "BACKTEST_SIGNAL_SOURCE", "proxy")
+    path = str(tmp_path / "baseline.json")
+    save_baseline(_validation_result(win_rate=60.0, profit_factor=3.0),
+                  path=path, now=datetime.now(timezone.utc))
+    monkeypatch.setattr(cfg, "PAPER_SCORECARD_BASELINE_PATH", path)
+    tracker._trades = _trades(_strong_paper_record())
+
+    passes, card = meets_live_performance_gate(tracker, initial_capital=50_000)
+    assert card["acceptance"]["all_pass"] is True   # floors alone would allow it
+    assert passes is False
+    assert "signal_source=proxy" in card["gate_reason"]

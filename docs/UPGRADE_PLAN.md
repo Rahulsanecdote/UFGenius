@@ -400,7 +400,10 @@ then an optional intelligence layer. Every phase makes the edge more
       default off) since it requires a saved baseline; config-driven
       (`config.yaml` `paper_scorecard:` `baseline_*` / `PAPER_SCORECARD_BASELINE_*`
       env). 35 offline tests (`tests/test_baseline.py` + dashboard-API cases).
-      > ⚠️ **Save the baseline from a `signal_source: composite` run.**
+      > ⚠️ **The baseline must come from a `signal_source: composite` run — now
+      > enforced, not just advised.** The baseline records its `signal_source`
+      > and the gate refuses anything but `composite` (including older baselines
+      > that predate the field, which read as unknown and fail closed).
       > `AUDIT.md` B1 found the backtest defaulted to a hardcoded SMA/RSI proxy
       > rule rather than the composite that trades live; a baseline saved from a
       > proxy run holds *proxy-rule* metrics while the paper scorecard measures

@@ -121,6 +121,9 @@ def test_paper_scorecard_reports_the_baseline_comparison(client, monkeypatch, tm
     from src.backtest.baseline import save_baseline
 
     path = str(tmp_path / "baseline.json")
+    # Save as a composite-source baseline: a proxy one is refused outright by the
+    # signal-source guard, which would short-circuit the check this test is for.
+    monkeypatch.setattr(dashboard.config, "BACKTEST_SIGNAL_SOURCE", "composite")
     save_baseline(
         {"out_of_sample": {"win_rate_pct": 55.0, "profit_factor": 2.1},
          "verdict": {"validated": True},

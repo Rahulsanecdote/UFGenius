@@ -156,6 +156,11 @@ def build_baseline(
             "tickers_sample": sorted(tickers)[:25] if tickers else None,
             "initial_capital": _finite(initial_capital),
             "seed": seed,
+            # Which strategy produced these metrics (audit B1). Recorded because
+            # the default is the SMA/RSI `proxy`, and a baseline built from the
+            # proxy describes a different strategy than the composite the paper
+            # scorecard measures — comparing them would be meaningless.
+            "signal_source": str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower(),
         },
         "disclaimer": (
             "Out-of-sample backtest metrics. A validated baseline reduces the "
@@ -264,6 +269,22 @@ def compare_paper_to_baseline(
         return _fail(
             "The stored baseline's own verdict was NOT VALIDATED — there is no "
             "demonstrated out-of-sample edge to compare paper against."
+        )
+
+    # The paper scorecard measures trades taken by the LIVE composite signal, so
+    # a baseline built from the SMA/RSI proxy describes a different strategy
+    # entirely (audit B1). Comparing them would produce a confident verdict from
+    # two unrelated systems, so refuse. A baseline saved before the source was
+    # recorded reads as unknown and is refused too — fail-closed, like every
+    # other branch here.
+    source = str((baseline.get("provenance") or {}).get("signal_source") or "").strip().lower()
+    if source != "composite":
+        return _fail(
+            f"Baseline was built with signal_source={source or 'unknown'!s}, not "
+            "'composite' — it measures the SMA/RSI proxy rule, while the paper "
+            "scorecard measures composite-signal trades. Re-run "
+            "`--mode validate --save-baseline` with backtest.signal_source=composite.",
+            baseline_signal_source=source or None,
         )
 
     generated_at = _parse_ts(baseline.get("generated_at"))

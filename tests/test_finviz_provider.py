@@ -97,7 +97,39 @@ def test_fetch_fundamentals_maps_canonical_keys(monkeypatch):
     assert f["pb_ratio"] == pytest.approx(51.20)
     assert f["book_value_per_share"] == pytest.approx(5.90)
     assert f["shares_outstanding"] == pytest.approx(14.94e9)
-    assert f["revenue_growth_yoy"] == pytest.approx(6.10)
+    # Decimal, not percent — see test_growth_fields_are_converted_to_canonical_decimals.
+    assert f["revenue_growth_yoy"] == pytest.approx(0.0610)
+
+
+def test_growth_fields_are_converted_to_canonical_decimals(monkeypatch):
+    """Finviz prints '6.10%'; the canonical contract stores 0.061.
+
+    fundamental/scorer.py::_growth_metrics multiplies by 100 on the way out
+    (yfinance's revenueGrowth is already a decimal), so returning 6.1 here would
+    reach the scorer as 610% and max out the 30-point growth component.
+    """
+    monkeypatch.setattr(finviz, "_throttled_get", lambda _u: _snapshot_html())
+    f = finviz.fetch_fundamentals("AAPL")
+    assert f["revenue_growth_yoy"] == pytest.approx(0.0610)
+    assert f["eps_growth_yoy"] == pytest.approx(0.1230)
+    assert f["earnings_growth_rate"] == pytest.approx(0.0840)
+
+
+def test_scorer_reads_finviz_growth_at_the_right_scale(monkeypatch):
+    """End-to-end unit check against the consumer that actually multiplies."""
+    from src.fundamental.scorer import _growth_metrics
+
+    monkeypatch.setattr(finviz, "_throttled_get", lambda _u: _snapshot_html())
+    f = finviz.fetch_fundamentals("AAPL")
+    assert _growth_metrics(f)["revenue_growth_yoy_pct"] == pytest.approx(6.1)
+
+
+def test_native_percentage_extras_keep_percent_units(monkeypatch):
+    """The `_pct` extras are Finviz-native and never enter the canonical contract."""
+    monkeypatch.setattr(finviz, "_throttled_get", lambda _u: _snapshot_html())
+    f = finviz.fetch_fundamentals("AAPL")
+    assert f["gross_margin_pct"] == pytest.approx(46.20)
+    assert f["roa"] == pytest.approx(27.50)
 
 
 def test_fetch_fundamentals_keeps_finviz_native_extras(monkeypatch):
