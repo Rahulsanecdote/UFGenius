@@ -476,6 +476,28 @@ HTML = '''
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
+    /* Market Movers panel */
+    .movers-actions { display: flex; gap: 8px; }
+    .movers-status { padding: 4px 24px 12px; color: var(--text-muted, #8b97a8); font-size: 14px; }
+    .movers-table-wrap { overflow-x: auto; padding: 0 12px 4px; }
+    .movers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .movers-table th, .movers-table td {
+      padding: 8px 10px; text-align: left; white-space: nowrap;
+      border-bottom: 1px solid rgba(58, 77, 105, 0.35);
+    }
+    .movers-table th { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted, #8b97a8); font-weight: 600; }
+    .movers-table td.num, .movers-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .movers-table tbody tr:hover { background: rgba(58, 77, 105, 0.15); }
+    .movers-rank { color: var(--text-muted, #8b97a8); }
+    .movers-sym { font-weight: 700; }
+    .movers-dir { font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+    .movers-dir.long  { color: #41c07e; background: rgba(65, 192, 126, 0.14); }
+    .movers-dir.short { color: #f0696f; background: rgba(240, 105, 111, 0.14); }
+    .movers-score { font-weight: 700; }
+    .chg-up { color: #41c07e; }
+    .chg-down { color: #f0696f; }
+    .movers-note { padding: 10px 24px 4px; }
+
     .metric-value {
       font-family: var(--font-mono);
       font-size: 28px;
@@ -1718,6 +1740,33 @@ HTML = '''
             <p id="biasNote" class="metric-note">Position sizing guidance pending.</p>
           </button>
         </div>
+      </section>
+
+      <section class="panel movers-shell" id="moversPanel" aria-labelledby="moversTitle">
+        <div class="panel-heading">
+          <div>
+            <h2 id="moversTitle">Market Movers</h2>
+            <p>Today's biggest market-wide movers — ranked, long/short. Not the fixed universe.</p>
+          </div>
+          <div class="movers-actions">
+            <button id="moversRefreshButton" class="summary-action" type="button">Refresh</button>
+            <button id="moversDeepButton" class="summary-action" type="button" title="Rank by live intraday signals (relative volume, momentum, VWAP) — slower">Deep scan ⚡</button>
+          </div>
+        </div>
+        <div id="moversStatus" class="movers-status">Loading market movers…</div>
+        <div class="movers-table-wrap">
+          <table class="movers-table" id="moversTable" hidden>
+            <thead>
+              <tr>
+                <th>#</th><th>Ticker</th><th class="num">Price</th><th class="num">Chg%</th>
+                <th>Dir</th><th class="num">Score</th><th class="num">RVOL</th>
+                <th class="num">Mom%</th><th class="num">VWAP%</th>
+              </tr>
+            </thead>
+            <tbody id="moversBody"></tbody>
+          </table>
+        </div>
+        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs an FMP key. <b>Deep scan</b> re-ranks by early-momentum quality.</p>
       </section>
 
       <section class="panel" aria-labelledby="workspaceTitle">
@@ -3474,6 +3523,61 @@ HTML = '''
       }
     }
 
+    function moversNum(v, suffix) {
+      return (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)}${suffix || ''}`;
+    }
+
+    function renderMovers(payload) {
+      const status = $('moversStatus');
+      const table = $('moversTable');
+      const body = $('moversBody');
+      if (!payload || payload.available === false) {
+        table.hidden = true;
+        status.textContent = (payload && payload.reason) || 'Market movers unavailable.';
+        return;
+      }
+      const movers = payload.movers || [];
+      if (!movers.length) {
+        table.hidden = true;
+        status.textContent = 'No movers cleared the filters right now.';
+        return;
+      }
+      body.innerHTML = movers.map((m, i) => {
+        const dir = m.direction === 'short' ? 'short' : 'long';
+        const chgCls = m.change_pct >= 0 ? 'chg-up' : 'chg-down';
+        return `<tr>
+          <td class="movers-rank">${i + 1}</td>
+          <td class="movers-sym">${escapeHtml(m.ticker)}</td>
+          <td class="num">$${Number(m.price).toFixed(2)}</td>
+          <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%</td>
+          <td><span class="movers-dir ${dir}">${dir.toUpperCase()}</span></td>
+          <td class="num movers-score">${Math.round(m.score)}</td>
+          <td class="num">${moversNum(m.rel_volume, 'x')}</td>
+          <td class="num">${moversNum(m.momentum_pct, '%')}</td>
+          <td class="num">${moversNum(m.vwap_pct, '%')}</td>
+        </tr>`;
+      }).join('');
+      table.hidden = false;
+      const enrichedNote = payload.enrich_requested
+        ? `${payload.enriched} ranked by live intraday signals`
+        : 'discovery ranking — click Deep scan for early-momentum ranking';
+      status.textContent = `${movers.length} movers · ${enrichedNote}.`;
+    }
+
+    async function loadMovers(enrich = false) {
+      const status = $('moversStatus');
+      status.textContent = enrich ? 'Deep scan — pulling live intraday signals…' : 'Loading market movers…';
+      try {
+        const payload = await apiFetchJson(`/api/movers?enrich=${enrich ? 'true' : 'false'}&limit=25`);
+        renderMovers(payload);
+      } catch (error) {
+        if (!/Authorization/i.test(error.message || '')) {
+          $('moversTable').hidden = true;
+          status.textContent = `Movers failed: ${error.message}`;
+        }
+      }
+    }
+
     async function loadChart(ticker, range = state.chartRange) {
       if (!ticker) {
         renderChart(null);
@@ -3861,6 +3965,8 @@ HTML = '''
       showToast('Scrolled to provider health.', 'info');
     });
     $('refreshHealthButton').addEventListener('click', loadProviderHealth);
+    $('moversRefreshButton').addEventListener('click', () => loadMovers(false));
+    $('moversDeepButton').addEventListener('click', () => loadMovers(true));
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);
     $('haltButton').addEventListener('click', () => toggleBreaker('halt'));
     $('resumeButton').addEventListener('click', () => toggleBreaker('resume'));
@@ -3967,6 +4073,7 @@ HTML = '''
     // "Waking up…" banner instead of a silent, indefinite "Syncing".
     warmUp().then(() => {
       loadRegime();
+      loadMovers(false);
       loadProviderHealth();
       startProviderHealthPolling();
       loadBreakerState();
@@ -4518,6 +4625,42 @@ def api_scan_breakouts():
         })
     except Exception:
         log.exception("Breakout scan error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/movers")
+def api_movers():
+    """Ranked market-wide movers (MOVERS discovery). Needs FMP_KEY.
+
+    Returns the discovery + early-momentum ranking used by `bot.py --mode movers`
+    — direction (long/short), the move, and the intraday signals behind the rank.
+    """
+    try:
+        from src.scanner.movers import fetch_market_movers
+
+        if not config.FMP_KEY:
+            return jsonify({
+                "available": False,
+                "reason": "Market movers need an FMP API key (set FMP_KEY).",
+                "movers": [],
+            })
+        # Fast discovery-only by default; ?enrich=true adds the intraday
+        # early-momentum ranking (one intraday fetch per candidate — slower).
+        enrich = request.args.get("enrich", "false").strip().lower() in ("1", "true", "yes")
+        try:
+            limit = max(1, min(50, int(request.args.get("limit", "25"))))
+        except (TypeError, ValueError):
+            limit = 25
+        movers = fetch_market_movers(limit=limit, enrich=enrich)
+        return jsonify({
+            "available": True,
+            "count": len(movers),
+            "enriched": sum(1 for m in movers if m.enriched),
+            "enrich_requested": enrich,
+            "movers": [m.as_dict() for m in movers],
+        })
+    except Exception:
+        log.exception("Movers endpoint error")
         return _error_response("Internal server error", 500)
 
 

@@ -182,11 +182,14 @@ def fetch_market_movers(
     min_change_pct: float | None = None,
     limit: int | None = None,
     include_short_setups: bool | None = None,
+    enrich: bool | None = None,
 ) -> list[MoverCandidate]:
     """Discover and rank today's market movers. Args default to config ``movers:``.
 
-    Returns candidates sorted by discovery score (desc), capped to ``limit``.
-    Empty list when discovery is unavailable (no key / provider error).
+    ``enrich`` overrides ``movers.enrich_intraday`` for this call — pass False for
+    a fast discovery-only list (a few FMP calls, no per-ticker intraday fetch).
+    Returns candidates sorted by score (desc), capped to ``limit``. Empty list
+    when discovery is unavailable (no key / provider error).
     """
     sources = sources if sources is not None else config.MOVERS_SOURCES
     min_price = config.MOVERS_MIN_PRICE if min_price is None else min_price
@@ -194,6 +197,7 @@ def fetch_market_movers(
     min_change = config.MOVERS_MIN_CHANGE_PCT if min_change_pct is None else min_change_pct
     limit = config.MOVERS_LIMIT if limit is None else limit
     include_short = config.MOVERS_INCLUDE_SHORT if include_short_setups is None else include_short_setups
+    enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else enrich
 
     merged: dict[str, MoverCandidate] = {}
     for source in sources:
@@ -245,7 +249,7 @@ def fetch_market_movers(
 
     # Phase 2: enrich the top candidates with live intraday signals and re-rank
     # by early-momentum quality. Bounded by enrich_max; graceful per-candidate.
-    if config.MOVERS_ENRICH_INTRADAY and candidates:
+    if enrich and candidates:
         cap = max(0, int(config.MOVERS_ENRICH_MAX))
         for c in candidates[:cap]:
             _enrich_candidate(c)
