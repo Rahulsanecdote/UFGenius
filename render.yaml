@@ -77,6 +77,40 @@ services:
       # - key: EMAIL_TO
       #   sync: false
 
+  # ── Always-on movers worker (MOVERS Phase 5) ──────────────────────────────
+  #   Runs `bot.py --mode movers-worker` continuously: discover → alert →
+  #   monitor → invalidate, with NO browser. This is what makes UFGenius watch
+  #   the market for YOU and push Telegram alerts on new setups / invalidations.
+  #
+  #   IMPORTANT: Background Workers are a PAID Render feature (the free tier is
+  #   web-only). This service is commented out so the free web deploy still
+  #   works; uncomment it on a paid plan — or run the same command on any
+  #   always-on box (`python bot.py --mode movers-worker`). Set FMP_KEY,
+  #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID as Secrets for alerts to deliver.
+  # - type: worker
+  #   name: ufgenius-movers-worker
+  #   env: python
+  #   plan: starter
+  #   region: oregon
+  #   buildCommand: pip install --upgrade pip && pip install -r requirements.lock
+  #   startCommand: python bot.py --mode movers-worker
+  #   autoDeploy: false
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: "3.12.2"
+  #     - key: MOVERS_ALERTS_ENABLED     # push new-setup alerts
+  #       value: "true"
+  #     - key: MOVERS_MONITOR_ENABLED    # push invalidation alerts
+  #       value: "true"
+  #     - key: FMP_KEY                   # required — discovery source
+  #       sync: false
+  #     - key: TELEGRAM_BOT_TOKEN        # required — alert delivery
+  #       sync: false
+  #     - key: TELEGRAM_CHAT_ID          # required — where alerts go
+  #       sync: false
+  #     # Optional: ALPACA_API_KEY / ALPACA_SECRET_KEY (sync:false) improve
+  #     # intraday data used for the early-momentum enrichment + invalidation.
+
   # ── Optional: persistent disk for market-data cache (paid plans only) ───
   #   Without this, the data/ cache is wiped on every deploy/restart.
   #   The app works without it — data is re-fetched from yfinance on demand.
