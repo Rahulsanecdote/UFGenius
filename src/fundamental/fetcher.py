@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.data.fetcher import fetch_ticker_info
+from src.utils import config
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -19,7 +20,7 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
     """
     info = info if info is not None else fetch_ticker_info(ticker)
     if not info:
-        return _empty_fundamentals()
+        return _backfill_from_finviz(ticker, _empty_fundamentals())
 
     def _get(*keys, default=None):
         for k in keys:
@@ -44,7 +45,7 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
         if bvps is not None:
             total_equity = bvps * shares
 
-    return {
+    out = {
         "ticker":        ticker,
         "price":         price,
         "market_cap":    market_cap,
@@ -92,6 +93,37 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
         "total_assets_prev":   None,
         "revenue_prev":        None,
     }
+    return _backfill_from_finviz(ticker, out)
+
+
+def _backfill_from_finviz(ticker: str, out: dict) -> dict:
+    """Fill fields the primary source left empty using the Finviz snapshot.
+
+    Backfill only: an existing value is never overwritten, so enabling Finviz can
+    add coverage but cannot silently change a number the primary source already
+    supplied. No-op unless `finviz.enabled`, and any failure leaves ``out``
+    untouched — fundamentals feed the composite score, so this must never be able
+    to break scoring.
+    """
+    if not config.FINVIZ_ENABLED:
+        return out
+    try:
+        from src.data.providers.finviz import fetch_fundamentals as _finviz_fundamentals
+
+        snapshot = _finviz_fundamentals(ticker)
+        if not snapshot:
+            return out
+        filled = [
+            key for key, value in snapshot.items()
+            if key in out and out.get(key) is None and value is not None
+        ]
+        for key in filled:
+            out[key] = snapshot[key]
+        if filled:
+            out["_finviz_backfilled"] = filled
+    except Exception as exc:  # never break scoring on a supplementary source
+        log.debug(f"{ticker}: Finviz backfill unavailable ({exc})")
+    return out
 
 
 def _empty_fundamentals() -> dict:

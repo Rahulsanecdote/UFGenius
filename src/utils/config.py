@@ -472,6 +472,34 @@ CONSTITUENT_FETCH_USER_AGENT: str = (
     or "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"
 )
 
+# Finviz provider (fundamentals snapshot + screener). Finviz publishes no free
+# API, so the provider reads public HTML: it is OFF by default, rate-limited and
+# cached, because their terms restrict automated access and heavy use expects an
+# Elite subscription. Turning it on is deliberately the operator's decision.
+_FINVIZ: dict = get("finviz", {})
+FINVIZ_ENABLED: bool = env_bool("FINVIZ_ENABLED", bool(_FINVIZ.get("enabled", False)))
+FINVIZ_MIN_REQUEST_INTERVAL_SEC: float = env_float(
+    "FINVIZ_MIN_REQUEST_INTERVAL_SEC",
+    _as_float(_FINVIZ.get("min_request_interval_sec"), 1.0),
+)
+FINVIZ_CACHE_TTL_SEC: int = _as_int(
+    env("FINVIZ_CACHE_TTL_SEC", "") or _FINVIZ.get("cache_ttl_sec", 21_600), 21_600
+)
+FINVIZ_SCREENER_CACHE_TTL_SEC: int = _as_int(
+    env("FINVIZ_SCREENER_CACHE_TTL_SEC", "") or _FINVIZ.get("screener_cache_ttl_sec", 900),
+    900,
+)
+FINVIZ_SCREENER_MAX_RESULTS: int = _as_int(
+    env("FINVIZ_SCREENER_MAX_RESULTS", "") or _FINVIZ.get("screener_max_results", 200), 200
+)
+# `or` fallback for the same reason as CONSTITUENT_FETCH_USER_AGENT: a blank env
+# value must not strip the UA.
+FINVIZ_USER_AGENT: str = (
+    env("FINVIZ_USER_AGENT", "").strip()
+    or str(_FINVIZ.get("user_agent") or "").strip()
+    or CONSTITUENT_FETCH_USER_AGENT
+)
+
 # Optional point-in-time universe membership file (audit M11). When set, the
 # backtest only takes entries in tickers that were members of the universe on
 # the entry date, correcting survivorship bias in the run-time ticker list.

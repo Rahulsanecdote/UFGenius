@@ -211,6 +211,19 @@ pytest --cov=src       # coverage
   sub-`min_trades` sample. Honest about its biases (`bias_disclosures`:
   intrabar-ordering, no-concurrency, short/provider-dependent data). Necessary,
   not sufficient — still paper-trade after. See `docs/INTRADAY_BACKTEST.md`.
+- **Finviz provider** (`src/data/providers/finviz.py`, config `finviz:`, **default
+  off**): a supplementary **fundamentals snapshot + screener** source. Finviz has
+  no free API, so it parses public HTML — tables are located by **content** (as
+  audit M10 required of `universe.py`), requests are serialised behind a minimum
+  interval and disk-cached, and every entry point **fails soft** (`None`/`[]`) so
+  a restyle degrades to "no data". `fetch_fundamentals()` maps only fields Finviz
+  states directly; values it doesn't publish (absolute debt, cash-flow lines) are
+  left absent rather than derived, since `fundamental/scorer.py` already
+  normalises over measurable criteria. It is **backfill only** in
+  `fundamental/fetcher.py` — never overwrites a primary-source value — and is
+  firewalled from the money path. `screen()` passes Finviz's own filter string
+  through untouched. Note their terms restrict automated access; enabling it is
+  deliberately an operator decision.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
