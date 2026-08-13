@@ -1,7 +1,49 @@
 account_size: 10000
 risk_per_trade: 0.01
 max_position_pct: 0.10
-scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM
+scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM | MOVERS
+
+# Market-movers discovery (the MOVERS universe / `bot.py --mode movers`). Surfaces
+# the day's actual market-wide movers — top gainers, losers, most-actives (FMP) —
+# ranked with a long/short direction, for intraday trading. Needs FMP_KEY. The
+# standard disqualification filters + RiskGuard still run downstream, so most
+# low-quality movers (penny/illiquid/already-spiked chasers) are filtered out by
+# design — discovery is broad, the gates stay strict.
+movers:
+  sources: [gainers, losers, most_actives]  # which FMP lists to pull
+  min_price: 1.0            # drop sub-$1 names (penny/liquidity guard); lower at your own risk
+  max_price: 0              # 0 = no upper cap
+  min_change_pct: 3.0       # only consider names moving at least this % (absolute)
+  limit: 40                 # max ranked candidates returned
+  include_short_setups: true  # losers → SHORT-direction candidates
+  # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,
+  # momentum, VWAP position, breakout) and rank by early-momentum QUALITY, not
+  # just raw % change. Adds one intraday fetch per candidate (Alpaca/Polygon/yf).
+  enrich_intraday: true     # blend intraday signals into the rank
+  enrich_interval: "5m"     # intraday bar size for enrichment
+  enrich_max: 40            # cap how many candidates get the intraday fetch (cost guard)
+  # Phase 3 — screener-style alerts. When a mover clears these criteria, send a
+  # Telegram alert (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID) explaining why,
+  # with the supporting metrics, a confidence score, and long/short direction.
+  # Opt-in, default OFF (no spam).
+  alerts:
+    enabled: false          # master switch
+    min_score: 70           # only alert candidates scoring >= this (0-100)
+    require_enriched: true   # only alert when live intraday signals are present
+    dedup_ttl_sec: 1800     # don't re-alert the same ticker+direction within this window
+    max_per_run: 10         # cap alerts per scan cycle (spam guard)
+  # Phase 4 — post-open monitoring + invalidation. Keep watching alerted movers
+  # after the open and INVALIDATE a signal when the setup breaks down (momentum
+  # turns against it, it loses VWAP, volume fades, or the quality score collapses).
+  # `bot.py --mode movers-monitor` discovers → alerts → then loops this.
+  monitor:
+    enabled: false            # master switch (the monitor mode still runs; this gates invalidation alerts)
+    poll_interval_sec: 60     # seconds between re-evaluations
+    rel_volume_floor: 1.0     # invalidate when current relative volume drops below this
+    momentum_flip: -0.5       # invalidate when aligned momentum <= this (turned against the setup)
+    require_vwap_hold: true    # invalidate on losing VWAP (price on the wrong side)
+    min_score: 50             # invalidate when the enriched quality score falls below this
+    alert_on_invalidation: true  # send a Telegram note when a watched signal invalidates
 
 safety_rules:
   max_positions: 5
