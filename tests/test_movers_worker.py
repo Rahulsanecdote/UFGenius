@@ -1,0 +1,148 @@
+"""Tests for the Phase 5 always-on movers worker (movers_worker.py).
+
+Hermetic: all collaborators (discover / alerter / monitor / scan_window / sleep)
+are injected, so the loop is exercised without network or real sleeps.
+"""
+
+from unittest.mock import patch
+
+import src.utils.config as cfg
+from src.scanner.movers import MoverCandidate
+from src.scanner import movers_worker as mw
+
+
+def _cfg(**over):
+    base = dict(MOVERS_WORKER_POLL_INTERVAL_SEC=60.0, MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=5,
+                MOVERS_WORKER_MARKET_HOURS_ONLY=True, MOVERS_ALERTS_MIN_SCORE=70.0)
+    base.update(over)
+    return [patch.object(cfg, k, v) for k, v in base.items()]
+
+
+class _Alerter:
+    def __init__(self, fired=1):
+        self.calls = 0
+        self._fired = fired
+    def process(self, candidates, *, now=None, send=True):
+        self.calls += 1
+        return [{"ticker": c.ticker} for c in candidates][: self._fired]
+
+
+class _Monitor:
+    def __init__(self, invalidate=0):
+        self.watch_calls = 0
+        self.eval_calls = 0
+        self._inval = invalidate
+    def watch(self, candidates):
+        self.watch_calls += 1
+        return len(candidates)
+    def evaluate(self, *, now=None, enrich=None, alert=None):
+        self.eval_calls += 1
+        return [{"ticker": "X"}] * self._inval
+
+
+def _cand(ticker="NBIS", score=89.0):
+    return MoverCandidate(ticker=ticker, price=10.0, change_pct=20.0,
+                          direction="long", sources=["gainers"], score=score, enriched=True)
+
+
+def _run(**kw):
+    sleeps = []
+    defaults = dict(max_cycles=6, sleep_fn=lambda s: sleeps.append(s),
+                    discover=lambda: [_cand()], alerter=_Alerter(), monitor=_Monitor(),
+                    scan_window=lambda: True, send=lambda *a, **k: True)
+    defaults.update(kw)
+    stats = mw.run_worker(**defaults)
+    return stats, sleeps, defaults
+
+
+def test_rediscovers_on_cadence_monitors_every_cycle():
+    with_ctx = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=3)
+    for p in with_ctx:
+        p.start()
+    try:
+        stats, sleeps, d = _run(max_cycles=6, monitor=_Monitor(), alerter=_Alerter())
+    finally:
+        for p in with_ctx:
+            p.stop()
+    # 6 cycles, rediscover every 3 → cycles 1 and 4 discover (2 discoveries).
+    assert stats["cycles"] == 6
+    assert stats["discoveries"] == 2
+    assert d["monitor"].eval_calls == 6          # monitored every cycle
+    assert d["monitor"].watch_calls == 2         # watched on each discovery
+    assert len(sleeps) == 5                       # sleeps between, not after the last
+
+
+def test_market_hours_gate_skips_when_closed():
+    ps = _cfg()
+    for p in ps:
+        p.start()
+    try:
+        stats, _, d = _run(scan_window=lambda: False)
+    finally:
+        for p in ps:
+            p.stop()
+    assert stats["discoveries"] == 0 and stats["alerts"] == 0
+    assert d["monitor"].eval_calls == 0
+
+
+def test_market_hours_only_false_scans_regardless():
+    ps = _cfg(MOVERS_WORKER_MARKET_HOURS_ONLY=False)
+    for p in ps:
+        p.start()
+    try:
+        stats, _, _ = _run(max_cycles=1, scan_window=lambda: False)
+    finally:
+        for p in ps:
+            p.stop()
+    assert stats["discoveries"] == 1   # ran even though "closed"
+
+
+def test_alerts_and_invalidations_counted():
+    ps = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ps:
+        p.start()
+    try:
+        stats, _, _ = _run(max_cycles=3, discover=lambda: [_cand("A"), _cand("B")],
+                           alerter=_Alerter(fired=2), monitor=_Monitor(invalidate=1))
+    finally:
+        for p in ps:
+            p.stop()
+    assert stats["alerts"] == 6          # 2 per cycle × 3 cycles (rediscover every 1)
+    assert stats["invalidations"] == 3   # 1 per cycle × 3
+
+
+def test_only_high_score_candidates_watched():
+    ps = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ps:
+        p.start()
+    try:
+        mon = _Monitor()
+        # one above threshold (89), one below (40) → only 1 watched
+        _run(max_cycles=1, discover=lambda: [_cand("HI", 89.0), _cand("LO", 40.0)], monitor=mon)
+        # capture what watch received
+        watched_counts = []
+        mon2 = _Monitor()
+        orig = mon2.watch
+        def spy(cands):
+            watched_counts.append(len(cands)); return orig(cands)
+        mon2.watch = spy
+        _run(max_cycles=1, discover=lambda: [_cand("HI", 89.0), _cand("LO", 40.0)], monitor=mon2)
+    finally:
+        for p in ps:
+            p.stop()
+    assert watched_counts == [1]         # only the >=70 candidate
+
+
+def test_bad_cycle_does_not_crash_the_loop():
+    ps = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ps:
+        p.start()
+    try:
+        def boom():
+            raise RuntimeError("discover failed")
+        stats, _, _ = _run(max_cycles=3, discover=boom)
+    finally:
+        for p in ps:
+            p.stop()
+    assert stats["cycles"] == 3          # kept looping despite the error
+    assert stats["discoveries"] == 0
