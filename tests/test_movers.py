@@ -40,9 +40,11 @@ def _mock_session():
 
 def _patched(**cfgover):
     """Context managers: real FMP key + default movers config (overridable)."""
+    # Enrichment OFF for the discovery tests → hermetic (no intraday fetch); the
+    # enrichment path has its own dedicated tests below.
     base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
                 MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
-                MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True)
+                MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False)
     base.update(cfgover)
     patches = [patch.object(cfg, k, v) for k, v in base.items()]
     patches.append(patch("src.scanner.movers.get_retry_session", return_value=_mock_session()))
@@ -130,3 +132,68 @@ def test_get_movers_universe_returns_symbols():
         for p in ps:
             p.stop()
     assert "BULL" in syms and all(isinstance(s, str) for s in syms)
+
+
+# ── Phase 2: intraday enrichment / early-momentum ranking ────────────────────
+
+def test_enriched_score_rewards_volume_and_alignment_over_raw_move():
+    # A modest +6% move on heavy volume, strong aligned momentum, above VWAP...
+    hot = mv._enriched_score("long", change_pct=6.0, rel_volume=5.0,
+                             momentum_pct=3.0, vwap_pct=2.0, is_breakout=True)
+    # ...beats a huge +40% move with no volume, fading momentum, below VWAP.
+    cold = mv._enriched_score("long", change_pct=40.0, rel_volume=0.5,
+                              momentum_pct=-2.0, vwap_pct=-3.0, is_breakout=False)
+    assert hot > cold
+
+
+def test_enriched_score_direction_aware_for_shorts():
+    # For a SHORT, negative momentum + below VWAP is "aligned" and scores well.
+    aligned = mv._enriched_score("short", change_pct=-10.0, rel_volume=3.0,
+                                 momentum_pct=-4.0, vwap_pct=-3.0, is_breakout=False)
+    counter = mv._enriched_score("short", change_pct=-10.0, rel_volume=3.0,
+                                 momentum_pct=4.0, vwap_pct=3.0, is_breakout=False)
+    assert aligned > counter
+
+
+def _enrich_patches(metrics, vwap_val):
+    """Patch the intraday helpers _enrich_candidate imports (lazily, inside it)."""
+    import pandas as pd
+    fake_df = pd.DataFrame({"Close": [1, 2], "High": [1, 2],
+                            "Low": [1, 2], "Volume": [1, 2]})
+    return [
+        patch("src.data.fetcher.fetch_intraday", return_value=fake_df),
+        patch("src.scanner.intraday_scan.score_intraday_frame", return_value=metrics),
+        patch("src.technical.intraday_features.vwap", return_value=vwap_val),
+    ]
+
+
+def test_enrich_candidate_attaches_metrics_and_rescores():
+    c = mv.MoverCandidate(ticker="X", price=10.0, change_pct=6.0,
+                          direction="long", sources=["gainers"], base_score=20.0, score=20.0)
+    metrics = {"last_price": 10.2, "rel_volume": 5.0, "momentum_pct": 3.0, "is_breakout": True}
+    ps = _enrich_patches(metrics, vwap_val=10.0)  # last 10.2 vs vwap 10 → +2% above
+    for p in ps:
+        p.start()
+    try:
+        mv._enrich_candidate(c)
+    finally:
+        for p in ps:
+            p.stop()
+    assert c.enriched is True
+    assert c.rel_volume == 5.0 and c.momentum_pct == 3.0 and c.is_breakout is True
+    assert c.vwap_pct == 2.0
+    assert c.score != c.base_score   # re-scored on intraday signals
+
+
+def test_enrich_candidate_keeps_base_score_when_no_intraday_data():
+    c = mv.MoverCandidate(ticker="X", price=10.0, change_pct=6.0,
+                          direction="long", sources=["gainers"], base_score=20.0, score=20.0)
+    ps = _enrich_patches(metrics=None, vwap_val=None)  # too few bars → None
+    for p in ps:
+        p.start()
+    try:
+        mv._enrich_candidate(c)
+    finally:
+        for p in ps:
+            p.stop()
+    assert c.enriched is False and c.score == 20.0   # unchanged

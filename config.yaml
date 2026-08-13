@@ -16,6 +16,12 @@ movers:
   min_change_pct: 3.0       # only consider names moving at least this % (absolute)
   limit: 40                 # max ranked candidates returned
   include_short_setups: true  # losers → SHORT-direction candidates
+  # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,
+  # momentum, VWAP position, breakout) and rank by early-momentum QUALITY, not
+  # just raw % change. Adds one intraday fetch per candidate (Alpaca/Polygon/yf).
+  enrich_intraday: true     # blend intraday signals into the rank
+  enrich_interval: "5m"     # intraday bar size for enrichment
+  enrich_max: 40            # cap how many candidates get the intraday fetch (cost guard)
 
 safety_rules:
   max_positions: 5

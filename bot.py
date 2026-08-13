@@ -677,15 +677,24 @@ def cmd_movers(args) -> None:
         print("  No movers returned. Check FMP_KEY is set, or loosen movers.min_change_pct.")
         print(f"{'='*72}\n")
         return
-    print(f"  {'#':>2}  {'TICKER':<7}{'PRICE':>9}{'CHG%':>9}  {'DIR':<6}{'SCORE':>6}  SOURCES")
-    print(f"  {'-'*66}")
+    def _fmt(v, suffix="", width=7):
+        return (f"{v:.1f}{suffix}".rjust(width)) if v is not None else "—".rjust(width)
+
+    print(f"  {'#':>2}  {'TICKER':<7}{'PRICE':>9}{'CHG%':>8}  {'DIR':<6}{'SCORE':>6}"
+          f"{'RVOL':>7}{'MOM%':>8}{'VWAP%':>8}  SOURCES")
+    print(f"  {'-'*88}")
     for i, m in enumerate(movers, 1):
         arrow = "LONG " if m.direction == "long" else "SHORT"
-        print(f"  {i:>2}  {m.ticker:<7}{m.price:>9.2f}{m.change_pct:>8.1f}%  {arrow:<6}"
-              f"{m.score:>6.0f}  {'+'.join(m.sources)}")
-    print(f"  {'-'*66}")
-    print(f"  {len(movers)} candidates. Set scan_universe: MOVERS to run the full")
-    print("  scoring + RiskGuard pipeline over them (risk filters still apply).")
+        brk = " ⬆" if m.is_breakout else ""
+        print(f"  {i:>2}  {m.ticker:<7}{m.price:>9.2f}{m.change_pct:>7.1f}%  {arrow:<6}"
+              f"{m.score:>6.0f}{_fmt(m.rel_volume, 'x')}{_fmt(m.momentum_pct, '%', 8)}"
+              f"{_fmt(m.vwap_pct, '%', 8)}  {'+'.join(m.sources)}{brk}")
+    print(f"  {'-'*88}")
+    enriched = sum(1 for m in movers if m.enriched)
+    print(f"  {len(movers)} candidates ({enriched} intraday-enriched). Rank blends the")
+    print("  raw move with relative volume, momentum, and VWAP position (early-momentum")
+    print("  quality). Set scan_universe: MOVERS to run the full scoring + RiskGuard")
+    print("  pipeline over them (risk filters still apply).")
     print(f"{'='*72}\n")
 
 
