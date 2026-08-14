@@ -126,6 +126,11 @@ MOVERS_MONITOR_MOMENTUM_FLIP: float = _as_float(_MOVERS_MONITOR.get("momentum_fl
 MOVERS_MONITOR_REQUIRE_VWAP_HOLD: bool = bool(_MOVERS_MONITOR.get("require_vwap_hold", True))
 MOVERS_MONITOR_MIN_SCORE: float = _as_float(_MOVERS_MONITOR.get("min_score", 50), 50.0)
 MOVERS_MONITOR_ALERT_ON_INVALIDATION: bool = bool(_MOVERS_MONITOR.get("alert_on_invalidation", True))
+# Phase 5 — always-on worker.
+_MOVERS_WORKER: dict = _MOVERS.get("worker", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_WORKER_POLL_INTERVAL_SEC: float = _as_float(_MOVERS_WORKER.get("poll_interval_sec", 60), 60.0)
+MOVERS_WORKER_REDISCOVER_EVERY_CYCLES: int = _as_int(_MOVERS_WORKER.get("rediscover_every_cycles", 5), 5)
+MOVERS_WORKER_MARKET_HOURS_ONLY: bool = bool(_MOVERS_WORKER.get("market_hours_only", True))
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])

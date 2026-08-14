@@ -44,6 +44,14 @@ movers:
     require_vwap_hold: true    # invalidate on losing VWAP (price on the wrong side)
     min_score: 50             # invalidate when the enriched quality score falls below this
     alert_on_invalidation: true  # send a Telegram note when a watched signal invalidates
+  # Phase 5 — always-on worker. Runs discover → alert → monitor → invalidate in a
+  # loop with NO browser (bot.py --mode movers-worker, or a Render Background
+  # Worker). Needs FMP_KEY + Telegram creds; set movers.alerts.enabled and
+  # movers.monitor.enabled true for it to actually push.
+  worker:
+    poll_interval_sec: 60        # monitor re-evaluation cadence
+    rediscover_every_cycles: 5   # re-run discovery every N cycles (≈5 min at 60s)
+    market_hours_only: true      # only scan during the pre-market→close window
 
 safety_rules:
   max_positions: 5

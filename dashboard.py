@@ -478,6 +478,16 @@ HTML = '''
 
     /* Market Movers panel */
     .movers-actions { display: flex; gap: 8px; }
+    .movers-live {
+      font-size: 11px; font-weight: 700; letter-spacing: .06em; vertical-align: middle;
+      margin-left: 8px; padding: 2px 8px; border-radius: 999px;
+      color: #41c07e; background: rgba(65, 192, 126, 0.14);
+    }
+    .movers-live.paused { color: #8b97a8; background: rgba(139, 151, 168, 0.14); }
+    .movers-live .pulse { display: inline-block; animation: moversPulse 1.6s ease-in-out infinite; }
+    .movers-live.paused .pulse { animation: none; }
+    @keyframes moversPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+    @media (prefers-reduced-motion: reduce) { .movers-live .pulse { animation: none; } }
     .movers-status { padding: 4px 24px 12px; color: var(--text-muted, #8b97a8); font-size: 14px; }
     .movers-table-wrap { overflow-x: auto; padding: 0 12px 4px; }
     .movers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1745,10 +1755,11 @@ HTML = '''
       <section class="panel movers-shell" id="moversPanel" aria-labelledby="moversTitle">
         <div class="panel-heading">
           <div>
-            <h2 id="moversTitle">Market Movers</h2>
+            <h2 id="moversTitle">Market Movers <span id="moversLive" class="movers-live" title="Auto-refresh status">● LIVE</span></h2>
             <p>Today's biggest market-wide movers — ranked, long/short. Not the fixed universe.</p>
           </div>
           <div class="movers-actions">
+            <button id="moversAutoButton" class="summary-action" type="button" title="Toggle auto-refresh">Auto: On</button>
             <button id="moversRefreshButton" class="summary-action" type="button">Refresh</button>
             <button id="moversDeepButton" class="summary-action" type="button" title="Rank by live intraday signals (relative volume, momentum, VWAP) — slower">Deep scan ⚡</button>
           </div>
@@ -2289,6 +2300,8 @@ HTML = '''
       currentScan: null,
       currentChart: null,
       currentRegime: null,
+      moversAutoRefresh: true,
+      moversLastLoad: null,
       providerHealth: null,
       providerCheckedAt: null,
       chartRange: '3M',
@@ -3570,12 +3583,62 @@ HTML = '''
       try {
         const payload = await apiFetchJson(`/api/movers?enrich=${enrich ? 'true' : 'false'}&limit=25`);
         renderMovers(payload);
+        state.moversLastLoad = Date.now();   // for the "updated Ns ago" indicator
+        updateLiveIndicator();
       } catch (error) {
         if (!/Authorization/i.test(error.message || '')) {
           $('moversTable').hidden = true;
           status.textContent = `Movers failed: ${error.message}`;
         }
       }
+    }
+
+    // ── Live auto-refresh (Phase 6): the dashboard updates itself, no manual
+    // reload. Client-side polling — pauses when the tab is hidden (saves the
+    // free tier + avoids hammering the FMP quota), resumes on focus.
+    const MOVERS_REFRESH_MS = 60 * 1000;      // re-poll movers (discovery-only) every 60s
+    const OVERVIEW_REFRESH_MS = 5 * 60 * 1000; // re-poll market regime every 5 min
+
+    function updateLiveIndicator() {
+      const el = $('moversLive');
+      if (!el) return;
+      if (!state.moversAutoRefresh) {
+        el.className = 'movers-live paused';
+        el.innerHTML = 'PAUSED';
+        return;
+      }
+      el.className = 'movers-live';
+      let ago = '';
+      if (state.moversLastLoad) {
+        const s = Math.round((Date.now() - state.moversLastLoad) / 1000);
+        ago = s < 2 ? ' · just now' : (s < 90 ? ` · ${s}s ago` : ` · ${Math.round(s / 60)}m ago`);
+      }
+      el.innerHTML = `<span class="pulse">●</span> LIVE${ago}`;
+    }
+
+    function setMoversAuto(on) {
+      state.moversAutoRefresh = on;
+      const btn = $('moversAutoButton');
+      if (btn) btn.textContent = on ? 'Auto: On' : 'Auto: Off';
+      updateLiveIndicator();
+      if (on && !document.hidden) loadMovers(false);   // refresh immediately on enable
+    }
+
+    function startLiveRefresh() {
+      // Movers: re-poll on the interval (skip while hidden or paused).
+      window.setInterval(() => {
+        if (state.moversAutoRefresh && !document.hidden) loadMovers(false);
+      }, MOVERS_REFRESH_MS);
+      // Market Overview: regime changes slowly — a longer cadence.
+      window.setInterval(() => {
+        if (state.moversAutoRefresh && !document.hidden) loadRegime();
+      }, OVERVIEW_REFRESH_MS);
+      // Tick the "updated Ns ago" label once a second.
+      window.setInterval(updateLiveIndicator, 1000);
+      // Coming back to the tab after a while → refresh right away.
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && state.moversAutoRefresh) { loadMovers(false); loadRegime(); }
+      });
     }
 
     async function loadChart(ticker, range = state.chartRange) {
@@ -3990,6 +4053,7 @@ HTML = '''
     $('refreshHealthButton').addEventListener('click', loadProviderHealth);
     $('moversRefreshButton').addEventListener('click', () => loadMovers(false));
     $('moversDeepButton').addEventListener('click', () => loadMovers(true));
+    $('moversAutoButton').addEventListener('click', () => setMoversAuto(!state.moversAutoRefresh));
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);
     $('haltButton').addEventListener('click', () => toggleBreaker('halt'));
     $('resumeButton').addEventListener('click', () => toggleBreaker('resume'));
@@ -4097,6 +4161,7 @@ HTML = '''
     warmUp().then(() => {
       loadRegime();
       loadMovers(false);
+      startLiveRefresh();          // Phase 6: auto-refresh movers + overview
       loadProviderHealth();
       startProviderHealthPolling();
       loadBreakerState();

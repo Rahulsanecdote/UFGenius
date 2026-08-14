@@ -833,6 +833,33 @@ def cmd_movers_monitor(args) -> None:
         print("\n  Monitor stopped.\n")
 
 
+def cmd_movers_worker(args) -> None:
+    """Always-on movers worker (MOVERS Phase 5): continuous discover → alert → monitor.
+
+    Runs the movers pipeline in a loop with NO browser — surfaces setups, alerts
+    on new qualifiers, and invalidates as conditions change. Meant for a
+    persistent background service (a Render Background Worker or a daemon).
+    Needs FMP_KEY + Telegram creds, and movers.alerts.enabled /
+    movers.monitor.enabled = true to actually push. Ctrl-C to stop.
+    """
+    from src.scanner.movers_worker import run_worker
+
+    print(f"\n{'='*72}")
+    print("  MOVERS WORKER — always-on discover → alert → monitor (Phase 5)")
+    print(f"{'='*72}")
+    print(f"  Re-discover every {config.MOVERS_WORKER_REDISCOVER_EVERY_CYCLES} cycles, "
+          f"monitor every {config.MOVERS_WORKER_POLL_INTERVAL_SEC:.0f}s"
+          f"{' (market hours only)' if config.MOVERS_WORKER_MARKET_HOURS_ONLY else ''}.")
+    alerts_on = config.MOVERS_ALERTS_ENABLED and bool(config.env("TELEGRAM_CHAT_ID"))
+    print(f"  Alerts: {'ON (Telegram)' if alerts_on else 'OFF — set movers.alerts.enabled + TELEGRAM_CHAT_ID'}.")
+    print("  Runs continuously. Ctrl-C to stop.")
+    print(f"{'='*72}\n")
+    try:
+        run_worker()
+    except KeyboardInterrupt:
+        print("\n  Worker stopped.\n")
+
+
 def cmd_earnings_calendar(args) -> None:
     """Build/refresh the P1.4 earnings calendar from the data provider.
 
@@ -999,7 +1026,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -1122,6 +1149,8 @@ Examples:
         cmd_movers(args)
     elif args.mode == "movers-monitor":
         cmd_movers_monitor(args)
+    elif args.mode == "movers-worker":
+        cmd_movers_worker(args)
     else:
         parser.print_help()
         sys.exit(1)
