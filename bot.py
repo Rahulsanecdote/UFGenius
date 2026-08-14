@@ -790,6 +790,59 @@ def cmd_movers_worker(args) -> None:
         print("\n  Worker stopped.\n")
 
 
+def cmd_stream(args) -> None:
+    """Live price streaming diagnostic (MOVERS Phase 8): watch real-time ticks.
+
+    Subscribes an Alpaca trade websocket to today's top movers (or ``--ticker``)
+    and prints each symbol's latest streamed price. A quick way to confirm the
+    push feed works before relying on it in the worker. Needs ALPACA_API_KEY/
+    SECRET and a live market (IEX has no after-hours tape). Ctrl-C to stop.
+    """
+    import time as _time
+
+    from src.streaming.price_stream import PriceStream
+
+    if args.ticker:
+        symbols = [args.ticker.upper()]
+    else:
+        from src.scanner.movers import get_movers_universe
+        symbols = get_movers_universe()[:10]
+
+    print(f"\n{'='*72}")
+    print("  PRICE STREAM — real-time Alpaca trade tape (Phase 8)")
+    print(f"{'='*72}")
+    if not symbols:
+        print("  No symbols to stream (need FMP_KEY for movers, or pass --ticker).\n")
+        return
+    print(f"  Feed: {config.MOVERS_STREAM_FEED.upper()} · symbols: {', '.join(symbols)}")
+
+    # This diagnostic streams regardless of the config flag (that flag gates the
+    # worker); force it on for the life of this command.
+    stream = PriceStream()
+    config.MOVERS_STREAM_ENABLED = True
+    if not stream.start(symbols):
+        print("  Could not start the stream — check ALPACA_API_KEY/SECRET.\n")
+        return
+    print("  Streaming… (Ctrl-C to stop)\n")
+    try:
+        for _ in range(60):
+            _time.sleep(5)
+            snap = stream.snapshot()
+            if not snap:
+                print("  …waiting for first ticks (quiet tape or market closed)")
+                continue
+            row = "  ".join(
+                f"{sym} ${v['price']:.2f}{'' if v['fresh'] else ' (stale)'}"
+                for sym, v in sorted(snap.items()) if v
+            )
+            print(f"  {row}")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stream.stop()
+        print("\n  Stream stopped.\n")
+
+
 def cmd_earnings_calendar(args) -> None:
     """Build/refresh the P1.4 earnings calendar from the data provider.
 
@@ -956,7 +1009,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -1072,6 +1125,8 @@ Examples:
         cmd_movers_monitor(args)
     elif args.mode == "movers-worker":
         cmd_movers_worker(args)
+    elif args.mode == "stream":
+        cmd_stream(args)
     else:
         parser.print_help()
         sys.exit(1)

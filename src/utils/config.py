@@ -148,6 +148,20 @@ MOVERS_WORKER_STATE_MAX_RECENT: int = env_int(
     "MOVERS_WORKER_STATE_MAX_RECENT",
     _as_int(_MOVERS_WORKER.get("state_max_recent", 20), 20),
 )
+
+# Phase 8 — real-time price streaming (Alpaca trade websocket). Opt-in and
+# fail-open: default off, and the worker keeps polling if it can't start. Needs
+# ALPACA_API_KEY/SECRET. `feed`: iex (free) or sip (paid). `stale_sec`: a tick
+# older than this is treated as a quiet tape. `max_symbols`: subscription cap.
+_MOVERS_STREAM: dict = _MOVERS.get("stream", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_STREAM_ENABLED: bool = env_bool(
+    "MOVERS_STREAM_ENABLED", bool(_MOVERS_STREAM.get("enabled", False)))
+MOVERS_STREAM_FEED: str = env("MOVERS_STREAM_FEED", str(_MOVERS_STREAM.get("feed", "iex")))
+MOVERS_STREAM_STALE_SEC: float = env_float(
+    "MOVERS_STREAM_STALE_SEC", _as_float(_MOVERS_STREAM.get("stale_sec", 10), 10.0))
+MOVERS_STREAM_MAX_SYMBOLS: int = env_int(
+    "MOVERS_STREAM_MAX_SYMBOLS", _as_int(_MOVERS_STREAM.get("max_symbols", 30), 30))
+
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])

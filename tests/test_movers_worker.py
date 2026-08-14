@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import src.utils.config as cfg
 from src.scanner.movers import MoverCandidate
+from src.scanner.movers_monitor import WatchState
 from src.scanner import movers_worker as mw
 
 
@@ -35,7 +36,8 @@ class _Monitor:
         self._active = []
     def watch(self, candidates):
         self.watch_calls += 1
-        self._active = list(candidates)
+        # mirror the real monitor: active() yields WatchState (with .candidate)
+        self._active = [WatchState(candidate=c, entry_score=c.score) for c in candidates]
         return len(candidates)
     def evaluate(self, *, now=None, enrich=None, alert=None):
         self.eval_calls += 1
@@ -56,6 +58,26 @@ class _State:
         self.invalidations.append(list(transitions))
     def publish(self, **kw):
         self.publishes.append(kw)
+
+
+class _Stream:
+    """Fake PriceStream: records lifecycle + subscription calls, no network."""
+    def __init__(self, start_ok=True):
+        self.started = False
+        self.stopped = False
+        self.symbol_calls = []
+        self._ok = start_ok
+    def start(self, symbols=None):
+        self.started = True
+        return self._ok
+    def set_symbols(self, syms):
+        self.symbol_calls.append(list(syms))
+    def status(self):
+        return {"live": True, "subscribed_count": len(self.symbol_calls[-1]) if self.symbol_calls else 0}
+    def snapshot(self):
+        return {"NBIS": {"price": 12.3, "age_seconds": 0.4, "fresh": True}}
+    def stop(self):
+        self.stopped = True
 
 
 def _cand(ticker="NBIS", score=89.0):
@@ -183,6 +205,44 @@ def test_publish_records_alerts_and_invalidations():
     assert sum(len(i) for i in st.invalidations) == 2     # 1 × 2 cycles
     # the live watch set is handed to publish each cycle
     assert st.publishes[-1]["watching"] is not None
+
+
+def test_worker_drives_injected_stream():
+    # Phase 8: worker starts the stream, keeps it subscribed to the live watch
+    # set each in-window cycle, feeds prices+status into publish, and stops it.
+    ps = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ps:
+        p.start()
+    try:
+        st, strm = _State(), _Stream()
+        _run(max_cycles=2, discover=lambda: [_cand("NBIS")],
+             monitor=_Monitor(), state=st, stream=strm)
+    finally:
+        for p in ps:
+            p.stop()
+    assert strm.started is True and strm.stopped is True
+    assert strm.symbol_calls and strm.symbol_calls[0] == ["NBIS"]   # active watch set
+    last = st.publishes[-1]
+    assert last["stream_status"] is not None
+    assert last["stream_prices"]["NBIS"]["price"] == 12.3
+
+
+def test_worker_falls_back_when_stream_wont_start():
+    # start() returning False → worker drops the stream and keeps polling.
+    ps = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ps:
+        p.start()
+    try:
+        st, strm = _State(), _Stream(start_ok=False)
+        stats, _, _ = _run(max_cycles=2, discover=lambda: [_cand("NBIS")],
+                           monitor=_Monitor(), state=st, stream=strm)
+    finally:
+        for p in ps:
+            p.stop()
+    assert strm.started is True
+    assert strm.symbol_calls == []                    # never subscribed (dropped)
+    assert stats["cycles"] == 2                        # loop still ran
+    assert st.publishes[-1]["stream_status"] is None   # no streaming block
 
 
 def test_bad_cycle_does_not_crash_the_loop():

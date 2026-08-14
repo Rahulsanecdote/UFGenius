@@ -82,6 +82,28 @@ def test_invalidations_recorded_with_timestamp(tmp_path):
     assert "at" in snap["recent_invalidations"][0]
 
 
+def test_stream_status_and_live_price_attached(tmp_path):
+    # Phase 8: publish carries the stream status block and attaches a fresh live
+    # price to the matching watch view.
+    s = _state(tmp_path)
+    s.publish(cycle=5, stats={}, watching=[_watch("NBIS")], scan_window_open=True,
+              stream_status={"live": True, "feed": "iex", "subscribed_count": 1,
+                             "priced_count": 1, "tick_count": 9},
+              stream_prices={"NBIS": {"price": 12.34, "age_seconds": 0.5, "fresh": True}})
+    snap = _state(tmp_path).load().snapshot()
+    assert snap["streaming"]["live"] is True and snap["streaming"]["feed"] == "iex"
+    nbis = snap["watching"][0]
+    assert nbis["live_price"] == 12.34 and nbis["live_fresh"] is True
+
+
+def test_no_stream_means_no_streaming_block(tmp_path):
+    s = _state(tmp_path)
+    s.publish(cycle=1, stats={}, watching=[_watch("AAA")], scan_window_open=True)
+    snap = _state(tmp_path).load().snapshot()
+    assert "streaming" not in snap
+    assert "live_price" not in snap["watching"][0]
+
+
 def test_corrupt_file_is_unavailable_not_fatal(tmp_path):
     p = tmp_path / "movers_worker.json"
     p.write_text("{not valid json", encoding="utf-8")

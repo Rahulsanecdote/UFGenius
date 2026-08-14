@@ -499,6 +499,9 @@ HTML = '''
     .mw-badge.mw-live { color: #41c07e; background: rgba(65, 192, 126, 0.16); }
     .mw-badge.mw-stale { color: #d9a441; background: rgba(217, 164, 65, 0.16); }
     .mw-badge.mw-off { color: #8b97a8; background: rgba(139, 151, 168, 0.16); }
+    .mw-stream { font-size: 11px; font-weight: 700; letter-spacing: .04em;
+      padding: 2px 8px; border-radius: 999px; color: #3fa9f5;
+      background: rgba(63, 169, 245, 0.14); }
     .mw-meta { font-size: 12px; color: var(--text-muted, #8b97a8); }
     .mw-watching { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
     .mw-chip { font-size: 12px; padding: 3px 9px; border-radius: 999px;
@@ -508,6 +511,7 @@ HTML = '''
     .mw-chip .mw-long { color: #41c07e; }
     .mw-chip .mw-short { color: #e0607a; }
     .mw-chip .mw-sc { color: var(--text-muted, #8b97a8); }
+    .mw-chip .mw-live-px { color: #3fa9f5; font-weight: 700; }
     .mw-events { margin-top: 8px; font-size: 12px; color: var(--text-muted, #8b97a8);
       display: flex; flex-direction: column; gap: 3px; }
     .mw-events .mw-inval { color: #d9a441; }
@@ -1791,6 +1795,7 @@ HTML = '''
           <div class="mw-head">
             <span class="mw-title">Always-on worker</span>
             <span id="mwBadge" class="mw-badge mw-off">OFFLINE</span>
+            <span id="mwStream" class="mw-stream" hidden></span>
             <span id="mwMeta" class="mw-meta"></span>
           </div>
           <div id="mwWatching" class="mw-watching"></div>
@@ -3639,6 +3644,14 @@ HTML = '''
       const badge = $('mwBadge');
       if (s.live) { badge.className = 'mw-badge mw-live'; badge.textContent = '● LIVE'; }
       else { badge.className = 'mw-badge mw-stale'; badge.textContent = 'STALE'; }
+      const strm = $('mwStream');
+      if (s.streaming && s.streaming.live) {
+        strm.hidden = false;
+        strm.textContent = `⚡ Streaming (${s.streaming.priced_count || 0}/${s.streaming.subscribed_count || 0})`;
+        strm.title = `Alpaca ${String(s.streaming.feed || '').toUpperCase()} websocket · ${s.streaming.tick_count || 0} ticks`;
+      } else {
+        strm.hidden = true;
+      }
       const st = s.stats || {};
       const age = (s.age_seconds === null || s.age_seconds === undefined) ? ''
         : (s.age_seconds < 90 ? `${Math.round(s.age_seconds)}s ago`
@@ -3654,8 +3667,11 @@ HTML = '''
             const dir = w.direction === 'short' ? 'mw-short' : 'mw-long';
             const arrow = w.direction === 'short' ? '▾' : '▴';
             const rv = (w.rel_volume === null || w.rel_volume === undefined) ? '' : ` · ${Number(w.rel_volume).toFixed(1)}x`;
+            // Phase 8: live streamed price (only when a fresh tick is present).
+            const live = (w.live_price !== null && w.live_price !== undefined && w.live_fresh)
+              ? `<span class="mw-live-px" title="Live streamed price">$${Number(w.live_price).toFixed(2)}</span>` : '';
             return `<span class="mw-chip"><span class="mw-tk ${dir}">${arrow} ${w.ticker}</span>`
-                 + `<span class="mw-sc">${Number(w.score).toFixed(0)}${rv}</span></span>`;
+                 + `${live}<span class="mw-sc">${Number(w.score).toFixed(0)}${rv}</span></span>`;
           }).join('')
         : '<span class="mw-meta">Nothing on the watch set right now.</span>';
 
