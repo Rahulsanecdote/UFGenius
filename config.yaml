@@ -52,6 +52,11 @@ movers:
     poll_interval_sec: 60        # monitor re-evaluation cadence
     rediscover_every_cycles: 5   # re-run discovery every N cycles (≈5 min at 60s)
     market_hours_only: true      # only scan during the pre-market→close window
+    # Phase 7 — shared worker↔web state (the worker publishes a snapshot each
+    # cycle; the dashboard reads it via /api/movers-worker).
+    # state_path: data/movers_worker.json   # default; shared across processes
+    state_stale_sec: 180         # snapshot older than this → UI shows worker STALE
+    state_max_recent: 20         # ring size for recent alerts / invalidations
 
 safety_rules:
   max_positions: 5

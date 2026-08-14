@@ -131,6 +131,23 @@ _MOVERS_WORKER: dict = _MOVERS.get("worker", {}) if isinstance(_MOVERS, dict) el
 MOVERS_WORKER_POLL_INTERVAL_SEC: float = _as_float(_MOVERS_WORKER.get("poll_interval_sec", 60), 60.0)
 MOVERS_WORKER_REDISCOVER_EVERY_CYCLES: int = _as_int(_MOVERS_WORKER.get("rediscover_every_cycles", 5), 5)
 MOVERS_WORKER_MARKET_HOURS_ONLY: bool = bool(_MOVERS_WORKER.get("market_hours_only", True))
+# Phase 7 — shared worker↔web state. JSON snapshot the worker publishes and the
+# dashboard reads (/api/movers-worker). Path is shared across processes, like
+# CIRCUIT_STATE_PATH. `stale_sec`: how old the snapshot may be before the UI
+# calls the worker stale/offline (default ~3× the poll interval). `max_recent`:
+# ring size for the recent-alerts / recent-invalidations history.
+MOVERS_WORKER_STATE_PATH: str = _resolve_root(env(
+    "MOVERS_WORKER_STATE_PATH",
+    _MOVERS_WORKER.get("state_path") or str(_ROOT / "data" / "movers_worker.json"),
+))
+MOVERS_WORKER_STATE_STALE_SEC: float = env_float(
+    "MOVERS_WORKER_STATE_STALE_SEC",
+    _as_float(_MOVERS_WORKER.get("state_stale_sec", 180), 180.0),
+)
+MOVERS_WORKER_STATE_MAX_RECENT: int = env_int(
+    "MOVERS_WORKER_STATE_MAX_RECENT",
+    _as_int(_MOVERS_WORKER.get("state_max_recent", 20), 20),
+)
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])
