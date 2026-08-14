@@ -86,6 +86,8 @@ python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31  # in-sample g
 python bot.py --mode portfolio                  # read-only Alpaca portfolio
 python bot.py --mode intraday-scan              # continuous intraday candidate scan → queue (P1.2)
 python bot.py --mode earnings-calendar          # build/refresh the earnings calendar (P1.4)
+python bot.py --mode movers-worker              # always-on movers worker (MOVERS Phase 5)
+python bot.py --mode stream                     # live Alpaca trade-stream diagnostic (MOVERS Phase 8)
 ```
 
 Execution safety: `--execute` targets the **paper** account and refuses to run
@@ -251,7 +253,24 @@ pytest --cov=src       # coverage
   `execute_trade_plan` consult it **after** RiskGuard approves — veto-only
   (tighten, never loosen). Config `portfolio:` / `PORTFOLIO_*`.
 - **Async?** No — this is a synchronous codebase (Flask sync views, thread-pool
-  fan-out for scans). Do not introduce `async def` without cause.
+  fan-out for scans). Do not introduce `async def` without cause. The **one**
+  sanctioned exception is `src/streaming/price_stream.py` (MOVERS Phase 8), where
+  Alpaca's asyncio websocket is *quarantined*: it runs its own event loop inside
+  a daemon thread and the only surface the rest of the app touches is a plain,
+  lock-guarded snapshot (`latest`/`snapshot`/`status`). No `async` leaks past
+  that file — callers stay synchronous. See `docs/STREAMING.md`.
+- **MOVERS real-time system (Phases 5–8):** the intraday discovery→alert→monitor
+  stack runs as an always-on worker (`src/scanner/movers_worker.py`,
+  `--mode movers-worker`) that continuously re-discovers movers, alerts on new
+  qualifiers, and invalidates setups that break down. It publishes a shared JSON
+  snapshot each cycle (`src/scanner/movers_state.py`, flock-guarded like the
+  circuit breaker) that the dashboard reads via `/api/movers-worker` (Phase 7
+  shared state — heartbeat, live watch set, recent alerts/invalidations). Phase 8
+  adds an **opt-in, fail-open** live price tape (`PriceStream`, config
+  `movers.stream`, default off): when enabled the worker keeps the tape
+  subscribed to its live watch set and the snapshot carries live prices + stream
+  status. Advisory/telemetry only — no import of the executor/broker; the stream
+  is a data source, never a gate.
 
 ### Adding a technical indicator
 Add a vectorized function in the relevant `src/technical/*.py`, wire it into the

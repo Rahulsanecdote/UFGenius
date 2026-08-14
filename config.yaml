@@ -57,6 +57,14 @@ movers:
     # state_path: data/movers_worker.json   # default; shared across processes
     state_stale_sec: 180         # snapshot older than this → UI shows worker STALE
     state_max_recent: 20         # ring size for recent alerts / invalidations
+  # Phase 8 — real-time price streaming (Alpaca trade websocket). Opt-in; the
+  # worker keeps its live watch set subscribed and reacts to price on push
+  # instead of the next REST poll. Needs ALPACA_API_KEY/SECRET.
+  stream:
+    enabled: false             # default off — falls back to REST polling
+    feed: iex                  # iex (free) | sip (paid)
+    stale_sec: 10              # a tick older than this = quiet tape
+    max_symbols: 30            # cap on concurrently-subscribed symbols
 
 safety_rules:
   max_positions: 5

@@ -29,6 +29,25 @@ services:
       - key: DASHBOARD_RATE_LIMIT_BACKEND
         value: "memory"
 
+      # ── In-process movers worker (Phase 7/8) ─────────────────────────────
+      #   Runs the discover → alert → monitor loop in a daemon thread inside
+      #   THIS web process, so the worker and dashboard share one filesystem and
+      #   the "Always-on worker" strip + live-streaming prices populate. (A
+      #   separate Background Worker below runs in its own container, whose state
+      #   file the web service can't see — that one is for 24/7 Telegram alerts.)
+      #
+      #   NOTE: keep gunicorn at --workers 1 (above) so exactly one worker thread
+      #   runs. On the FREE tier the web instance sleeps after ~15 min idle, so
+      #   this loop only runs while the dashboard is awake; upgrade the web plan
+      #   to keep it continuous. This service deliberately has NO Telegram creds,
+      #   so it never double-sends the alerts the worker service handles.
+      - key: RUN_WORKER_IN_PROCESS
+        value: "true"
+      - key: MOVERS_STREAM_ENABLED     # live Alpaca tape → dashboard live prices
+        value: "true"
+      # Needs FMP_KEY (discovery) and ALPACA_API_KEY/SECRET (intraday + stream),
+      # set as Secrets below. Without them the loop still runs but populates less.
+
       # ── Optional: set these in the Render dashboard (mark as Secret) ──────
       # Key names must match exactly what the code reads (src/utils/config.py).
       # Market data / brokerage
@@ -77,39 +96,50 @@ services:
       # - key: EMAIL_TO
       #   sync: false
 
-  # ── Always-on movers worker (MOVERS Phase 5) ──────────────────────────────
-  #   Runs `bot.py --mode movers-worker` continuously: discover → alert →
-  #   monitor → invalidate, with NO browser. This is what makes UFGenius watch
-  #   the market for YOU and push Telegram alerts on new setups / invalidations.
+  # ── Always-on movers worker (MOVERS Phase 5/8) ────────────────────────────
+  #   Runs `bot.py --mode movers-worker` continuously in its OWN container:
+  #   discover → alert → monitor → invalidate, with no browser. This is the 24/7
+  #   engine that watches the market for you and pushes Telegram alerts even when
+  #   the web service is asleep. It owns alerting (the web in-process worker has
+  #   no Telegram creds), so alerts fire exactly once.
   #
-  #   IMPORTANT: Background Workers are a PAID Render feature (the free tier is
-  #   web-only). This service is commented out so the free web deploy still
-  #   works; uncomment it on a paid plan — or run the same command on any
-  #   always-on box (`python bot.py --mode movers-worker`). Set FMP_KEY,
-  #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID as Secrets for alerts to deliver.
-  # - type: worker
-  #   name: ufgenius-movers-worker
-  #   env: python
-  #   plan: starter
-  #   region: oregon
-  #   buildCommand: pip install --upgrade pip && pip install -r requirements.lock
-  #   startCommand: python bot.py --mode movers-worker
-  #   autoDeploy: false
-  #   envVars:
-  #     - key: PYTHON_VERSION
-  #       value: "3.12.2"
-  #     - key: MOVERS_ALERTS_ENABLED     # push new-setup alerts
-  #       value: "true"
-  #     - key: MOVERS_MONITOR_ENABLED    # push invalidation alerts
-  #       value: "true"
-  #     - key: FMP_KEY                   # required — discovery source
-  #       sync: false
-  #     - key: TELEGRAM_BOT_TOKEN        # required — alert delivery
-  #       sync: false
-  #     - key: TELEGRAM_CHAT_ID          # required — where alerts go
-  #       sync: false
-  #     # Optional: ALPACA_API_KEY / ALPACA_SECRET_KEY (sync:false) improve
-  #     # intraday data used for the early-momentum enrichment + invalidation.
+  #   Its shared-state file lives in THIS container's filesystem, which the web
+  #   service can't read — that is by design: the dashboard's worker strip is fed
+  #   by the in-process worker on the web service, this one is for alerts + true
+  #   always-on coverage.
+  #
+  #   IMPORTANT: Background Workers are a PAID Render feature (~$7/mo Starter).
+  #   Remove this service (or set it aside) if you only want the free web deploy;
+  #   the same command runs on any always-on box (`python bot.py --mode
+  #   movers-worker`). Set FMP_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and
+  #   ALPACA_API_KEY/SECRET as Secrets in the Render dashboard.
+  - type: worker
+    name: ufgenius-movers-worker
+    env: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install --upgrade pip && pip install -r requirements.lock
+    startCommand: python bot.py --mode movers-worker
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.2"
+      - key: MOVERS_ALERTS_ENABLED     # push new-setup alerts (Telegram)
+        value: "true"
+      - key: MOVERS_MONITOR_ENABLED    # push invalidation alerts
+        value: "true"
+      - key: MOVERS_STREAM_ENABLED     # live Alpaca tape → faster reaction
+        value: "true"
+      - key: FMP_KEY                   # required — discovery source
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN        # required — alert delivery
+        sync: false
+      - key: TELEGRAM_CHAT_ID          # required — where alerts go
+        sync: false
+      - key: ALPACA_API_KEY            # intraday enrichment + trade stream
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
 
   # ── Optional: persistent disk for market-data cache (paid plans only) ───
   #   Without this, the data/ cache is wiped on every deploy/restart.

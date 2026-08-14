@@ -63,10 +63,15 @@ def _parse_iso(value) -> Optional[datetime]:
     return ts
 
 
-def _watch_view(state) -> dict:
-    """Compact, JSON-safe view of one MoversMonitor WatchState."""
+def _watch_view(state, prices: Optional[dict] = None) -> dict:
+    """Compact, JSON-safe view of one MoversMonitor WatchState.
+
+    When ``prices`` (a PriceStream snapshot: symbol -> {price, age_seconds, ...})
+    is supplied and has a fresh tick for this ticker, the live price is attached
+    (Phase 8) so the dashboard can show a real-time quote next to the setup.
+    """
     c = state.candidate
-    return {
+    view = {
         "ticker": c.ticker,
         "direction": c.direction,
         "entry_score": round(float(state.entry_score), 1),
@@ -78,6 +83,12 @@ def _watch_view(state) -> dict:
         "updates": int(state.updates),
         "first_seen": state.first_seen,
     }
+    live = (prices or {}).get(c.ticker)
+    if isinstance(live, dict) and live.get("price") is not None:
+        view["live_price"] = live.get("price")
+        view["live_age_seconds"] = live.get("age_seconds")
+        view["live_fresh"] = bool(live.get("fresh"))
+    return view
 
 
 class MoversWorkerState:
@@ -191,13 +202,18 @@ class MoversWorkerState:
         watching: list,
         scan_window_open: bool,
         movers: Optional[list] = None,
+        stream_status: Optional[dict] = None,
+        stream_prices: Optional[dict] = None,
         now: Optional[datetime] = None,
     ) -> None:
         """Write a full snapshot of the worker's current state (atomic, flocked).
 
         ``watching`` is the monitor's active WatchState list; ``movers`` (optional)
         is the last discovered candidate list — both are reduced to compact,
-        JSON-safe views here. Best-effort: any failure is logged, never raised.
+        JSON-safe views here. ``stream_status`` / ``stream_prices`` (Phase 8,
+        optional) carry the live-stream status and per-symbol last prices so the
+        dashboard can show a real-time tape. Best-effort: any failure is logged,
+        never raised.
         """
         now = now or _utcnow()
         try:
@@ -206,11 +222,13 @@ class MoversWorkerState:
                 "cycle": int(cycle),
                 "stats": dict(stats or {}),
                 "scan_window_open": bool(scan_window_open),
-                "watching": [_watch_view(s) for s in (watching or [])],
+                "watching": [_watch_view(s, stream_prices) for s in (watching or [])],
                 "watching_count": len(watching or []),
                 "recent_alerts": list(self._recent_alerts),
                 "recent_invalidations": list(self._recent_invalidations),
             }
+            if stream_status is not None:
+                payload["streaming"] = dict(stream_status)
             if movers is not None:
                 payload["movers"] = [
                     m.as_dict() if hasattr(m, "as_dict") else m for m in movers
