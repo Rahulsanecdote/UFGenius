@@ -1,6 +1,6 @@
 # UFGenius — Repository Audit
 
-**Date:** 2026-08-03
+**Date:** 2026-08-03 · **second round (backtest validity):** 2026-08-12
 **Scope:** Full repository (~9,400 LOC Python). Flask signal-bot + Alpaca portfolio, market-data pipeline, technical/fundamental/sentiment scoring, backtest engine, web dashboard.
 **Method:** Parallel domain audits (web security, money-moving trade logic, data/indicator/backtest math, secrets/deps/config/tests). Headline findings were re-verified against source and, where noted, at runtime.
 
@@ -51,7 +51,11 @@ Fixed on this branch (`claude/repo-audit-qnd1x4`):
 | L11 partial-exit mislabel | **Resolved by the C1 engine rewrite:** `shares_open` changes only inside `_book_sell`, which always receives a real exit reason (STOP/T1/T2/T3) and records it when the position reaches zero, and the closed-trade `exit_price` reads the actual `exit_fill_price` (net of slippage) rather than the raw daily close. The `or "UNKNOWN"` fallback is now defensive-only (unreachable in normal flow). |
 | Restored test suite | 18 recovered test files + new `test_audit_fixes.py`; **292 pass**, 3 network tests deselected by default. |
 
-Nothing from the audit's still-open list remains. Same-bar entry (M4) and
+Nothing from **this (2026-08-03) round's** still-open list remains. A later round
+opened two further High findings, both now fixed — see
+[Second audit round](#second-audit-round-2026-08-12--backtest-validity) (B1 is
+fixed only *partially*, by necessity: three of the five composite dimensions
+cannot be reconstructed point-in-time). Same-bar entry (M4) and
 survivorship gating (M11) are fixed — see the table above; no point-in-time
 membership *dataset* ships with the repo, so M11's fix activates only when
 the user supplies one.
@@ -103,6 +107,148 @@ deselected by default. The RiskGuard rules that were still pending at this
 point (loss limits, cooldown, earnings-week, stop-required, paper-trading-days)
 were implemented in a subsequent PR — the C2 row above is the authoritative
 status: **resolved**.
+
+---
+
+## Second audit round (2026-08-12) — backtest validity
+
+Found while running the P0.1 validation harness end-to-end on live data
+(single ticker → 50 tickers → full 503-name S&P 500 → an 11-year window) and
+then attempting per-signal attribution on the resulting trades. Both findings
+concern whether the validation harness measures what it claims to measure.
+Neither is a crash: both produce confident, plausible-looking numbers that
+describe something other than the advertised system — which is the failure mode
+a validation gate exists to prevent.
+
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| B1 | **High** | The backtest does not test the composite signal engine; it tests a hardcoded SMA/RSI rule, undisclosed | **Fixed (partial by necessity — see below)** |
+| B2 | **High** | Entry candidates were ranked alphabetically, so ticker *name* selected the trades | **Fixed** |
+
+### B2 — Alphabetical entry bias made universe size meaningless *(verified; fixed)*
+
+`_entry_candidates_for_date` (`src/backtest/engine.py`) ended with
+`return sorted(candidates)`, and the caller fills scarce position slots from the
+head of that list:
+
+```python
+for ticker in entry_candidates:
+    if available_slots <= 0:
+        break
+```
+
+Entries are rare (5 concurrent slots; median hold 26 days for stops, 118 days
+for runners), so each opening went to the alphabetically-first qualifying name.
+
+**Evidence:** an out-of-sample run over the full 503-ticker S&P 500
+(2022-09-14 → 2025-12-31) produced 57 trades across **23 distinct tickers, every
+single one an A-name** — first-letter distribution `{'A': 57}`.
+
+**Impact:** every universe-size comparison in the validation work was void. A
+"full 503-ticker S&P 500" backtest was really testing ~23 alphabetically-first
+names, and the 50-ticker and 503-ticker runs returned near-identical metrics
+because they traded the *same* names — not, as first concluded, because signal
+rarity was the binding constraint. Ticker name is an attribute with no economic
+meaning, so alphabetical selection is a *biased estimator* of the entry rule's
+edge; results were neither the strategy's nor the universe's.
+
+**Fix:** `_rank_candidates()` with a config-driven mode
+(`backtest.candidate_ranking` / `BACKTEST_CANDIDATE_RANKING`). Default `rotate`
+is a **date-seeded shuffle** — reproducible run-to-run, as the P0.1/P0.2
+harnesses require, but name-neutral, which is the unbiased estimator. `momentum`
+(strongest trend first) is offered but **not** the default, because preferring
+stronger trends is an untested alpha claim rather than a neutral bug fix;
+`alphabetical` is retained solely to reproduce pre-fix results. Regression tests
+in `tests/test_candidate_ranking.py` assert that non-A tickers are selected and
+that no qualifying ticker is structurally unreachable — both fail if the old
+ordering returns.
+
+### B1 — The backtest validates a different strategy than the one that trades *(verified; open)*
+
+`src/backtest/engine.py` contains **no reference to `src.signals`**. Its entry
+rule is hardcoded (`_prepare_ticker_history`):
+
+```python
+df["entry_signal"] = (
+    (df["Close"] > df["SMA_50"]) & (df["SMA_50"] > df["SMA_200"])
+    & (df["RSI_14"] >= entry_rsi_min) & (df["RSI_14"] <= entry_rsi_max)
+    & (df["ATR_14"] > 0)
+)
+```
+
+The live/scan path instead runs `signals/generator.generate_signal` — the
+weighted composite (technical .35 / volume .20 / sentiment .20 / fundamental .15
+/ macro .10) labelled through `SIGNAL_THRESHOLDS` (STRONG_BUY ≥ 80, BUY ≥ 65, …).
+These are two different strategies.
+
+**Impact:**
+1. `--mode validate` cannot validate the product's signal engine. A VALIDATED
+   verdict would license live trading of a strategy the harness never tested —
+   the exact "unproven edge reaches capital" outcome P0.1 exists to prevent.
+2. `--mode optimize` tunes the proxy rule's knobs (RSI band, stop, R:R ladder),
+   not the composite's weights or thresholds.
+3. It silently defeats the **P0.5 paper-vs-backtest tolerance gate**
+   (`src/backtest/baseline.py`): the baseline would hold proxy-rule metrics while
+   the paper scorecard measures composite-signal trades, making the comparison
+   apples-to-oranges. The gate would compute a confident verdict from two
+   unrelated strategies.
+4. Per-signal attribution is impossible on backtest trades: records carry no
+   `signal`/`score` field (only ticker/dates/prices/shares/pnl/exit_reason), so
+   `src/observability/attribution.py` returns a single `UNKNOWN` bucket. There
+   are no signal grades to compare because there is only one rule.
+
+**Not disclosed anywhere.** `bias_disclosures` covers survivorship and daily
+granularity only; no doc notes the entry-rule substitution.
+
+**Fixed — the backtest can now replay the live scorer, and both modes disclose
+which strategy they measured.**
+
+`src/backtest/composite_signal.py` replays `generate_signal` bar by bar, handing
+it a frame sliced to the bar being scored. Selected with
+`backtest.signal_source` / `BACKTEST_SIGNAL_SOURCE`:
+
+* `composite` — replay the **live scorer**, its real `SIGNAL_THRESHOLDS` bands
+  and labels; entries fire on STRONG_BUY/BUY at or above
+  `composite_min_score` (default 65 — the live BUY threshold), so the backtest
+  enters where the executor would rather than on a separately-tuned number.
+* `proxy` — the legacy SMA/RSI rule, retained as the fast default.
+
+**The replay is necessarily PARTIAL, and this is the honest limit of the fix.**
+Only technical and volume are reconstructible for a past bar. No provider serves
+the news/social/insider mood of a historical date, and fundamentals and the macro
+regime are served only as of *today* — scoring them would stamp present-day
+values onto every past bar, which is precisely the look-ahead the P1.1 guards and
+the M4 same-bar fix exist to prevent. So `generate_signal(point_in_time=True)`:
+
+* never calls the sentiment sources (no network, no current-date leak),
+* never calls `detect_market_regime()` (it reports *now*),
+* skips the fundamentals-derived disqualifiers (`run_disqualification_filters`
+  with `point_in_time=True`) — the live fail-closed behaviour, unknown market cap
+  ⇒ disqualify, would otherwise reject every ticker on every bar,
+* and **zeroes the sentiment/fundamental/macro weights and renormalises the
+  rest**. Leaving them at a neutral 50 would not be harmless: it drags every
+  composite toward the middle by a constant, compressing the spread the label
+  bands are calibrated against, so the replay would under-produce BUY labels for
+  reasons unrelated to the strategy.
+
+So `composite` measures the **technical+volume composite, renormalised** — ~55%
+of live weight carrying 100% of the decision — with the real scorers, thresholds
+and labels. Far closer to the shipped strategy than an unrelated trend rule, but
+still a subset, and every result says so in `bias_disclosures`. **A VALIDATED
+verdict in this mode does not clear the full composite for capital**, because the
+sentiment and fundamental dimensions were never tested.
+
+**Cost:** ~28 ms/bar (the scorer is built for one point-in-time call, not a
+vectorised sweep), so a full 503-ticker run is hours at `composite_stride: 1`.
+`composite_stride` scores every Nth bar; measured on a 12-ticker/1-year run,
+stride 5 (weekly) returned 13 trades / +2.69% against stride 1's 14 / +2.79% in
+**7.6 s versus 117 s**. Skipped bars cannot open a position, and a strided result
+discloses its stride.
+
+Default remains `proxy` so existing runs are unchanged and fast — but a proxy run
+now carries a disclosure stating plainly that it says nothing about the composite.
+Every `--mode validate` / `--mode optimize` result predating this change describes
+the proxy rule.
 
 ---
 

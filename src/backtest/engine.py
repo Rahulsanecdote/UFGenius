@@ -4,6 +4,7 @@ Backtesting engine — portfolio-level simulation with daily mark-to-market acco
 
 from __future__ import annotations
 
+import random
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -20,6 +21,10 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 RISK_FREE_RATE_ANNUAL = 0.05
+# Fixed base for the candidate shuffle. Combined with the bar date so ordering is
+# reproducible run-to-run (the validation/optimize harnesses require it) while
+# staying independent of ticker name.
+_CANDIDATE_SHUFFLE_SEED = 20240101
 ATR_STOP_MULT = 2.0
 TARGET_RR = [1.5, 2.5, 4.0]
 TARGET_EXIT_PCTS = [0.30, 0.40, 0.30]
@@ -400,7 +405,78 @@ def _entry_candidates_for_date(
         # enter_flag = prior bar's entry_signal → this bar fills at the open.
         if bool(frame.loc[date, "enter_flag"]):
             candidates.append(ticker)
-    return sorted(candidates)
+    # sorted() first so every ranking mode starts from a stable, reproducible
+    # order regardless of dict iteration order.
+    return _rank_candidates(sorted(candidates), histories, date)
+
+
+def _rank_candidates(
+    candidates: list[str],
+    histories: dict[str, pd.DataFrame],
+    date: pd.Timestamp,
+) -> list[str]:
+    """Order qualifying candidates for the slot-limited fill loop.
+
+    This ordering decides which trades the strategy actually takes: entries are
+    rare (few slots, long holds) so the caller fills slots from the head of this
+    list and drops the rest. Returning plain alphabetical order therefore let
+    ticker *name* pick the trades — on a 503-name S&P universe every one of 57
+    out-of-sample trades landed on an A-name, so a "full universe" backtest was
+    really testing ~23 alphabetically-first tickers, and widening the universe
+    could not change the result. See AUDIT.md B2.
+
+    Modes (`backtest.candidate_ranking`):
+
+    * ``rotate`` (default) — a date-seeded shuffle. Deterministic and
+      reproducible, but **name-neutral**: for measuring the entry rule's edge,
+      sampling uniformly among qualifying candidates is the unbiased estimator,
+      where alphabetical is biased by an attribute with no economic meaning.
+    * ``momentum`` — strongest trend first (`Close/SMA_200 - 1`). A real
+      selection *strategy*, not a neutral fix: it asserts stronger trends are
+      better, which is an untested claim, so it is opt-in rather than default.
+    * ``alphabetical`` — the legacy biased order, kept only to reproduce results
+      produced before this fix.
+    """
+    if len(candidates) < 2:
+        return candidates
+
+    mode = str(config.BACKTEST_CANDIDATE_RANKING or "rotate").strip().lower()
+
+    if mode == "alphabetical":
+        return candidates
+
+    if mode == "momentum":
+        def _strength(ticker: str) -> float:
+            # Read the SIGNAL bar's strength, never the fill bar's (look-ahead).
+            try:
+                frame = histories[ticker]
+                if "mom_entry" in frame.columns:
+                    value = float(frame.loc[date, "mom_entry"])
+                    return value if np.isfinite(value) else float("-inf")
+                # Frames from older callers/tests have no precomputed column:
+                # fall back to the PRIOR row rather than this one.
+                pos = frame.index.get_loc(date)
+                if not isinstance(pos, int) or pos < 1:
+                    return float("-inf")
+                prior = frame.iloc[pos - 1]
+                sma200 = float(prior["SMA_200"])
+                close = float(prior["Close"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                return float("-inf")
+            if not (np.isfinite(sma200) and np.isfinite(close)) or sma200 <= 0:
+                return float("-inf")
+            return close / sma200 - 1.0
+
+        # Negate for descending; ticker breaks ties so the order stays total.
+        return sorted(candidates, key=lambda t: (-_strength(t), t))
+
+    # Default: name-neutral, reproducible shuffle. Seeded from the bar date (and
+    # a fixed base) so a rerun of the same backtest returns the same ordering —
+    # the engine must stay deterministic for the P0.1/P0.2 harnesses.
+    rng = random.Random(f"{_CANDIDATE_SHUFFLE_SEED}:{pd.Timestamp(date).strftime('%Y-%m-%d')}")
+    shuffled = list(candidates)
+    rng.shuffle(shuffled)
+    return shuffled
 
 
 def _position_size(cash: float, equity: float, entry_price: float, stop_price: float) -> int:
@@ -503,7 +579,16 @@ def _prepare_ticker_history(
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
 ) -> pd.DataFrame:
-    warm_start = start_date - timedelta(days=260)
+    # Composite replay needs MIN_WARMUP_BARS (200) *trading* bars before it will
+    # score anything — about 290 calendar days. The 260-day proxy warmup would
+    # leave the first ~3 weeks of the requested period silently unscored, so
+    # composite runs would drop the earliest entries of the window.
+    if str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower() == "composite":
+        from src.backtest.composite_signal import MIN_WARMUP_BARS
+
+        warm_start = start_date - timedelta(days=int(MIN_WARMUP_BARS * 1.45) + 30)
+    else:
+        warm_start = start_date - timedelta(days=260)
     df = fetch_ohlcv(ticker, period="max")
     if df.empty or len(df) < 220:
         return pd.DataFrame()
@@ -539,17 +624,37 @@ def _prepare_ticker_history(
     df["SMA_200"] = sma200
     df["RSI_14"] = rsi14
     df["ATR_14"] = atr14
-    df["entry_signal"] = (
-        (df["Close"] > df["SMA_50"])
-        & (df["SMA_50"] > df["SMA_200"])
-        & (df["RSI_14"] >= _ACTIVE_PARAMS.entry_rsi_min)
-        & (df["RSI_14"] <= _ACTIVE_PARAMS.entry_rsi_max)
-        & (df["ATR_14"] > 0)
-    ).fillna(False)
+    if str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower() == "composite":
+        # Audit B1: replay the LIVE composite scorer point-in-time instead of the
+        # proxy rule below, so --mode validate actually measures the strategy
+        # that places orders. Only technical+volume are reconstructible for a
+        # past bar; the rest are dropped and the weights renormalised (see
+        # src/backtest/composite_signal.py).
+        from src.backtest.composite_signal import evaluate_series
+
+        replay = evaluate_series(ticker, df)
+        df["signal_label"] = replay["signal_label"]
+        df["signal_score"] = replay["signal_score"]
+        df["entry_signal"] = replay["entry_signal"].astype(bool)
+    else:
+        df["entry_signal"] = (
+            (df["Close"] > df["SMA_50"])
+            & (df["SMA_50"] > df["SMA_200"])
+            & (df["RSI_14"] >= _ACTIVE_PARAMS.entry_rsi_min)
+            & (df["RSI_14"] <= _ACTIVE_PARAMS.entry_rsi_max)
+            & (df["ATR_14"] > 0)
+        ).fillna(False)
     # Shift BEFORE slicing so a signal on the bar just before start_date still
     # produces an entry on the first in-range bar (next-open fills, audit M4).
     df["enter_flag"] = df["entry_signal"].shift(1, fill_value=False).astype(bool)
     df["atr_entry"] = df["ATR_14"].shift(1)
+    # Selection strength as known at the fill bar's OPEN — i.e. the SIGNAL bar's
+    # values. Ranking on the fill bar's close would be same-bar look-ahead, and
+    # since the caller fills scarce slots from the head of the ranked list, that
+    # would leak the future into which trades get taken (the same reason
+    # atr_entry above is shifted).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["mom_entry"] = (df["Close"] / df["SMA_200"].replace(0, np.nan) - 1.0).shift(1)
 
     return df.loc[(df.index >= start_date) & (df.index <= end_date)].copy()
 
@@ -653,6 +758,28 @@ def _compute_metrics(
                 "run time; delisted/renamed names never appear, so returns are "
                 "upward-biased. Supply a point-in-time membership file "
                 "(universe_history_path) to mitigate this bias."
+            ),
+            (
+                # Audit B1: never let a reader assume the verdict covers the
+                # strategy that trades live — say which one was measured.
+                "SIGNAL_SOURCE (composite, PARTIAL): entries replay the live "
+                "generate_signal scorer point-in-time, but only technical+volume "
+                "are reconstructible for a past bar — sentiment, fundamentals and "
+                "the macro regime are served only as of today, so their weights "
+                "are dropped and the rest renormalised. This measures a SUBSET of "
+                "the live composite (~55% of its weight), not the whole signal."
+                + (
+                    f" Scored every {config.BACKTEST_COMPOSITE_STRIDE} bars "
+                    "(composite_stride), so bars in between could not open a "
+                    "position."
+                    if int(config.BACKTEST_COMPOSITE_STRIDE) > 1
+                    else ""
+                )
+                if str(config.BACKTEST_SIGNAL_SOURCE or "proxy").strip().lower() == "composite"
+                else "SIGNAL_SOURCE (proxy): entries use a hardcoded "
+                "SMA50/SMA200 + RSI-band rule, NOT the composite signal engine "
+                "that trades live. This result says nothing about the composite "
+                "strategy — set backtest.signal_source=composite to test that."
             ),
             "DAILY_GRANULARITY: exits are evaluated on daily closes only; "
             "intraday stop/target sequencing within a bar is approximated.",

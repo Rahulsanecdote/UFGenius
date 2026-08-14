@@ -33,14 +33,14 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
     info = info if info is not None else fetch_ticker_info(ticker)
     if not info:
         # yfinance gave nothing (commonly a rate-limit). Try FMP outright rather
-        # than returning all-None, which would trip UNKNOWN_MARKET_CAP.
+        # than returning all-None, which would trip UNKNOWN_MARKET_CAP, then let
+        # Finviz fill anything FMP still left missing.
         fmp = _fetch_fmp_fundamentals(ticker)
+        base = _empty_fundamentals()
         if fmp:
-            base = _empty_fundamentals()
             base.update(fmp)
             base["ticker"] = ticker
-            return base
-        return _empty_fundamentals()
+        return _backfill_from_finviz(ticker, base)
 
     def _get(*keys, default=None):
         for k in keys:
@@ -114,16 +114,46 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
         "revenue_prev":        None,
     }
 
-    # Fill gaps from FMP when yfinance omitted the market cap (the field the
-    # disqualification filter hard-requires). Only fills values that are still
-    # None — yfinance stays authoritative for whatever it did return.
+    # Source precedence: yfinance is authoritative; FMP fills what it omitted;
+    # Finviz fills last, being the scraped (most fragile) source. Each stage only
+    # ever writes keys that are still None.
     if result.get("market_cap") is None:
         fmp = _fetch_fmp_fundamentals(ticker)
         for key, value in fmp.items():
             if value is not None and result.get(key) is None:
                 result[key] = value
 
-    return result
+    return _backfill_from_finviz(ticker, result)
+
+
+def _backfill_from_finviz(ticker: str, out: dict) -> dict:
+    """Fill fields the primary source left empty using the Finviz snapshot.
+
+    Backfill only: an existing value is never overwritten, so enabling Finviz can
+    add coverage but cannot silently change a number the primary source already
+    supplied. No-op unless `finviz.enabled`, and any failure leaves ``out``
+    untouched — fundamentals feed the composite score, so this must never be able
+    to break scoring.
+    """
+    if not config.FINVIZ_ENABLED:
+        return out
+    try:
+        from src.data.providers.finviz import fetch_fundamentals as _finviz_fundamentals
+
+        snapshot = _finviz_fundamentals(ticker)
+        if not snapshot:
+            return out
+        filled = [
+            key for key, value in snapshot.items()
+            if key in out and out.get(key) is None and value is not None
+        ]
+        for key in filled:
+            out[key] = snapshot[key]
+        if filled:
+            out["_finviz_backfilled"] = filled
+    except Exception as exc:  # never break scoring on a supplementary source
+        log.debug(f"{ticker}: Finviz backfill unavailable ({exc})")
+    return out
 
 
 def _fetch_fmp_fundamentals(ticker: str) -> dict:

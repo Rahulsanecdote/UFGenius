@@ -543,12 +543,66 @@ CONSTITUENT_FETCH_USER_AGENT: str = (
     or "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"
 )
 
+# Finviz provider (fundamentals snapshot + screener). Finviz publishes no free
+# API, so the provider reads public HTML: it is OFF by default, rate-limited and
+# cached, because their terms restrict automated access and heavy use expects an
+# Elite subscription. Turning it on is deliberately the operator's decision.
+_FINVIZ: dict = get("finviz", {})
+FINVIZ_ENABLED: bool = env_bool("FINVIZ_ENABLED", bool(_FINVIZ.get("enabled", False)))
+FINVIZ_MIN_REQUEST_INTERVAL_SEC: float = env_float(
+    "FINVIZ_MIN_REQUEST_INTERVAL_SEC",
+    _as_float(_FINVIZ.get("min_request_interval_sec"), 1.0),
+)
+FINVIZ_CACHE_TTL_SEC: int = _as_int(
+    env("FINVIZ_CACHE_TTL_SEC", "") or _FINVIZ.get("cache_ttl_sec", 21_600), 21_600
+)
+FINVIZ_SCREENER_CACHE_TTL_SEC: int = _as_int(
+    env("FINVIZ_SCREENER_CACHE_TTL_SEC", "") or _FINVIZ.get("screener_cache_ttl_sec", 900),
+    900,
+)
+FINVIZ_SCREENER_MAX_RESULTS: int = _as_int(
+    env("FINVIZ_SCREENER_MAX_RESULTS", "") or _FINVIZ.get("screener_max_results", 200), 200
+)
+# `or` fallback for the same reason as CONSTITUENT_FETCH_USER_AGENT: a blank env
+# value must not strip the UA.
+FINVIZ_USER_AGENT: str = (
+    env("FINVIZ_USER_AGENT", "").strip()
+    or str(_FINVIZ.get("user_agent") or "").strip()
+    or CONSTITUENT_FETCH_USER_AGENT
+)
+
 # Optional point-in-time universe membership file (audit M11). When set, the
 # backtest only takes entries in tickers that were members of the universe on
 # the entry date, correcting survivorship bias in the run-time ticker list.
 # Empty/unset keeps the current behavior plus its survivorship disclosure.
 BACKTEST_UNIVERSE_HISTORY_PATH: str | None = env(
     "BACKTEST_UNIVERSE_HISTORY_PATH", get("universe_history_path", None)
+)
+
+# How the backtest orders qualifying entry candidates when position slots are
+# scarce (audit B2). "rotate" = date-seeded, name-neutral (default, unbiased);
+# "momentum" = strongest trend first (an opt-in selection strategy);
+# "alphabetical" = the legacy biased order, for reproducing pre-fix results.
+BACKTEST_CANDIDATE_RANKING: str = env(
+    "BACKTEST_CANDIDATE_RANKING", get("candidate_ranking", "rotate")
+)
+
+# Which entry signal the backtest replays (audit B1). "composite" replays the
+# live generate_signal scorer point-in-time (technical+volume renormalised — the
+# reconstructible part); "proxy" is the legacy hardcoded SMA/RSI rule, which is
+# faster but is NOT the strategy that trades live.
+BACKTEST_SIGNAL_SOURCE: str = env("BACKTEST_SIGNAL_SOURCE", get("signal_source", "proxy"))
+# Composite score at/above which the replay takes an entry. Default 65 is the
+# live BUY threshold in signal_thresholds, so the backtest enters where the live
+# executor would rather than on a separately-tuned number.
+BACKTEST_COMPOSITE_MIN_SCORE: float = env_float(
+    "BACKTEST_COMPOSITE_MIN_SCORE", _as_float(get("composite_min_score"), 65.0)
+)
+# Score every Nth bar in composite mode. Replaying the real scorer costs ~28ms
+# per bar, so a full 503-ticker run is hours at 1; 5 (weekly) is the practical
+# setting. Skipped bars cannot open a position, and the result discloses it.
+BACKTEST_COMPOSITE_STRIDE: int = _as_int(
+    env("BACKTEST_COMPOSITE_STRIDE", "") or get("composite_stride", 1), 1
 )
 
 SIGNAL_WEIGHTS: dict = get("signal_weights", {
@@ -625,6 +679,32 @@ PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED: bool = bool(
     _PAPER_SCORECARD.get("performance_gate_enabled", True)
 )
 PAPER_SCORECARD_MAX_TRADES: int = int(_PAPER_SCORECARD.get("max_trades_retained", 5000))
+
+# Paper-vs-validated-backtest tolerance gate. The floors above ask "is paper good
+# enough?"; this asks the UPGRADE_PLAN acceptance question "does paper still look
+# like the edge that was validated out-of-sample?". Opt-in (default off) because
+# it requires a saved baseline: `bot.py --mode validate --save-baseline`.
+PAPER_SCORECARD_BASELINE_GATE_ENABLED: bool = env_bool(
+    "PAPER_SCORECARD_BASELINE_GATE_ENABLED",
+    bool(_PAPER_SCORECARD.get("baseline_gate_enabled", False)),
+)
+PAPER_SCORECARD_BASELINE_TOLERANCE_PCT: float = env_float(
+    "PAPER_SCORECARD_BASELINE_TOLERANCE_PCT",
+    _as_float(_PAPER_SCORECARD.get("baseline_tolerance_pct"), 30.0),
+)
+PAPER_SCORECARD_BASELINE_MAX_AGE_DAYS: float = env_float(
+    "PAPER_SCORECARD_BASELINE_MAX_AGE_DAYS",
+    _as_float(_PAPER_SCORECARD.get("baseline_max_age_days"), 180.0),
+)
+# A blank env value (a `PAPER_SCORECARD_BASELINE_PATH=` line in .env) means
+# "unset", not "the project root" — falling through to the configured default
+# instead of resolving an empty path.
+_baseline_path: str = (
+    env("PAPER_SCORECARD_BASELINE_PATH", "").strip()
+    or str(_PAPER_SCORECARD.get("baseline_path") or "").strip()
+    or str(_ROOT / "data" / "validated_baseline.json")
+)
+PAPER_SCORECARD_BASELINE_PATH: str = _resolve_root(_baseline_path)
 
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 _VALIDATION: dict = get("validation", {})

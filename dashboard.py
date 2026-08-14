@@ -2049,7 +2049,7 @@ HTML = '''
               </div>
             </div>
             <div style="padding: 18px 24px 0;">
-              <p id="scorecardNarrative" class="health-note">Paper results include no real slippage and are not a guarantee of live performance. Going live requires this scorecard to clear its floors.</p>
+              <p id="scorecardNarrative" class="health-note">Paper results include no real slippage and are not a guarantee of live performance. Going live requires this scorecard to clear its floors, and — when the baseline gate is enabled — to stay within tolerance of the validated out-of-sample backtest.</p>
             </div>
           </section>
 
@@ -3896,8 +3896,9 @@ HTML = '''
         list.innerHTML = '<div class="health-item"><strong>Scorecard unavailable</strong><span>Could not load paper-trade metrics.</span></div>';
         return;
       }
+      const baselineItem = renderBaselineComparison(card);
       if (!card.n_trades) {
-        list.innerHTML = `<div class="health-item"><strong>No closed paper trades yet</strong><span>${escapeHtml(card.summary || 'Keep paper trading to build a scorecard.')}</span></div>`;
+        list.innerHTML = `<div class="health-item"><strong>No closed paper trades yet</strong><span>${escapeHtml(card.summary || 'Keep paper trading to build a scorecard.')}</span></div>` + baselineItem;
         return;
       }
       const acc = card.acceptance || {};
@@ -3905,9 +3906,31 @@ HTML = '''
         `<div class="health-item"><strong>Graduation gate: ${acc.all_pass ? '✅ MEETS floors' : '❌ below floors'}</strong><span>${acc.all_pass ? 'Paper performance clears the live-trading floors.' : 'Keep paper trading — not cleared for live yet.'}</span></div>`,
         `<div class="health-item"><strong>Trades: ${card.n_trades} (${card.win_rate_pct}% win)</strong><span>W ${card.wins} / L ${card.losses}. Need ≥ ${acc.min_trades || 0} to graduate.</span></div>`,
         `<div class="health-item"><strong>Profit factor: ${card.profit_factor === null ? 'n/a' : card.profit_factor}</strong><span>Expectancy ${card.expectancy_per_trade} / trade; total P&L ${card.total_pnl} (${card.total_return_pct}%).</span></div>`,
-        `<div class="health-item"><strong>Prob. profitable: ${card.prob_profitable}</strong><span>Bootstrap resample estimate (same estimator as the backtest).</span></div>`
+        `<div class="health-item"><strong>Prob. profitable: ${card.prob_profitable}</strong><span>Bootstrap resample estimate (same estimator as the backtest).</span></div>`,
+        baselineItem
       ];
       list.innerHTML = items.join('');
+    }
+
+    // Paper-vs-validated-backtest tolerance comparison. Rendered whenever a
+    // baseline exists; the money-path gate is separately switched on, so the
+    // label says whether this is enforced or advisory.
+    function renderBaselineComparison(card) {
+      const cmp = card && card.baseline_comparison;
+      if (!cmp) return '';
+      const enforced = card.baseline_gate_enabled
+        ? 'Enforced on the live path.'
+        : 'Advisory — set paper_scorecard.baseline_gate_enabled to enforce it before real money.';
+      const label = !cmp.comparable
+        ? '⚠️ not comparable'
+        : (cmp.all_pass
+            ? `✅ within ${escapeHtml(cmp.tolerance_pct)}% tolerance`
+            : '❌ outside tolerance');
+      const detail = Object.entries(cmp.checks || {})
+        .filter(([, c]) => c && c.comparable)
+        .map(([metric, c]) => `${metric}: paper ${c.paper === null ? 'n/a' : c.paper} vs backtest ${c.baseline} (floor ${c.floor})`)
+        .join(' · ');
+      return `<div class="health-item"><strong>Vs validated backtest: ${label}</strong><span>${escapeHtml(cmp.reason || '')}${detail ? ' — ' + escapeHtml(detail) : ''} ${escapeHtml(enforced)}</span></div>`;
     }
 
     async function loadScorecard() {
@@ -4516,14 +4539,37 @@ def api_breaker_state():
 
 @app.route("/api/paper-scorecard")
 def api_paper_scorecard():
-    """Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4)."""
+    """Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4).
+
+    Also reports the paper-vs-validated-backtest tolerance comparison when a
+    baseline has been saved. Shown here **advisory**: the comparison is computed
+    whenever a baseline exists so an operator can watch the paper record converge
+    on (or drift from) the validated edge, independent of whether the money-path
+    gate is switched on.
+    """
     try:
         from src.alpaca.position_tracker import PositionTracker
         from src.alpaca.scorecard import scorecard_from_tracker
+        from src.backtest.baseline import compare_paper_to_baseline, load_baseline
 
         tracker = PositionTracker()
         tracker.load()
         card = scorecard_from_tracker(tracker, initial_capital=config.ACCOUNT_SIZE)
+        baseline = load_baseline()
+        card["baseline_comparison"] = (
+            compare_paper_to_baseline(card, baseline)
+            if baseline is not None
+            else {
+                "available": False,
+                "all_pass": False,
+                "comparable": False,
+                "reason": (
+                    "No validated backtest baseline saved — run "
+                    "`python bot.py --mode validate --save-baseline`."
+                ),
+            }
+        )
+        card["baseline_gate_enabled"] = bool(config.PAPER_SCORECARD_BASELINE_GATE_ENABLED)
         return jsonify(card)
     except Exception:
         log.exception("Paper scorecard endpoint error")

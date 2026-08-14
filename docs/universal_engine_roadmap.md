@@ -179,19 +179,28 @@ The `src/eval/` module was never created — the functionality below supersedes 
 | Walk-forward evaluation + OOS gating | `src/backtest/validation.py` (`walk_forward`, `validate_strategy`, `bootstrap_trade_metrics`) + `python bot.py --mode validate` — **P0.1**. Parameter selection scored only on validation folds with an overfitting haircut: `src/backtest/optimize.py` (`parameter_search`, `expected_max_sharpe`) + `--mode optimize` — **P0.2**. |
 | Transaction cost / slippage models | Backtest cost model (`commission_pct`/`slippage_pct`, next-bar-open fills) + **measured** slippage fed back from real fills: `src/alpaca/execution_quality.py` (`use_measured_slippage`) — **P2.1**. (Per-asset-class models remain single-asset today — equities only — since the universe is equities.) |
 | Attribution | `src/observability/attribution.py` — per-signal-label realized outcome over the P0.4 trade-outcome ledger — **P2.3**. |
-| Promotion to paper/live | `src/alpaca/scorecard.py` — an **absolute-floor** performance gate: realized paper metrics must clear fixed configured floors (min trades, profit factor, bootstrap prob-profitable, positive expectancy) before real money. It uses the **same `bootstrap_trade_metrics` estimator** as the P0.1 validation, so paper and backtest numbers are *directly comparable* — but the gate checks floors, it does **not** compare paper against the run's validated-backtest values. Enforced by RiskGuard on the live path (when `ALPACA_PAPER=false`), alongside the tenure check — **P0.4**. |
+| Promotion to paper/live | Two complementary gates, both enforced by RiskGuard on the live path (when `ALPACA_PAPER=false`) alongside the tenure check. (1) **Absolute floors** — `src/alpaca/scorecard.py`: realized paper metrics must clear fixed configured floors (min trades, profit factor, bootstrap prob-profitable, positive expectancy), computed with the **same `bootstrap_trade_metrics` estimator** as the P0.1 validation so paper and backtest numbers are directly comparable — **P0.4**. (2) **Tolerance vs the validated backtest** — `src/backtest/baseline.py`: paper `win_rate_pct` / `profit_factor` must sit within a configured relative tolerance of a saved validated run's held-out OOS values (`--mode validate --save-baseline`); one-sided and fail-closed, opt-in via `paper_scorecard.baseline_gate_enabled`. |
+
+**Update — the promotion gate now closes the loop.** The second gap below is
+delivered: `src/backtest/baseline.py` persists a validated run's held-out
+out-of-sample metrics (`--mode validate --save-baseline`) and compares realized
+paper `win_rate_pct` / `profit_factor` against them within a configured relative
+tolerance. So promotion now enforces **both** halves — absolute floors (P0.4,
+"is paper good enough?") and a **tolerance comparison against the validated
+backtest** ("does paper still look like the validated edge?") — each separately
+enabled, both required when on. One-sided (paper outperformance never blocks;
+large overshoots are flagged advisory) and fail-closed on a missing, stale,
+unvalidated, or non-comparable baseline. See `UPGRADE_PLAN.md`'s acceptance
+criteria for the full rationale.
 
 **Genuine remaining gaps:**
 - A *formal champion/challenger* workflow — running a candidate strategy against
   the incumbent and auto-promoting on a measured edge — does **not** exist. The
-  pieces are in place (validation harness + paper-scorecard floor gate); what's
-  missing is the orchestration that pits two parameter sets/strategies against
-  each other and records a promotion decision.
-- The promotion gate is **absolute-floor**, not a tolerance comparison against
-  the validated backtest. The `UPGRADE_PLAN.md` acceptance criterion ("paper
-  performance matches the validated backtest within tolerance") describes the
-  *goal*; the implemented gate enforces floors on the same metrics. Closing the
-  loop into an explicit paper-vs-backtest tolerance check is open work.
+  pieces are in place (validation harness + paper-scorecard floor gate + the
+  baseline tolerance comparison); what's missing is the orchestration that pits
+  two parameter sets/strategies against each other and records a promotion
+  decision. Note the baseline store holds **one** reference, not a champion and
+  a challenger side by side.
 
 ## Phase 6: Operational Intelligence Layer
 

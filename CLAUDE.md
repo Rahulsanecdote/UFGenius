@@ -82,6 +82,7 @@ python bot.py --mode live --execute --dry-run   # preview orders, submit nothing
 python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
 python bot.py --mode intraday-backtest --entry breakout --interval 5m  # OOS check for the intraday entries (breakout / sweep_reclaim)
 python bot.py --mode validate --start 2022-01-01 --end 2023-12-31  # walk-forward + OOS + bootstrap edge check (P0.1)
+python bot.py --mode validate --save-baseline   # + persist the OOS metrics as the paper-vs-backtest reference
 python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31  # in-sample grid search + overfitting haircut + OOS confirm (P0.2)
 python bot.py --mode portfolio                  # read-only Alpaca portfolio
 python bot.py --mode intraday-scan              # continuous intraday candidate scan → queue (P1.2)
@@ -139,8 +140,14 @@ pytest --cov=src       # coverage
   — blocks entries whose `catalyst_tags` hit `catalysts.veto_tags`),
   `paper_trade_days_required` (live only — **P0.4** upgraded this from a tenure
   check to tenure **plus** a paper-scorecard performance gate: the realized
-  paper trades must clear configured floors before real money), and the
-  **P0.3 circuit breakers**
+  paper trades must clear configured floors before real money; a second,
+  **opt-in** half then requires those same paper metrics to stay **within
+  tolerance of the validated out-of-sample backtest** —
+  `src/backtest/baseline.py`, config `paper_scorecard.baseline_*`, reference
+  saved by `--mode validate --save-baseline`. One-sided, so only paper
+  *underperformance* blocks; fail-closed on a missing/stale/unvalidated
+  baseline. Each half is separately enabled and the gate passes only if every
+  enabled half passes), and the **P0.3 circuit breakers**
   (global operator halt, broker-error breaker, data-staleness breaker — checked
   first, block new entries only). Realized-loss limits and the cooldown read a
   realized-P&L ledger the monitor writes at each exit; the position tracker also
@@ -206,6 +213,19 @@ pytest --cov=src       # coverage
   sub-`min_trades` sample. Honest about its biases (`bias_disclosures`:
   intrabar-ordering, no-concurrency, short/provider-dependent data). Necessary,
   not sufficient — still paper-trade after. See `docs/INTRADAY_BACKTEST.md`.
+- **Finviz provider** (`src/data/providers/finviz.py`, config `finviz:`, **default
+  off**): a supplementary **fundamentals snapshot + screener** source. Finviz has
+  no free API, so it parses public HTML — tables are located by **content** (as
+  audit M10 required of `universe.py`), requests are serialised behind a minimum
+  interval and disk-cached, and every entry point **fails soft** (`None`/`[]`) so
+  a restyle degrades to "no data". `fetch_fundamentals()` maps only fields Finviz
+  states directly; values it doesn't publish (absolute debt, cash-flow lines) are
+  left absent rather than derived, since `fundamental/scorer.py` already
+  normalises over measurable criteria. It is **backfill only** in
+  `fundamental/fetcher.py` — never overwrites a primary-source value — and is
+  firewalled from the money path. `screen()` passes Finviz's own filter string
+  through untouched. Note their terms restrict automated access; enabling it is
+  deliberately an operator decision.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
@@ -297,7 +317,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/scan` | Full-universe scan (slow: 60–120s) |
 | GET | `/api/scan-gaps` | Pre-market gap scan |
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
-| GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4) |
+| GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4), plus the paper-vs-validated-backtest tolerance comparison |
 | GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
 | GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |
 | GET | `/api/attribution` | Per-signal realized outcome (win rate / avg return / P&L) from the trade ledger (P2.3) |
@@ -323,7 +343,9 @@ network-exposed (see Dashboard security above).
 loss/exposure limits, cooldowns) — `RiskGuard` enforces the position/exposure/
 trade-count/bear-market/duplicate rules, plus stop-required, daily/weekly
 realized-loss limits, post-loss cooldown, earnings-week (P1.4 calendar-backed),
-the P1.4 catalyst-tag veto (`catalysts:`), and paper-trading-tenure (live only).
+the P1.4 catalyst-tag veto (`catalysts:`), and the live-only paper graduation
+gate (tenure + `paper_scorecard:` floors + the opt-in `baseline_*` tolerance
+check against the validated backtest).
 
 **Penny mode** (`penny:` / `ALLOW_PENNY_STOCKS`, default off): an opt-in
 low-price/small-cap profile that does **not** disable protection — it swaps the
@@ -332,6 +354,19 @@ rails**: a dollar-volume floor (price × avg volume — the real liquidity gate)
 positive market-cap floor (not 0), a price band, a tighter chaser-trap, and the
 bankruptcy check **stays on**. Scan/paper only until validated. See
 `docs/PENNY_MODE.md`.
+
+**Which strategy the backtest tests** (`signal_source`, audit B1): `composite`
+replays the **live `generate_signal` scorer** point-in-time
+(`src/backtest/composite_signal.py`) — real thresholds and labels, entering on
+STRONG_BUY/BUY at ≥ `composite_min_score`. Only technical+volume are
+reconstructible for a past bar (sentiment/fundamentals/macro are served only as
+of today), so those weights are dropped and the rest renormalised — a **subset**
+of the live composite, disclosed in every result. `proxy` (the default) is the
+legacy hardcoded SMA/SMA/RSI rule and says nothing about the composite. Composite
+mode costs ~28 ms/bar; `composite_stride` scores every Nth bar to trade fidelity
+for runtime. Candidate ordering when position slots are scarce is
+`candidate_ranking` (default `rotate`, a name-neutral date-seeded shuffle —
+audit B2 found plain alphabetical order let ticker *name* pick the trades).
 
 Backtest frictions are configurable via `commission_pct`/`slippage_pct`
 (config.yaml) or `BACKTEST_COMMISSION_PCT`/`BACKTEST_SLIPPAGE_PCT` (env).

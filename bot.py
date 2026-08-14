@@ -279,15 +279,40 @@ def _maybe_execute(args, scan_result: dict) -> None:
             log.error(f"Execution error [{ticker}]: {exc}", exc_info=True)
 
 
+def _resolve_tickers(args, *, what: str) -> list[str]:
+    """Resolve the ticker list for a backtest / validate / optimize run.
+
+    Defaults to the **full** configured universe. Previously these three commands
+    silently truncated to the first 50 tickers, which is the *alphabetical head*
+    of the index — so a run reported as "the S&P 500" actually measured ~10% of
+    it, skewed to A-names. That silent narrowing is the opposite of what a
+    validation harness is for, so the cap is now opt-in (`--max-tickers`) and
+    logged loudly whenever it bites.
+    """
+    if args.ticker:
+        return [args.ticker.upper()]
+
+    universe = get_universe(args.universe or config.SCAN_UNIVERSE)
+    cap = getattr(args, "max_tickers", None)
+    if cap and cap < len(universe):
+        log.warning(
+            f"{what}: capping the universe at {cap} of {len(universe)} tickers "
+            "(--max-tickers). This takes the ALPHABETICAL HEAD, not a "
+            "representative sample — the result describes that subsample only, "
+            "not the universe."
+        )
+        return universe[:cap]
+
+    log.info(f"{what}: using the full {len(universe)}-ticker universe.")
+    return universe
+
+
 def cmd_backtest(args) -> None:
     """Run historical backtest."""
     start = args.start or "2022-01-01"
     end   = args.end   or "2023-12-31"
 
-    tickers = (
-        [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
-    )
+    tickers = _resolve_tickers(args, what="Backtest")
 
     capital = args.account_size or config.ACCOUNT_SIZE
 
@@ -407,10 +432,7 @@ def cmd_validate(args) -> None:
 
     start = args.start or "2022-01-01"
     end   = args.end   or "2023-12-31"
-    tickers = (
-        [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
-    )
+    tickers = _resolve_tickers(args, what="Validation")
     capital = args.account_size or config.ACCOUNT_SIZE
 
     log.info(
@@ -460,6 +482,33 @@ def cmd_validate(args) -> None:
     print(f"\n  ⚠️  {verdict['disclaimer']}")
     print(f"{'='*64}\n")
 
+    if getattr(args, "save_baseline", False):
+        from src.backtest.baseline import save_baseline
+
+        saved = save_baseline(
+            result,
+            tickers=tickers, start=start, end=end,
+            initial_capital=capital, seed=args.seed,
+        )
+        print(f"  Baseline saved → {config.PAPER_SCORECARD_BASELINE_PATH}")
+        source = (saved.get("provenance") or {}).get("signal_source")
+        print(f"  Signal source:  {source}")
+        if source != "composite":
+            # Say this at save time, not when a live entry is mysteriously
+            # blocked weeks later: the gate refuses a proxy baseline outright.
+            print("  ⚠️  This baseline measures the SMA/RSI PROXY rule, not the composite "
+                  "signal that trades live.\n"
+                  "      The paper-vs-backtest gate will refuse it. Re-run with "
+                  "backtest.signal_source=composite\n"
+                  "      (or BACKTEST_SIGNAL_SOURCE=composite) to save a usable reference.")
+        if not saved["validated"]:
+            # Saved for the record, but the tolerance gate refuses an unvalidated
+            # reference — say so here rather than letting an operator discover it
+            # only when a live entry is blocked.
+            print("  ⚠️  This run was NOT VALIDATED — the paper-vs-backtest gate will "
+                  "refuse it as a reference until a validated run replaces it.")
+        print()
+
     if args.json:
         _print_json(result)
 
@@ -476,10 +525,7 @@ def cmd_optimize(args) -> None:
 
     start = args.start or "2022-01-01"
     end   = args.end   or "2023-12-31"
-    tickers = (
-        [args.ticker.upper()] if args.ticker
-        else get_universe(args.universe or config.SCAN_UNIVERSE)[:50]
-    )
+    tickers = _resolve_tickers(args, what="Parameter search")
     capital = args.account_size or config.ACCOUNT_SIZE
 
     log.info(
@@ -609,6 +655,30 @@ def _print_paper_scorecard() -> None:
     banner = "✅ MEETS live-performance floors" if acc.get("all_pass") else "❌ BELOW floors"
     print(f"\n  {banner}")
     print(f"  {card.get('summary', '')}")
+
+    try:  # the baseline comparison must never break the portfolio view either
+        from src.backtest.baseline import compare_paper_to_baseline, load_baseline
+
+        baseline = load_baseline()
+        if baseline is not None:
+            cmp_ = compare_paper_to_baseline(card, baseline)
+            gate_on = config.PAPER_SCORECARD_BASELINE_GATE_ENABLED
+            cmp_banner = "✅ WITHIN tolerance" if cmp_.get("all_pass") else "❌ OUTSIDE tolerance"
+            print("\n  vs validated backtest "
+                  f"({baseline.get('provenance', {}).get('out_of_sample')}):")
+            for metric, chk in (cmp_.get("checks") or {}).items():
+                if not chk.get("comparable"):
+                    continue
+                mark = "✅" if chk.get("pass") else "❌"
+                print(f"    {mark} {metric}: paper {chk.get('paper')} "
+                      f"vs backtest {chk.get('baseline')} (floor {chk.get('floor')})")
+            print(f"  {cmp_banner}"
+                  f"{'' if gate_on else '  (advisory — baseline_gate_enabled=false)'}")
+            print(f"  {cmp_.get('reason', '')}")
+            if cmp_.get("divergence_note"):
+                print(f"  ⚠️  {cmp_['divergence_note']}")
+    except Exception as exc:
+        log.debug(f"baseline comparison unavailable: {exc}")
     print(f"  ⚠️  {card.get('disclaimer', '')}")
     print(f"{'='*60}\n")
 
@@ -1034,6 +1104,15 @@ Examples:
                         help="validate: held-out out-of-sample fraction 0.05-0.9 (default 0.30)")
     parser.add_argument("--seed",         type=int, default=DEFAULT_SEED,
                         help=f"validate: RNG seed for reproducible bootstrap (default {DEFAULT_SEED})")
+    parser.add_argument("--max-tickers", type=_positive_int, default=None, dest="max_tickers",
+                        help=("backtest/validate/optimize: cap the universe at N tickers. "
+                              "Default is the FULL universe. Takes the alphabetical head, so "
+                              "a capped run is a subsample — use it for quick checks, not for "
+                              "a result you intend to report as the whole index."))
+    parser.add_argument("--save-baseline", action="store_true", dest="save_baseline",
+                        help=("validate: persist this run's out-of-sample metrics as the "
+                              "reference the live paper-vs-backtest tolerance gate compares "
+                              "against (see paper_scorecard.baseline_* in config.yaml)"))
     parser.add_argument(
         "--execute",
         action="store_true",

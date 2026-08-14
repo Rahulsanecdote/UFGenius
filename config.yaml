@@ -104,6 +104,13 @@ paper_scorecard:
   require_positive_expectancy: true  # mean per-trade P&L must be > 0
   performance_gate_enabled: true  # gate live trading on scorecard performance, not just tenure
   max_trades_retained: 5000       # cap on retained closed-trade outcome records (bounds the store)
+  # Paper-vs-validated-backtest tolerance gate. The floors above ask "is paper good
+  # enough?"; this asks "does paper still look like the edge validated out-of-sample?".
+  # Needs a baseline saved by `python bot.py --mode validate --save-baseline`.
+  baseline_gate_enabled: false    # opt-in: also require paper within tolerance of the validated backtest before live
+  baseline_tolerance_pct: 30      # paper win rate / profit factor may sit up to this % BELOW the validated OOS values (one-sided; outperformance never blocks)
+  baseline_max_age_days: 180      # refuse a baseline older than this — a stale reference is not evidence of a current edge
+  baseline_path: "data/validated_baseline.json"  # where --save-baseline writes the reference
 
 # Intraday data layer (upgrade plan P1.1). Governs intraday OHLCV bars (1m/5m/…):
 # a bar-scaled cache TTL and the look-ahead / staleness guards.
@@ -383,9 +390,43 @@ resistance_snap_discount: 0.995  # Enter 0.5% below resistance to allow for spre
 live_position_store: "data/live_positions.json"  # Path for live position state JSON
 monitor_interval_min: 5  # How often (minutes) to poll order fills during market hours
 
+# Finviz provider — fundamentals snapshot + screener (src/data/providers/finviz.py).
+# Finviz publishes no free API, so this reads public HTML. Default OFF: their terms
+# restrict automated access and heavy use expects an Elite subscription, so enabling
+# it is deliberately your decision. Rate-limited and cached when on; it fails soft
+# (returns nothing) if the page layout changes, and never sits on the money path.
+finviz:
+  enabled: false
+  min_request_interval_sec: 1.0   # floor between outbound requests (be a good citizen)
+  cache_ttl_sec: 21600            # fundamentals cache (6h — these move slowly)
+  screener_cache_ttl_sec: 900     # screener cache (15m — results move intraday)
+  screener_max_results: 200       # hard cap on tickers returned per query
+  # user_agent: ""                # defaults to the shared UFGenius UA
+
 # Backtest realism
 commission_pct: 0.001  # Per-side commission as a fraction of notional (0.001 = 0.1%)
 slippage_pct: 0.001    # Per-side adverse slippage as a fraction of notional
+# Which qualifying candidates win the scarce position slots (audit B2). Entries are
+# rare, so this ordering decides which trades the strategy actually takes.
+#   rotate       — date-seeded shuffle: reproducible AND name-neutral (default; the
+#                  unbiased estimator of the entry rule's edge)
+#   momentum     — strongest trend first (Close/SMA_200 - 1); an opt-in selection
+#                  strategy, not a neutral fix
+#   alphabetical — legacy biased order; only for reproducing pre-fix results
+candidate_ranking: "rotate"
+# Which entry signal the backtest replays (audit B1).
+#   composite — replay the LIVE generate_signal scorer point-in-time. Only the
+#               technical+volume dimensions are reconstructible for a past bar
+#               (sentiment/fundamentals/macro are only ever served as of today),
+#               so those weights are dropped and the rest renormalised. This is a
+#               SUBSET of the live composite — results disclose it.
+#   proxy     — legacy hardcoded SMA/RSI rule. Faster, but NOT the strategy that
+#               trades live; a verdict from it says nothing about the composite.
+signal_source: "proxy"
+composite_min_score: 65   # enter at/above this composite score (65 = the live BUY threshold)
+composite_stride: 1       # score every Nth bar in composite mode. ~28ms/bar means a full
+                          # 503-ticker run is hours at 1; 5 (weekly) is practical. Skipped
+                          # bars cannot open a position — an approximation, and disclosed.
 
 # Strategy edge-validation gates (bot.py --mode validate, upgrade plan P0.1).
 # An edge is only VALIDATED when it clears ALL of these on HELD-OUT out-of-sample

@@ -14,6 +14,12 @@ The `meets_acceptance` verdict drives the P0.4 upgrade to
 configured floors (min trades, profit factor, bootstrap prob-profitable,
 positive expectancy) — a **performance** gate, not merely a tenure one.
 
+Those floors are *absolute*. The complementary, opt-in **tolerance** half of the
+gate lives in `src/backtest/baseline.py`: it compares these same paper metrics
+against the held-out out-of-sample metrics of a saved validation run, so paper
+must not only be good enough but still resemble the edge that was validated.
+`meets_live_performance_gate` runs whichever halves are enabled.
+
 Nothing here assumes profitability. Too few trades, or metrics below the floors,
 means `meets_acceptance = False` and the honest outcome is *keep paper trading*.
 Reuses `src/backtest/validation.bootstrap_trade_metrics` so the paper and
@@ -25,6 +31,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from src.backtest.baseline import baseline_gate
 from src.backtest.validation import DEFAULT_SEED, bootstrap_trade_metrics
 from src.utils import config
 from src.utils.logger import get_logger
@@ -160,14 +167,45 @@ def scorecard_from_tracker(tracker: Any, *, initial_capital: float, **kwargs) ->
 def meets_live_performance_gate(
     tracker: Any, *, initial_capital: float, seed: int = DEFAULT_SEED
 ) -> tuple[bool, Optional[dict]]:
-    """(passes, scorecard) for the P0.4 live-performance gate.
+    """(passes, scorecard) for the live paper-performance gate.
 
-    When the gate is disabled in config, returns (True, None) so only the tenure
-    check applies. Uses a modest bootstrap count to stay cheap on the hot path.
+    Two independent halves, each separately enabled in config, and the gate
+    passes only if every *enabled* half passes:
+
+    * **Absolute floors** (P0.4) — is the paper record good enough on its own?
+    * **Baseline tolerance** — does the paper record still resemble the edge that
+      was validated out-of-sample? (`src/backtest/baseline.py`)
+
+    With both disabled, returns (True, None) so only the tenure check applies.
+    Uses a modest bootstrap count to stay cheap on the hot path. The returned
+    card carries `gate_reason` explaining any failure, so the caller does not
+    have to reconstruct which half rejected.
     """
-    if not config.PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED:
+    floors_enabled = bool(config.PAPER_SCORECARD_PERFORMANCE_GATE_ENABLED)
+    baseline_enabled = bool(config.PAPER_SCORECARD_BASELINE_GATE_ENABLED)
+    if not floors_enabled and not baseline_enabled:
         return True, None
+
     card = scorecard_from_tracker(
         tracker, initial_capital=initial_capital, n_bootstrap=500, seed=seed
     )
-    return bool(card.get("acceptance", {}).get("all_pass")), card
+
+    reasons: list[str] = []
+    if floors_enabled and not card.get("acceptance", {}).get("all_pass"):
+        reasons.append(
+            "paper scorecard is below the configured floors "
+            f"(trades={card.get('n_trades', 0)}, "
+            f"profit_factor={card.get('profit_factor')}, "
+            f"prob_profitable={card.get('prob_profitable')})"
+        )
+
+    baseline_ok, comparison = baseline_gate(card)
+    if comparison is not None:
+        card["baseline_comparison"] = comparison
+    if not baseline_ok:
+        reasons.append(
+            f"paper-vs-validated-backtest: {(comparison or {}).get('reason', 'check failed')}"
+        )
+
+    card["gate_reason"] = "; ".join(reasons)
+    return not reasons, card

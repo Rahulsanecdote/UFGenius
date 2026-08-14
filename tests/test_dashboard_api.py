@@ -99,11 +99,47 @@ def test_breaker_rejects_bad_action(client, monkeypatch, tmp_path):
 
 def test_paper_scorecard_endpoint(client, monkeypatch, tmp_path):
     monkeypatch.setattr(dashboard.config, "LIVE_POSITION_STORE_PATH", str(tmp_path / "pos.json"))
+    monkeypatch.setattr(
+        dashboard.config, "PAPER_SCORECARD_BASELINE_PATH", str(tmp_path / "absent.json")
+    )
     response = client.get("/api/paper-scorecard")
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["n_trades"] == 0
     assert payload["acceptance"]["all_pass"] is False
+    # No baseline saved → the comparison reports itself unavailable rather than
+    # silently omitting the check.
+    assert payload["baseline_comparison"]["available"] is False
+    assert "--save-baseline" in payload["baseline_comparison"]["reason"]
+
+
+def test_paper_scorecard_reports_the_baseline_comparison(client, monkeypatch, tmp_path):
+    """With a baseline on disk the endpoint compares paper against it — advisory,
+    regardless of whether the money-path gate is switched on."""
+    from datetime import datetime, timezone
+
+    from src.backtest.baseline import save_baseline
+
+    path = str(tmp_path / "baseline.json")
+    # Save as a composite-source baseline: a proxy one is refused outright by the
+    # signal-source guard, which would short-circuit the check this test is for.
+    monkeypatch.setattr(dashboard.config, "BACKTEST_SIGNAL_SOURCE", "composite")
+    save_baseline(
+        {"out_of_sample": {"win_rate_pct": 55.0, "profit_factor": 2.1},
+         "verdict": {"validated": True},
+         "split": {"out_of_sample": "2023-06-01 → 2023-12-31"}},
+        path=path, now=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(dashboard.config, "LIVE_POSITION_STORE_PATH", str(tmp_path / "pos.json"))
+    monkeypatch.setattr(dashboard.config, "PAPER_SCORECARD_BASELINE_PATH", path)
+
+    payload = client.get("/api/paper-scorecard").get_json()
+    comparison = payload["baseline_comparison"]
+    assert payload["baseline_gate_enabled"] is False
+    assert comparison["all_pass"] is False           # no paper trades to compare yet
+    assert comparison["comparable"] is False
+    assert comparison["n_trades"] == 0
+    assert "closed paper trades" in comparison["reason"]
 
 
 def test_execution_quality_endpoint(client, monkeypatch, tmp_path):
