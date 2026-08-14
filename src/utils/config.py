@@ -162,6 +162,12 @@ MOVERS_STREAM_STALE_SEC: float = env_float(
 MOVERS_STREAM_MAX_SYMBOLS: int = env_int(
     "MOVERS_STREAM_MAX_SYMBOLS", _as_int(_MOVERS_STREAM.get("max_symbols", 30), 30))
 
+# Run the always-on movers worker inside the web process (a daemon thread) so
+# the dashboard and worker share one filesystem and the Phase 7 worker strip +
+# Phase 8 live prices populate. Opt-in (env-only), default off — see
+# src/scanner/worker_launcher.py and render.yaml.
+RUN_WORKER_IN_PROCESS: bool = env_bool("RUN_WORKER_IN_PROCESS", False)
+
 ATR_STOP_MULTIPLIER: float = float(get("atr_stop_multiplier", 2.0))
 TARGET_RR_RATIOS: list = get("target_rr_ratios", [1.5, 2.5, 4.0])
 TARGET_EXIT_PCTS: list = get("target_exit_pcts", [30, 40, 30])

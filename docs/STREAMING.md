@@ -80,6 +80,37 @@ browser sees it at the state-publish/refresh cadence — not sub-second in the U
 Truly sub-second *browser* updates would need a push channel (SSE/WebSocket) from
 the dashboard, which this phase deliberately does not add.
 
+## Running in production (Render)
+
+The worker is a **process**, so to run it in production you run the loop
+somewhere always-on. `render.yaml` wires **two** complementary paths, because a
+Render Background Worker and the web service have **separate filesystems** and
+Render disks can't be shared between services — so the Phase 7 shared-state file
+one writes is invisible to the other:
+
+1. **In-process worker on the web service** (`RUN_WORKER_IN_PROCESS=true`) —
+   runs the loop in a daemon thread *inside* the web process
+   (`src/scanner/worker_launcher.py`, launched from `wsgi.py`). Worker and
+   dashboard share one filesystem, so the **"Always-on worker" strip and live
+   streaming prices populate**. It has **no Telegram credentials**, so it never
+   double-sends alerts. Caveat: the free web tier sleeps after ~15 min idle, so
+   this loop only runs while the dashboard is awake — upgrade the web plan for
+   continuous coverage. Keep gunicorn at `--workers 1` so exactly one thread runs.
+
+2. **Separate Background Worker** (`ufgenius-movers-worker`, paid Starter) —
+   `python bot.py --mode movers-worker` in its own always-on container. This is
+   the 24/7 engine that **owns Telegram alerting** (new setups + invalidations)
+   even when the web service is asleep. Its state file isn't read by the web
+   service — that's fine, the in-process worker feeds the dashboard.
+
+So: the in-process worker drives the **dashboard panel**; the Background Worker
+drives **always-on Telegram alerts**. Alerts fire exactly once because only the
+Background Worker has Telegram creds. Set `FMP_KEY`, `ALPACA_API_KEY/SECRET`
+(both services) and `TELEGRAM_BOT_TOKEN/CHAT_ID` (worker only) as Secrets.
+
+If you only want the free web deploy, drop the Background Worker service — the
+in-process worker still populates the panel while the dashboard is awake.
+
 ## Limits / not-yet
 
 - The stream currently feeds **last-trade price** only. Bar-derived signals
