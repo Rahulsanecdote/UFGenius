@@ -489,6 +489,28 @@ HTML = '''
     @keyframes moversPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
     @media (prefers-reduced-motion: reduce) { .movers-live .pulse { animation: none; } }
     .movers-status { padding: 4px 24px 12px; color: var(--text-muted, #8b97a8); font-size: 14px; }
+    /* Phase 7 — always-on worker shared-state strip */
+    .movers-worker { margin: 0 24px 14px; padding: 12px 14px; border-radius: 10px;
+      background: rgba(120, 140, 170, 0.07); border: 1px solid rgba(120, 140, 170, 0.16); }
+    .mw-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .mw-title { font-weight: 700; font-size: 13px; letter-spacing: .02em; }
+    .mw-badge { font-size: 11px; font-weight: 700; letter-spacing: .06em;
+      padding: 2px 8px; border-radius: 999px; }
+    .mw-badge.mw-live { color: #41c07e; background: rgba(65, 192, 126, 0.16); }
+    .mw-badge.mw-stale { color: #d9a441; background: rgba(217, 164, 65, 0.16); }
+    .mw-badge.mw-off { color: #8b97a8; background: rgba(139, 151, 168, 0.16); }
+    .mw-meta { font-size: 12px; color: var(--text-muted, #8b97a8); }
+    .mw-watching { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .mw-chip { font-size: 12px; padding: 3px 9px; border-radius: 999px;
+      background: rgba(120, 140, 170, 0.12); border: 1px solid rgba(120, 140, 170, 0.2);
+      display: inline-flex; align-items: center; gap: 6px; }
+    .mw-chip .mw-tk { font-weight: 700; }
+    .mw-chip .mw-long { color: #41c07e; }
+    .mw-chip .mw-short { color: #e0607a; }
+    .mw-chip .mw-sc { color: var(--text-muted, #8b97a8); }
+    .mw-events { margin-top: 8px; font-size: 12px; color: var(--text-muted, #8b97a8);
+      display: flex; flex-direction: column; gap: 3px; }
+    .mw-events .mw-inval { color: #d9a441; }
     .movers-table-wrap { overflow-x: auto; padding: 0 12px 4px; }
     .movers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .movers-table th, .movers-table td {
@@ -1765,6 +1787,15 @@ HTML = '''
           </div>
         </div>
         <div id="moversStatus" class="movers-status">Loading market movers…</div>
+        <div id="moversWorker" class="movers-worker" hidden>
+          <div class="mw-head">
+            <span class="mw-title">Always-on worker</span>
+            <span id="mwBadge" class="mw-badge mw-off">OFFLINE</span>
+            <span id="mwMeta" class="mw-meta"></span>
+          </div>
+          <div id="mwWatching" class="mw-watching"></div>
+          <div id="mwEvents" class="mw-events"></div>
+        </div>
         <div class="movers-table-wrap">
           <table class="movers-table" id="moversTable" hidden>
             <thead>
@@ -3593,10 +3624,59 @@ HTML = '''
       }
     }
 
+    // ── Worker shared state (Phase 7): reflect what the always-on worker is
+    // doing (its live watch set + recent alerts/invalidations), not our own
+    // scans. Hidden entirely when no worker is running, so the panel is
+    // unchanged for the dashboard-only deployment.
+    function mwSignedPct(v) {
+      return (v === null || v === undefined) ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}%`;
+    }
+    function renderMoversWorker(s) {
+      const box = $('moversWorker');
+      if (!box) return;
+      if (!s || !s.available) { box.hidden = true; return; }
+      box.hidden = false;
+      const badge = $('mwBadge');
+      if (s.live) { badge.className = 'mw-badge mw-live'; badge.textContent = '● LIVE'; }
+      else { badge.className = 'mw-badge mw-stale'; badge.textContent = 'STALE'; }
+      const st = s.stats || {};
+      const age = (s.age_seconds === null || s.age_seconds === undefined) ? ''
+        : (s.age_seconds < 90 ? `${Math.round(s.age_seconds)}s ago`
+                              : `${Math.round(s.age_seconds / 60)}m ago`);
+      const win = s.scan_window_open ? 'market open' : 'off-hours';
+      $('mwMeta').textContent =
+        `cycle ${s.cycle || 0} · ${age ? 'updated ' + age + ' · ' : ''}${win} · `
+        + `${st.discoveries || 0} scans · ${st.alerts || 0} alerts · ${st.invalidations || 0} invalidated`;
+
+      const watching = Array.isArray(s.watching) ? s.watching : [];
+      $('mwWatching').innerHTML = watching.length
+        ? watching.map(w => {
+            const dir = w.direction === 'short' ? 'mw-short' : 'mw-long';
+            const arrow = w.direction === 'short' ? '▾' : '▴';
+            const rv = (w.rel_volume === null || w.rel_volume === undefined) ? '' : ` · ${Number(w.rel_volume).toFixed(1)}x`;
+            return `<span class="mw-chip"><span class="mw-tk ${dir}">${arrow} ${w.ticker}</span>`
+                 + `<span class="mw-sc">${Number(w.score).toFixed(0)}${rv}</span></span>`;
+          }).join('')
+        : '<span class="mw-meta">Nothing on the watch set right now.</span>';
+
+      const inval = (Array.isArray(s.recent_invalidations) ? s.recent_invalidations : []).slice(-4).reverse();
+      $('mwEvents').innerHTML = inval.map(t =>
+        `<span class="mw-inval">⚠️ ${t.ticker} ${t.direction === 'short' ? 'SHORT' : 'LONG'} invalidated — ${t.reason || 'setup broke down'}</span>`
+      ).join('');
+    }
+    async function loadMoversWorker() {
+      try {
+        renderMoversWorker(await apiFetchJson('/api/movers-worker'));
+      } catch (error) {
+        if (!/Authorization/i.test(error.message || '')) $('moversWorker').hidden = true;
+      }
+    }
+
     // ── Live auto-refresh (Phase 6): the dashboard updates itself, no manual
     // reload. Client-side polling — pauses when the tab is hidden (saves the
     // free tier + avoids hammering the FMP quota), resumes on focus.
     const MOVERS_REFRESH_MS = 60 * 1000;      // re-poll movers (discovery-only) every 60s
+    const WORKER_REFRESH_MS = 20 * 1000;      // worker heartbeat/watchlist (cheap, local read)
     const OVERVIEW_REFRESH_MS = 5 * 60 * 1000; // re-poll market regime every 5 min
 
     function updateLiveIndicator() {
@@ -3629,6 +3709,10 @@ HTML = '''
       window.setInterval(() => {
         if (state.moversAutoRefresh && !document.hidden) loadMovers(false);
       }, MOVERS_REFRESH_MS);
+      // Worker state: cheap local read, so poll it faster for a live heartbeat.
+      window.setInterval(() => {
+        if (state.moversAutoRefresh && !document.hidden) loadMoversWorker();
+      }, WORKER_REFRESH_MS);
       // Market Overview: regime changes slowly — a longer cadence.
       window.setInterval(() => {
         if (state.moversAutoRefresh && !document.hidden) loadRegime();
@@ -3637,7 +3721,7 @@ HTML = '''
       window.setInterval(updateLiveIndicator, 1000);
       // Coming back to the tab after a while → refresh right away.
       document.addEventListener('visibilitychange', () => {
-        if (!document.hidden && state.moversAutoRefresh) { loadMovers(false); loadRegime(); }
+        if (!document.hidden && state.moversAutoRefresh) { loadMovers(false); loadMoversWorker(); loadRegime(); }
       });
     }
 
@@ -4138,6 +4222,7 @@ HTML = '''
     warmUp().then(() => {
       loadRegime();
       loadMovers(false);
+      loadMoversWorker();          // Phase 7: reflect the always-on worker's live state
       startLiveRefresh();          // Phase 6: auto-refresh movers + overview
       loadProviderHealth();
       startProviderHealthPolling();
@@ -4726,6 +4811,25 @@ def api_movers():
         })
     except Exception:
         log.exception("Movers endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/movers-worker")
+def api_movers_worker():
+    """Live state of the always-on movers worker (Phase 7 shared state).
+
+    Reads the snapshot the ``movers-worker`` process publishes each cycle — its
+    heartbeat, cycle stats, the live watch set, and recent alerts/invalidations —
+    so the dashboard reflects what the worker is doing instead of re-scanning.
+    ``available:false`` when the worker has never run; ``live:false`` when its
+    last snapshot is older than the staleness limit (worker stopped/stalled).
+    """
+    try:
+        from src.scanner.movers_state import MoversWorkerState
+
+        return jsonify(MoversWorkerState.load_default().snapshot())
+    except Exception:
+        log.exception("Movers-worker state endpoint error")
         return _error_response("Internal server error", 500)
 
 

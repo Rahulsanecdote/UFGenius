@@ -343,3 +343,37 @@ def test_movers_returns_ranked_list(client, monkeypatch):
     assert data["count"] == 2 and data["enriched"] == 2 and data["enrich_requested"] is True
     assert data["movers"][0]["ticker"] == "NBIS"
     assert data["movers"][0]["direction"] == "long"
+
+
+# ── /api/movers-worker (Phase 7 shared state) ───────────────────────────────────
+
+def test_movers_worker_unavailable_when_not_running(client, monkeypatch, tmp_path):
+    # Point at a non-existent state file → worker reported unavailable, not 500.
+    monkeypatch.setattr(dashboard.config, "MOVERS_WORKER_STATE_PATH",
+                        str(tmp_path / "nope.json"))
+    r = client.get("/api/movers-worker")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["available"] is False and data["live"] is False
+
+
+def test_movers_worker_reports_published_state(client, monkeypatch, tmp_path):
+    path = str(tmp_path / "movers_worker.json")
+    monkeypatch.setattr(dashboard.config, "MOVERS_WORKER_STATE_PATH", path)
+    monkeypatch.setattr(dashboard.config, "MOVERS_WORKER_STATE_STALE_SEC", 180.0)
+    from src.scanner.movers import MoverCandidate
+    from src.scanner.movers_monitor import WatchState
+    from src.scanner.movers_state import MoversWorkerState
+
+    c = MoverCandidate(ticker="NBIS", price=10.0, change_pct=20.0, direction="long",
+                       sources=["gainers"], score=88.0, rel_volume=2.5, enriched=True)
+    MoversWorkerState(path=path).publish(
+        cycle=7, stats={"discoveries": 3, "alerts": 2, "invalidations": 1},
+        watching=[WatchState(candidate=c, entry_score=88.0)], scan_window_open=True)
+
+    r = client.get("/api/movers-worker")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["available"] is True and data["live"] is True
+    assert data["cycle"] == 7 and data["watching_count"] == 1
+    assert data["watching"][0]["ticker"] == "NBIS"

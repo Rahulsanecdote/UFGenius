@@ -32,12 +32,30 @@ class _Monitor:
         self.watch_calls = 0
         self.eval_calls = 0
         self._inval = invalidate
+        self._active = []
     def watch(self, candidates):
         self.watch_calls += 1
+        self._active = list(candidates)
         return len(candidates)
     def evaluate(self, *, now=None, enrich=None, alert=None):
         self.eval_calls += 1
         return [{"ticker": "X"}] * self._inval
+    def active(self):
+        return self._active
+
+
+class _State:
+    """Captures worker snapshot publishes so the loop can be asserted without I/O."""
+    def __init__(self):
+        self.publishes = []
+        self.alerts = []
+        self.invalidations = []
+    def record_alerts(self, fired, now=None):
+        self.alerts.append(list(fired))
+    def record_invalidations(self, transitions, now=None):
+        self.invalidations.append(list(transitions))
+    def publish(self, **kw):
+        self.publishes.append(kw)
 
 
 def _cand(ticker="NBIS", score=89.0):
@@ -49,7 +67,7 @@ def _run(**kw):
     sleeps = []
     defaults = dict(max_cycles=6, sleep_fn=lambda s: sleeps.append(s),
                     discover=lambda: [_cand()], alerter=_Alerter(), monitor=_Monitor(),
-                    scan_window=lambda: True, send=lambda *a, **k: True)
+                    scan_window=lambda: True, send=lambda *a, **k: True, state=_State())
     defaults.update(kw)
     stats = mw.run_worker(**defaults)
     return stats, sleeps, defaults
@@ -131,6 +149,40 @@ def test_only_high_score_candidates_watched():
         for p in ps:
             p.stop()
     assert watched_counts == [1]         # only the >=70 candidate
+
+
+def test_publishes_snapshot_every_cycle_including_idle():
+    # Phase 7: state snapshot every cycle so the heartbeat stays fresh even
+    # when the market is closed and no discovery runs.
+    ps = _cfg(MOVERS_WORKER_MARKET_HOURS_ONLY=True)
+    for p in ps:
+        p.start()
+    try:
+        st = _State()
+        _run(max_cycles=4, scan_window=lambda: False, state=st)
+    finally:
+        for p in ps:
+            p.stop()
+    assert len(st.publishes) == 4                         # one publish per cycle
+    assert [p["cycle"] for p in st.publishes] == [1, 2, 3, 4]
+    assert all(p["scan_window_open"] is False for p in st.publishes)
+
+
+def test_publish_records_alerts_and_invalidations():
+    ps = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ps:
+        p.start()
+    try:
+        st = _State()
+        _run(max_cycles=2, discover=lambda: [_cand("A"), _cand("B")],
+             alerter=_Alerter(fired=2), monitor=_Monitor(invalidate=1), state=st)
+    finally:
+        for p in ps:
+            p.stop()
+    assert sum(len(a) for a in st.alerts) == 4            # 2 fired × 2 cycles
+    assert sum(len(i) for i in st.invalidations) == 2     # 1 × 2 cycles
+    # the live watch set is handed to publish each cycle
+    assert st.publishes[-1]["watching"] is not None
 
 
 def test_bad_cycle_does_not_crash_the_loop():
