@@ -236,6 +236,26 @@ class TestBuildSnapshot:
         assert snap.rvol_basis == "insufficient_history"
         assert "rvol:insufficient_history" in snap.data_notes
 
+    def test_session_levels_are_exported(self):
+        # PM high/low from the clamped PM frame; PDH/PDL from the prior daily
+        # row when High/Low columns exist (research aids + inputs to the
+        # level-anchored sweep-reclaim variant).
+        inputs = _standard_inputs()
+        daily = inputs["daily"].copy()
+        daily["High"] = daily["Close"] * 1.02
+        daily["Low"] = daily["Close"] * 0.97
+        inputs["daily"] = daily
+        snap = build_snapshot("LVLS", **inputs)
+        assert snap.pm_high == pytest.approx(10.8 + 0.0, abs=0.2)  # single PM bar
+        assert snap.pm_low is not None and snap.pm_low <= snap.pm_high
+        assert snap.prev_day_high == pytest.approx(10.0 * 1.02)
+        assert snap.prev_day_low == pytest.approx(10.0 * 0.97)
+
+    def test_missing_daily_hl_columns_yield_none_levels(self):
+        snap = build_snapshot("NOHL", **_standard_inputs())  # make_daily has no High/Low
+        assert snap.prev_day_high is None and snap.prev_day_low is None
+        assert snap.pm_low is not None  # PM frame always carries OHLC
+
     def test_earnings_within_window_tags_catalyst(self):
         snap = build_snapshot("GAPR", **_standard_inputs(days_to_earnings=0))
         assert snap.catalyst == "earnings"

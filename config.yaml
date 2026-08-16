@@ -173,6 +173,19 @@ sweep_reclaim:
   stop_buffer_pct: 0.001       # stop placed this fraction below the swept wick low
   max_reclaim_extension_pct: 0.05  # reject if close is already >5% above the swept level (chasing)
   min_session_bars: 20         # minimum current-session bars before it can fire
+  # Level-anchored variant (default OFF — []). Adds pre-marked session levels as
+  # sweepable liquidity levels alongside the rolling swing low: "pdl" = previous
+  # session's regular-hours low, "pml" = today's pre-market low (needs
+  # extended-hours bars; silently absent otherwise). The chosen level is the
+  # HIGHEST one both swept and reclaimed. Provenance: the discretionary
+  # "opening reversal at pre-marked levels" playbook — practitioner convention
+  # (Tier C), unvalidated; A/B it with --mode intraday-backtest before believing it.
+  level_anchors: []            # e.g. [pdl, pml]
+  # Opening-window filter (default OFF — both empty): entries only when the last
+  # bar's ET time is in [start, end). The opening half-hour is where overnight
+  # imbalances resolve; any EXACT minute choice is unvalidated precision.
+  entry_window_start: ""       # ET HH:MM, e.g. "09:30"
+  entry_window_end: ""         # ET HH:MM, e.g. "10:30"
 
 # Intraday backtest harness (--mode intraday-backtest). Replays the deterministic
 # intraday ENTRIES (breakout / sweep-reclaim) bar-by-bar on historical intraday

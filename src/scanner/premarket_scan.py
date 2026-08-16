@@ -153,6 +153,10 @@ class PremarketSnapshot:
     prev_close: Optional[float] = None
     pm_volume: float = 0.0
     pm_dollar_volume: float = 0.0
+    pm_high: Optional[float] = None
+    pm_low: Optional[float] = None
+    prev_day_high: Optional[float] = None
+    prev_day_low: Optional[float] = None
     rvol: Optional[float] = None
     rvol_basis: str = "unavailable"
     float_shares: Optional[float] = None
@@ -181,6 +185,30 @@ def _prev_regular_close(daily: pd.DataFrame, session_date) -> Optional[float]:
         return None
     val = daily["Close"].to_numpy()[prior][-1]
     return float(val) if np.isfinite(val) else None
+
+
+def _prev_day_levels(daily: pd.DataFrame, session_date) -> dict[str, Optional[float]]:
+    """Previous session's high/low (PDH/PDL) from the daily frame, when present.
+
+    Daily provider bars are regular-session only, so these are the exact levels
+    the practitioner canon marks. Exported as research aids (and inputs to the
+    opt-in level-anchored sweep-reclaim variant); None when the daily frame
+    lacks High/Low columns or has no prior row.
+    """
+    out: dict[str, Optional[float]] = {"high": None, "low": None}
+    if daily is None or daily.empty:
+        return out
+    idx = pd.DatetimeIndex(daily.index)
+    if idx.tz is not None:
+        idx = idx.tz_convert(_EASTERN)
+    prior = idx.date < session_date
+    if not prior.any():
+        return out
+    for key, col in (("high", "High"), ("low", "Low")):
+        if col in daily.columns:
+            val = daily[col].to_numpy()[prior][-1]
+            out[key] = float(val) if np.isfinite(val) else None
+    return out
 
 
 def build_snapshot(
@@ -237,6 +265,15 @@ def build_snapshot(
     closes = pm["Close"].to_numpy(dtype=float)
     vols = pm["Volume"].to_numpy(dtype=float)
     snap.pm_dollar_volume = float(np.nansum(closes * vols))
+    if "High" in pm.columns:
+        hi = float(pm["High"].max())
+        snap.pm_high = hi if np.isfinite(hi) else None
+    if "Low" in pm.columns:
+        lo = float(pm["Low"].min())
+        snap.pm_low = lo if np.isfinite(lo) else None
+    pd_levels = _prev_day_levels(daily, session_date)
+    snap.prev_day_high = pd_levels["high"]
+    snap.prev_day_low = pd_levels["low"]
 
     snap.rvol, snap.rvol_basis = time_of_day_rvol(
         intraday, session_date, cutoff,
@@ -513,6 +550,10 @@ def scan_premarket(
             "prev_close": snap.prev_close,
             "pm_volume": int(snap.pm_volume),
             "pm_dollar_volume": round(snap.pm_dollar_volume, 0),
+            "pm_high": snap.pm_high,
+            "pm_low": snap.pm_low,
+            "prev_day_high": snap.prev_day_high,
+            "prev_day_low": snap.prev_day_low,
             "rvol": None if snap.rvol is None else round(snap.rvol, 2),
             "rvol_basis": snap.rvol_basis,
             "float_shares": snap.float_shares,

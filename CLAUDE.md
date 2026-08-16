@@ -204,7 +204,11 @@ pytest --cov=src       # coverage
   config `sweep_reclaim:`, **default off**) is the counterpart to the breakout:
   it detects a sweep of a recent swing low (`lookback_bars`=15) + a reclaim close
   on volume (`reclaim_window_bars`=2), stops just below the swept wick, and builds
-  the plan through the same `generate_trade_plan` money-path. When
+  the plan through the same `generate_trade_plan` money-path. Opt-in extensions
+  (both default off): `level_anchors: [pdl, pml]` treats the previous-day /
+  pre-market low as additional sweepable levels (highest swept-and-reclaimed
+  level wins, `level_source` disclosed), and `entry_window_start/_end` restricts
+  entries to an ET wall-clock window — A/B them via `--mode intraday-backtest`. When
   `SWEEP_RECLAIM_ENABLED`, the producer enqueues a structural `sweep` candidate
   (`sweep_reclaim_present`, a superset of graded entries) and the consumer runs
   the full grading only when the breakout doesn't fire; both are behind the flag,

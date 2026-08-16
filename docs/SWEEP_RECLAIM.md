@@ -102,3 +102,50 @@ path is byte-for-byte unchanged.
 - **Pair with penny rails.** Pointed at low-priced names, keep penny mode on
   (`docs/PENNY_MODE.md`) — the consumer's dollar-volume / market-cap / bankruptcy
   hard-rail eligibility gate still runs upstream of every intraday plan.
+
+## Level-anchored variant + opening-window filter (opt-in, default off)
+
+Two config-driven extensions adapt the discretionary "opening reversal at
+pre-marked levels" playbook (the level-based reversal template taught across
+trading-education content — practitioner convention, **Tier C**, no disclosed
+backtest behind it) into this evaluator's systematic form:
+
+```yaml
+sweep_reclaim:
+  level_anchors: [pdl, pml]     # default [] — off
+  entry_window_start: "09:30"   # default "" — off
+  entry_window_end: "10:30"
+```
+
+- **`level_anchors`** adds pre-marked session levels as sweepable liquidity
+  levels alongside the rolling swing low: `pdl` (previous session's
+  regular-hours low) and `pml` (today's pre-market low — requires
+  extended-hours bars in the frame; silently absent otherwise). Levels are
+  computed from bars **strictly before** the reclaim window — the same
+  established-before-the-sweep discipline as the swing low, so a wick can never
+  define the level it sweeps. When several levels are both swept and reclaimed,
+  the **highest** one wins (reclaiming a higher level is the strictly stronger
+  condition); `sweep.level_source` discloses which level fired, and the
+  `swing_low` output key holds the chosen level's value for downstream
+  compatibility.
+- **`entry_window_*`** restricts entries to an ET wall-clock window (last bar's
+  time in `[start, end)`). The opening half-hour is where overnight imbalances
+  resolve — that much has support; any *exact* minute choice is unvalidated
+  precision. A malformed window is logged and ignored (a broken filter must not
+  silently kill the strategy).
+
+Both default off; with them off the evaluator's behaviour is unchanged.
+Everything on the "honesty" list above applies doubly here: these variants
+exist **to be A/B-tested** in the harness —
+
+```bash
+python bot.py --mode intraday-backtest --entry sweep_reclaim               # baseline
+SWEEP_LEVEL_ANCHORS=pdl,pml SWEEP_ENTRY_WINDOW_START=09:30 \
+SWEEP_ENTRY_WINDOW_END=10:30 \
+python bot.py --mode intraday-backtest --entry sweep_reclaim               # variant
+```
+
+— and believed only if the out-of-sample comparison (and then paper) says so.
+The related research aid: `--mode premarket-scan` now exports `pm_high`,
+`pm_low`, `prev_day_high`, `prev_day_low` per candidate, so the levels this
+variant trades against are visible in the screener output.

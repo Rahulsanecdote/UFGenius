@@ -35,8 +35,9 @@ consulted by the producer/consumer, not here — the evaluator stays pure for te
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time as dtime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -48,6 +49,97 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 _ENTRY_SIGNALS = frozenset({"STRONG_BUY", "BUY"})
+
+_EASTERN = ZoneInfo("America/New_York")
+_PM_START = dtime(4, 0)
+_RTH_START = dtime(9, 30)
+_RTH_END = dtime(16, 0)
+
+
+def _eastern_index(index) -> pd.DatetimeIndex:
+    """Bar index in exchange time (naive timestamps are read as UTC)."""
+    idx = pd.DatetimeIndex(index)
+    if idx.tz is None:
+        idx = idx.tz_localize(timezone.utc)
+    return idx.tz_convert(_EASTERN)
+
+
+def _anchored_levels(df: pd.DataFrame, window: int) -> dict[str, float]:
+    """Opt-in pre-marked levels (config ``SWEEP_LEVEL_ANCHORS``) from the frame.
+
+    * ``pdl`` — previous session's regular-hours (09:30–16:00 ET) low.
+    * ``pml`` — today's pre-market (04:00–09:30 ET) low; unavailable when the
+      frame carries no extended-hours bars (fail-soft: the anchor just doesn't
+      exist that day).
+
+    Levels are computed from bars strictly BEFORE the recent ``window`` bars —
+    the same established-before-the-sweep discipline the rolling swing low uses,
+    so a wick inside the reclaim window can never define the level it sweeps.
+    Empty dict when the anchors list is empty (the default) or on any failure.
+    """
+    anchors = [str(a).strip().lower() for a in (config.SWEEP_LEVEL_ANCHORS or [])]
+    anchors = [a for a in anchors if a in ("pdl", "pml")]
+    if not anchors or df is None or df.empty or "Low" not in df.columns:
+        return {}
+    try:
+        et = _eastern_index(df.index)
+    except Exception:
+        return {}
+    cut = len(df) - max(1, int(window))
+    if cut <= 0:
+        return {}
+    et_est = et[:cut]
+    lows = df["Low"].astype(float).to_numpy()[:cut]
+    today = et[-1].date()
+    out: dict[str, float] = {}
+    if "pdl" in anchors:
+        prior_days = sorted({d for d in et_est.date if d < today})
+        if prior_days:
+            prev = prior_days[-1]
+            mask = (
+                (et_est.date == prev)
+                & (et_est.time >= _RTH_START)
+                & (et_est.time < _RTH_END)
+            )
+            if mask.any():
+                out["pdl"] = float(lows[mask].min())
+    if "pml" in anchors:
+        mask = (
+            (et_est.date == today)
+            & (et_est.time >= _PM_START)
+            & (et_est.time < _RTH_START)
+        )
+        if mask.any():
+            out["pml"] = float(lows[mask].min())
+    return out
+
+
+def _parse_hhmm(value: str) -> Optional[dtime]:
+    try:
+        parts = str(value).strip().split(":")
+        return dtime(int(parts[0]), int(parts[1]))
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def _entry_window() -> Optional[tuple[dtime, dtime]]:
+    """The opt-in ET entry window, or None when off.
+
+    Both bounds must be set and valid; a malformed pair is logged and treated as
+    OFF (documented: a broken filter must not silently kill the strategy).
+    """
+    start_s = str(getattr(config, "SWEEP_ENTRY_WINDOW_START", "") or "").strip()
+    end_s = str(getattr(config, "SWEEP_ENTRY_WINDOW_END", "") or "").strip()
+    if not start_s and not end_s:
+        return None
+    start, end = _parse_hhmm(start_s), _parse_hhmm(end_s)
+    if start is None or end is None or start >= end:
+        log.warning(
+            f"sweep_reclaim: invalid entry window {start_s!r}-{end_s!r} "
+            "(need ET HH:MM, start < end) — window ignored."
+        )
+        return None
+    return start, end
 
 
 def _detect(df: pd.DataFrame) -> Optional[dict]:
@@ -84,12 +176,33 @@ def _detect(df: pd.DataFrame) -> Optional[dict]:
     swing_low = float(ref.min())
     sweep_low = float(recent_low.min())        # the wick that grabbed liquidity
     reclaim_close = float(close.iloc[-1])
+
+    # Candidate levels: the rolling swing low, plus any opt-in anchored levels
+    # (previous-day low / pre-market low — config `level_anchors`, default []).
+    # The chosen level is the HIGHEST one that was both swept and reclaimed:
+    # reclaiming a higher level is the strictly stronger condition, and its
+    # geometry gives the most conservative entry. With anchors off the list is
+    # just the swing low and behaviour is identical to the original.
+    candidates: list[tuple[str, float]] = [("swing", swing_low)]
+    candidates += list(_anchored_levels(df, window).items())
+    qualifying = [
+        (name, lvl) for name, lvl in candidates
+        if sweep_low < lvl and reclaim_close > lvl
+    ]
+    if qualifying:
+        source, level = max(qualifying, key=lambda c: c[1])
+    else:
+        source, level = "swing", swing_low  # keep swing semantics for reasons
+
     return {
-        "swing_low": swing_low,
+        # NOTE: key kept as `swing_low` for downstream compatibility (harness,
+        # plan builder, tests); `level_source` discloses which level it holds.
+        "swing_low": level,
+        "level_source": source,
         "sweep_low": sweep_low,
         "reclaim_close": reclaim_close,
-        "swept": sweep_low < swing_low,        # pierced below the level
-        "reclaimed": reclaim_close > swing_low,  # closed back above it
+        "swept": sweep_low < level,            # pierced below the level
+        "reclaimed": reclaim_close > level,    # closed back above it
         "lookback_bars": lookback,
         "reclaim_window_bars": window,
         "session_bars": n,
@@ -121,6 +234,16 @@ def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> 
     Never raises. The ``now`` argument is accepted for signature parity with the
     other intraday evaluators; session slicing is anchored on the last bar's date.
     """
+    window_cfg = _entry_window()
+    if window_cfg is not None and df is not None and not df.empty:
+        start, end = window_cfg
+        bar_t = _eastern_index(df.index)[-1].time()
+        if not (start <= bar_t < end):
+            return _hold(
+                f"outside entry window {start:%H:%M}-{end:%H:%M} ET "
+                f"(last bar {bar_t:%H:%M} ET)"
+            )
+
     d = _detect(df)
     if d is None:
         return _hold("insufficient session data for sweep-reclaim")
@@ -141,9 +264,11 @@ def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> 
     volume_ok = rel_vol is not None and rel_vol >= min_rel
     require_vol = bool(config.SWEEP_REQUIRE_VOLUME)
 
+    level_source = d.get("level_source", "swing")
+    level_label = "swing low" if level_source == "swing" else f"{level_source.upper()} level"
     reasons: list[str] = []
     if swept:
-        reasons.append(f"Swept swing low {swing_low:.2f} (wick to {sweep_low:.2f})")
+        reasons.append(f"Swept {level_label} {swing_low:.2f} (wick to {sweep_low:.2f})")
     if reclaimed:
         reasons.append(f"Reclaimed {swing_low:.2f} (close {reclaim_close:.2f})")
     if volume_ok and rel_vol is not None:
@@ -157,7 +282,7 @@ def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> 
     else:
         signal = "HOLD"
         if not swept:
-            reasons.append("No sweep of the swing low")
+            reasons.append(f"No sweep of the {level_label}")
         elif not reclaimed:
             reasons.append("Low swept but not reclaimed (breakdown, not reversal)")
         elif too_extended:
@@ -177,6 +302,7 @@ def evaluate_sweep_reclaim(df: pd.DataFrame, now: Optional[datetime] = None) -> 
 
     sweep = {
         "swing_low": round(swing_low, 4),
+        "level_source": level_source,
         "sweep_low": round(sweep_low, 4),
         "reclaim_close": round(reclaim_close, 4),
         "rel_volume": round(rel_vol, 2) if rel_vol is not None else None,
