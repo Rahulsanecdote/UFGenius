@@ -377,6 +377,8 @@ premarket:
   interval: "5m"                  # extended-hours bar size for aggregates
   period: "15d"                   # lookback (must cover rvol history sessions)
   max_results: 20
+  workers: 8                      # snapshot fan-out threads (provider semaphore still caps upstream)
+  universe_cap: 100               # max tickers per scan — truncation is DISCLOSED in output, never silent
   # Hard gates (mechanical liquidity/size floors)
   min_gap_pct: 4.0                # consensus gap-and-go floor ("under 4% tends to fill")
   min_price: 2.0                  # sub-$2 = delisting/reverse-split adverse-selection zone

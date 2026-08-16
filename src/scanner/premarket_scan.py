@@ -36,6 +36,7 @@ yfinance extended bars) are disclosed per result in ``data_notes``.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timezone
 from typing import Any, Callable, Optional
@@ -216,6 +217,15 @@ def build_snapshot(
         daily = fetch_ohlcv(symbol, period="3mo", interval="1d")
     prev_close = _prev_regular_close(daily, session_date)
 
+    # Clamp the session frame to the scan's declared cutoff BEFORE deriving any
+    # field. A multi-ticker scan crossing a bar boundary would otherwise let
+    # later fetches carry bars past the as-of time — and last_price / gap /
+    # dollar volume would read a different instant than share volume and RVOL,
+    # so gates and scores would mix as-of times across tickers (Codex P1).
+    pm = pm.loc[pd.DatetimeIndex(pm.index).time <= cutoff]
+    if pm.empty:
+        return None
+
     snap = PremarketSnapshot(ticker=symbol)
     snap.prev_close = prev_close
     last = pm["Close"].iloc[-1]
@@ -223,7 +233,7 @@ def build_snapshot(
     if prev_close and snap.last_price and prev_close > 0:
         snap.gap_pct = (snap.last_price - prev_close) / prev_close * 100.0
 
-    snap.pm_volume = cumulative_volume_through(pm, cutoff)
+    snap.pm_volume = float(pm["Volume"].sum())
     closes = pm["Close"].to_numpy(dtype=float)
     vols = pm["Volume"].to_numpy(dtype=float)
     snap.pm_dollar_volume = float(np.nansum(closes * vols))
@@ -237,30 +247,40 @@ def build_snapshot(
         snap.data_notes.append(f"rvol:{snap.rvol_basis}")
 
     if daily is not None and not daily.empty and "Volume" in daily.columns:
-        tail = daily["Volume"].tail(21).iloc[:-1]  # exclude today's partial bar
-        if len(tail) >= 5:
-            snap.adv_20d = float(tail.mean())
+        # Exclude today's (partial) bar BY DATE, not by dropping the last row:
+        # pre-market most providers have no session_date row yet, so a blind
+        # iloc[:-1] would discard yesterday's completed volume and shift the
+        # ADV window back a day (Codex P2).
+        didx = pd.DatetimeIndex(daily.index)
+        if didx.tz is not None:
+            didx = didx.tz_convert(_EASTERN)
+        completed = daily["Volume"].loc[didx.date < session_date].tail(20)
+        if len(completed) >= 5:
+            snap.adv_20d = float(completed.mean())
 
     if info is None:
         info = fetch_ticker_info_yfinance(symbol) or {}
-    flt = info.get("floatShares") or info.get("sharesOutstanding")
+    raw_float = info.get("floatShares")
+    used_fallback = not raw_float  # 0 is as unusable as absent — fall back, but SAY so
+    flt = raw_float or info.get("sharesOutstanding")
     try:
         snap.float_shares = float(flt) if flt else None
     except (TypeError, ValueError):
         snap.float_shares = None
     if snap.float_shares and snap.float_shares > 0:
         snap.float_rotation = snap.pm_volume / snap.float_shares
-    if info.get("floatShares") is None and snap.float_shares is not None:
+    if used_fallback and snap.float_shares is not None:
         snap.data_notes.append("float:shares_outstanding_fallback")
 
-    if days_to_earnings is None:
-        def days_to_earnings(sym: str) -> Optional[int]:
-            try:
-                from src.catalysts.earnings_calendar import default_calendar
-                return default_calendar().days_to_earnings(sym)
-            except Exception:
-                return None
-    snap.days_to_earnings = days_to_earnings(symbol)
+    def _default_days_to_earnings(sym: str) -> Optional[int]:
+        try:
+            from src.catalysts.earnings_calendar import default_calendar
+            return default_calendar().days_to_earnings(sym)
+        except Exception:
+            return None
+
+    resolve_earnings = days_to_earnings or _default_days_to_earnings
+    snap.days_to_earnings = resolve_earnings(symbol)
     window = int(settings.get("catalyst_earnings_window_days", 1))
     if snap.days_to_earnings is not None and abs(snap.days_to_earnings) <= window:
         snap.catalyst = "earnings"
@@ -437,23 +457,52 @@ def scan_premarket(
     counts, and ``disclosures`` restating what this is and is not.
     """
     settings = dict(settings or config.PREMARKET_SETTINGS)
+    # Cap the universe with DISCLOSURE, never silently: each snapshot costs up
+    # to four provider calls, so an uncapped SP500 pass is thousands of network
+    # round-trips — past the open for a CLI run, past the WSGI timeout for the
+    # dashboard. Operators widen the cap deliberately (premarket.universe_cap).
+    cap_universe = int(settings.get("universe_cap", 100))
+    truncated_from = None
+    if cap_universe > 0 and len(tickers) > cap_universe:
+        truncated_from = len(tickers)
+        tickers = list(tickers)[:cap_universe]
+        log.warning(
+            f"premarket-scan: universe capped at {cap_universe} of {truncated_from} "
+            "tickers (premarket.universe_cap) — the alphabetical head, a subsample."
+        )
     now_utc = now or datetime.now(timezone.utc)
     if now_utc.tzinfo is None:
         now_utc = now_utc.replace(tzinfo=timezone.utc)
     now_et = now_utc.astimezone(_EASTERN)
     build = snapshot_fn or build_snapshot
 
+    # Snapshots fan out through a bounded worker pool (the codebase's standard
+    # thread-pool idiom; the provider-level semaphore still caps upstream
+    # concurrency). Sequential snapshots over a full universe — each up to four
+    # provider calls — would stretch a cold SP500 scan past the open and defeat
+    # the staged 7:00/8:45/9:15 workflow (Codex P1). Results are collected then
+    # sorted, so ordering stays deterministic regardless of completion order.
+    workers = max(1, int(settings.get("workers", 8)))
+
+    def _safe_build(ticker: str) -> Optional[PremarketSnapshot]:
+        try:
+            return build(ticker, now_et=now_et, settings=settings)
+        except Exception as exc:
+            log.debug(f"{ticker}: premarket snapshot failed ({exc})")
+            return None
+
+    snaps: list[PremarketSnapshot] = []
+    if workers == 1 or len(tickers) <= 1:
+        results = [_safe_build(t) for t in tickers]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_safe_build, tickers))
+    snaps = [s for s in results if s is not None]
+
     candidates: list[dict[str, Any]] = []
     near_misses: list[dict[str, Any]] = []
     scanned = 0
-    for ticker in tickers:
-        try:
-            snap = build(ticker, now_et=now_et, settings=settings)
-        except Exception as exc:
-            log.debug(f"{ticker}: premarket snapshot failed ({exc})")
-            continue
-        if snap is None:
-            continue
+    for snap in snaps:
         scanned += 1
         passed, reasons = passes_gates(snap, settings)
         annotate_flags(snap, settings)
@@ -489,6 +538,7 @@ def scan_premarket(
     cap = int(settings.get("max_results", 20))
     return {
         "as_of_et": now_et.isoformat(),
+        "universe_truncated_from": truncated_from,
         "scanned_with_premarket_data": scanned,
         "candidates": candidates[:cap],
         "near_misses": near_misses[: max(5, cap // 2)],

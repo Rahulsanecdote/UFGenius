@@ -1047,6 +1047,9 @@ def fetch_intraday(
         use_cache: Serve/refresh via the TTL disk cache.
         now:      Reference time for the future-bar clamp (defaults to now);
                   injectable for tests.
+        prepost:  Request extended-hours (4:00–20:00 ET) bars. Affects the
+                  yfinance paths; Alpaca/Polygon intraday aggregates already
+                  span the extended session. Cached under a separate key.
 
     Returns:
         A naive-UTC-indexed OHLCV DataFrame (empty on failure).

@@ -1110,6 +1110,7 @@ Modes:
   validate  Walk-forward + held-out OOS + bootstrap edge check (P0.1)
   optimize  Parameter search scored in-sample only, OOS-confirmed (P0.2)
   portfolio View Alpaca portfolio (read-only)
+  premarket-scan  Pre-market gap screener → ranked research watchlist (not signals)
 
 Examples:
   python bot.py --mode scan --ticker AAPL
@@ -1120,6 +1121,7 @@ Examples:
   python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31
   python bot.py --mode intraday-scan                 # Continuous intraday candidate scan (P1.2)
   python bot.py --mode earnings-calendar             # Build/refresh the earnings calendar (P1.4)
+  python bot.py --mode premarket-scan --universe WATCHLIST  # Pre-market gap screener (research watchlist)
   python bot.py --mode paper
         """,
     )
@@ -1151,7 +1153,7 @@ Examples:
     parser.add_argument("--seed",         type=int, default=DEFAULT_SEED,
                         help=f"validate: RNG seed for reproducible bootstrap (default {DEFAULT_SEED})")
     parser.add_argument("--max-tickers", type=_positive_int, default=None, dest="max_tickers",
-                        help=("backtest/validate/optimize: cap the universe at N tickers. "
+                        help=("backtest/validate/optimize/premarket-scan: cap the universe at N tickers. "
                               "Default is the FULL universe. Takes the alphabetical head, so "
                               "a capped run is a subsample — use it for quick checks, not for "
                               "a result you intend to report as the whole index."))

@@ -217,6 +217,25 @@ class TestBuildSnapshot:
         assert snap.float_shares == 50_000_000
         assert "float:shares_outstanding_fallback" in snap.data_notes
 
+    def test_rvol_is_wired_through_build_snapshot(self):
+        # Two prior sessions at 120K each vs 400K today at the 8:30 cutoff:
+        # rvol = 400/120 ≈ 3.33, basis time_of_day, and NO rvol data note.
+        snap = build_snapshot("RVOL", **_standard_inputs(pm_volume=400_000))
+        assert snap.rvol_basis == "time_of_day"
+        assert snap.rvol == pytest.approx(400_000 / 120_000)
+        assert not any(n.startswith("rvol:") for n in snap.data_notes)
+
+    def test_degraded_rvol_basis_is_noted(self):
+        inputs = _standard_inputs()
+        inputs["intraday"] = make_frame([
+            (datetime(2026, 7, 14, 8, 0), 10.0, 120_000),   # only ONE prior session
+            (datetime(2026, 7, 15, 8, 0), 10.8, 400_000),
+        ])
+        snap = build_snapshot("RVIH", **inputs)
+        assert snap.rvol is None
+        assert snap.rvol_basis == "insufficient_history"
+        assert "rvol:insufficient_history" in snap.data_notes
+
     def test_earnings_within_window_tags_catalyst(self):
         snap = build_snapshot("GAPR", **_standard_inputs(days_to_earnings=0))
         assert snap.catalyst == "earnings"
@@ -227,6 +246,42 @@ class TestBuildSnapshot:
         inputs = _standard_inputs()
         inputs["intraday"] = make_frame([(datetime(2026, 7, 14, 8, 0), 10.0, 1000)])
         assert build_snapshot("EMPT", **inputs) is None
+
+    def test_bars_past_the_scan_cutoff_are_excluded_everywhere(self):
+        # Codex P1 regression: a fetch completing after the scan's as-of time
+        # can carry later bars; every field must respect the declared cutoff,
+        # not just share volume — otherwise gates and scores mix as-of times.
+        inputs = _standard_inputs()
+        inputs["intraday"] = make_frame([
+            (datetime(2026, 7, 13, 8, 0), 10.0, 120_000),
+            (datetime(2026, 7, 14, 8, 0), 10.0, 120_000),
+            (datetime(2026, 7, 15, 8, 0), 10.8, 400_000),
+            (datetime(2026, 7, 15, 8, 45), 99.0, 5_000_000),  # after 8:30 cutoff
+        ])
+        snap = build_snapshot("LATE", **inputs)
+        assert snap.last_price == pytest.approx(10.8)          # not 99.0
+        assert snap.gap_pct == pytest.approx(8.0)
+        assert snap.pm_volume == 400_000                        # not 5.4M
+        assert snap.pm_dollar_volume == pytest.approx(10.8 * 400_000)
+
+    def test_adv_keeps_yesterday_when_no_session_date_row_exists(self):
+        # Codex P2 regression: pre-market the daily frame usually has no row
+        # for today, so a blind iloc[:-1] would drop yesterday's completed bar.
+        inputs = _standard_inputs()
+        inputs["daily"] = make_daily(
+            {date(2026, 7, d): 10.0 for d in range(7, 15)}, volume=1_000_000
+        )
+        snap = build_snapshot("ADVY", **inputs)
+        assert snap.adv_20d == pytest.approx(1_000_000)  # all 8 completed bars kept
+
+    def test_adv_drops_a_session_date_partial_row_by_date(self):
+        closes = {date(2026, 7, d): 10.0 for d in range(7, 15)}
+        daily = make_daily(closes, volume=1_000_000)
+        partial = make_daily({date(2026, 7, 15): 10.5}, volume=37)  # today, partial
+        inputs = _standard_inputs()
+        inputs["daily"] = pd.concat([daily, partial])
+        snap = build_snapshot("ADVP", **inputs)
+        assert snap.adv_20d == pytest.approx(1_000_000)  # partial row excluded
 
 
 # ── gates ────────────────────────────────────────────────────────────────────
@@ -362,6 +417,24 @@ class TestScanPremarket:
             settings=dict(SETTINGS), snapshot_fn=build,
         )
         assert [r["ticker"] for r in out["candidates"]] == ["OKAY"]
+
+    def test_parallel_fanout_matches_sequential_output(self):
+        # Codex P1 regression: the bounded worker pool must not change results
+        # or ordering — collected snapshots are sorted after the fan-out.
+        table = {
+            t: _snap(ticker=t, rvol=float(i))
+            for i, t in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE"], start=1)
+        }
+        seq = scan_premarket(
+            list(table), now=datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc),
+            settings=dict(SETTINGS, workers=1), snapshot_fn=self._fake_builder(table),
+        )
+        par = scan_premarket(
+            list(table), now=datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc),
+            settings=dict(SETTINGS, workers=4), snapshot_fn=self._fake_builder(table),
+        )
+        assert [r["ticker"] for r in par["candidates"]] == [r["ticker"] for r in seq["candidates"]]
+        assert par["scanned_with_premarket_data"] == seq["scanned_with_premarket_data"] == 5
 
     def test_disclosures_always_present(self):
         out = scan_premarket(

@@ -133,6 +133,7 @@ def test_fetch_intraday_uses_default_interval(monkeypatch):
     fetcher.fetch_intraday("AAPL", now=datetime(2026, 1, 2, 15, 30))
     assert calls["interval"] == "5m"
     assert calls["period"] == "5d"  # per-interval default lookback
+    assert calls["prepost"] is False  # regular-session default preserved
 
 
 def test_fetch_intraday_empty_provider_returns_empty(monkeypatch):

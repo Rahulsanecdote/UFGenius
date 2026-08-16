@@ -4792,10 +4792,18 @@ def api_scan_premarket():
         from src.data.universe import get_custom_watchlist, get_universe
 
         source = request.args.get("universe", "WATCHLIST").upper()
+        # HTTP path stays inside the WSGI timeout: default 25, hard-bounded at
+        # 50. scan_premarket's own universe_cap (disclosed truncation) applies
+        # on top for larger configured watchlists.
+        try:
+            limit = int(request.args.get("limit", "25"))
+        except ValueError:
+            limit = 25
+        limit = max(1, min(50, limit))
         if source == "WATCHLIST":
-            tickers = get_custom_watchlist()
+            tickers = get_custom_watchlist()[:limit]
         else:
-            tickers = get_universe(source)[:50]  # cap for rate limits
+            tickers = get_universe(source)[:limit]
 
         if not tickers:
             return jsonify({

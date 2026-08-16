@@ -88,6 +88,7 @@ python bot.py --mode portfolio                  # read-only Alpaca portfolio
 python bot.py --mode intraday-scan              # continuous intraday candidate scan → queue (P1.2)
 python bot.py --mode earnings-calendar          # build/refresh the earnings calendar (P1.4)
 python bot.py --mode movers-worker              # always-on movers worker (MOVERS Phase 5)
+python bot.py --mode premarket-scan             # pre-market gap screener → ranked research watchlist
 python bot.py --mode stream                     # live Alpaca trade-stream diagnostic (MOVERS Phase 8)
 ```
 

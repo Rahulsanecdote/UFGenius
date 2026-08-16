@@ -25,7 +25,7 @@ backtest, **[C]** practitioner convention (folklore until measured).
 |---|---|---|---|
 | Time-of-day RVOL | 0.35 | **[A/B] Strongest factor.** Opening relative volume did nearly all the work in the one rigorous day-trading backtest: RVOL<100% → −0.02R avg/trade, >100% → +0.08R; top-20-by-RVOL ORB ≈ Sharpe 2.4–2.8 (7k stocks, 2016–23). | Zarattini, Barbon & Aziz 2024, [SSRN 4729284](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4729284); Gervais et al. JF 2001 (high-volume return premium) |
 | Gap size (banded) | 0.20 | **[B] Non-monotonic.** Small gaps fill (70–93%); moderate catalyst-backed gaps persist; extreme gaps buy *variance*, not mean (100–150% small-cap gappers average −32% high-to-close while being 3× likelier to squeeze). Score peaks over a moderate band and decays beyond it. | [QuantifiedStrategies gap-fill backtests](https://www.quantifiedstrategies.com/gap-fill-trading-strategies/); [SmallCapLab research](https://www.smallcaplab.com/research) (n≈2,350); Bulkowski gap studies |
-| Pre-market dollar volume | 0.15 | **[C, mechanically sound.** The honest liquidity measure — normalizes across price; a $2 stock on 100K shares is $200K of liquidity. Floors are consensus practice.] | Trade-Ideas DV filter docs; scanner-vendor guides |
+| Pre-market dollar volume | 0.15 | **[C]** Mechanically sound. The honest liquidity measure — normalizes across price; a $2 stock on 100K shares is $200K of liquidity. Floors are consensus practice. | Trade-Ideas DV filter docs; scanner-vendor guides |
 | Float rotation (PM vol ÷ float) | 0.15 | **[C] Supply-normalized demand.** Rotation ≥1.0 = holder base turned over; 0.25–0.5× pre-market on a small float is treated as exceptional. Finviz encodes it as a first-class filter (`sh_curvol_o100sf`). Mechanism sound; band edges unmeasured. | CenterPoint/Lightspeed float-rotation guides; Dux methodology writeups |
 | Catalyst (earnings) | 0.15 | **[A] The cleanest divider in the literature** — news-backed shocks drift (PEAD ≈ +6%/60d top-vs-bottom quintile), no-news shocks revert (~9.6% of the shock given back), strongest in small caps. We can only *observe* earnings offline, so catalyst is known/unknown — unknown is neutral, never scored as "no news". | Savor JFE 2012; Pritamani & Singal 2001; Chan JFE 2003; PEAD literature ([Quantpedia](https://quantpedia.com/strategies/post-earnings-announcement-effect)) |
 
@@ -61,7 +61,7 @@ A high score means "most worth researching", never "buy this".
 
 ## The RVOL formula (and why the naive one is wrong)
 
-```
+```text
 RVOL_tod = cumulative PM volume through clock-time t today
          ÷ mean over prior N sessions of cumulative PM volume through the same t
 ```
@@ -113,7 +113,7 @@ post-macro refresh, ~9:15 confirmation** — with the final ranking computed as
 late as possible. Run the mode from cron at those times (the scheduler's
 `pre_market` slot runs the *daily* scan, a different thing), e.g.:
 
-```
+```bash
 python bot.py --mode premarket-scan --universe WATCHLIST
 python bot.py --mode premarket-scan --universe SP500 --json
 ```
@@ -160,5 +160,5 @@ knicola/finviz-screener code for the Finviz URL grammar; alpacahq
 Momentum-Trading-Example, shner-elmo/TradingView-Screener,
 adhabnr-ux/california-market-scanner (the time-of-day RVOL implementation this
 module mirrors), Ssanji-san/daytrade-scanner (same-feed RVOL discipline) among
-surveyed open-source scanners; yfinance issue tracker (#356, #720, #1189,
-#1393, #1757, #2128) for the extended-hours caveats.
+surveyed open-source scanners; yfinance issue tracker
+(#356, #720, #1189, #1393, #1757, #2128) for the extended-hours caveats.
