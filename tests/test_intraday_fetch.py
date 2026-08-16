@@ -122,9 +122,10 @@ def test_fetch_intraday_sanitizes_output(monkeypatch):
 def test_fetch_intraday_uses_default_interval(monkeypatch):
     calls = {}
 
-    def fake_fetch(ticker, period=None, interval=None, use_cache=True):
+    def fake_fetch(ticker, period=None, interval=None, use_cache=True, prepost=False):
         calls["interval"] = interval
         calls["period"] = period
+        calls["prepost"] = prepost
         return _frame(["2026-01-02 15:00"])
 
     monkeypatch.setattr(fetcher.config, "INTRADAY_DEFAULT_INTERVAL", "5m")

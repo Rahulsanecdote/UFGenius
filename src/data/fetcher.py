@@ -282,6 +282,7 @@ def _download_ohlcv_via_ticker(
     *,
     period: str,
     interval: str,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     """
     Use yf.Ticker().history() — more reliable across yfinance versions
@@ -295,10 +296,13 @@ def _download_ohlcv_via_ticker(
                     period=period,
                     interval=interval,
                     auto_adjust=True,
+                    prepost=prepost,
                     timeout=_YF_TIMEOUT,
                 )
             except TypeError:
-                return t.history(period=period, interval=interval, auto_adjust=True)
+                return t.history(
+                    period=period, interval=interval, auto_adjust=True, prepost=prepost
+                )
 
         return _call_with_timeout(
             _history_call,
@@ -475,6 +479,7 @@ def _download_ohlcv_via_download(
     *,
     period: str,
     interval: str,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     """Fallback: use yf.download() if Ticker.history() fails."""
     kwargs = dict(
@@ -483,6 +488,7 @@ def _download_ohlcv_via_download(
         interval=interval,
         progress=False,
         auto_adjust=True,
+        prepost=prepost,
     )
     # timeout kwarg only supported in some yfinance versions
     with _UPSTREAM_FETCH_SEMAPHORE:
@@ -498,10 +504,17 @@ def _download_ohlcv_once(
     *,
     period: str,
     interval: str,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     """
     Provider cascade: Alpaca → Polygon → yfinance Ticker.history() → yf.download().
     Polygon.io covers OTC and penny stocks that Alpaca does not support.
+
+    ``prepost`` is forwarded to the yfinance paths only: Alpaca and Polygon
+    intraday aggregates already span the extended session (4:00–20:00 ET) and
+    expose no RTH-only switch, so the flag is a no-op for them by design —
+    filtering their bars here would silently change what existing intraday
+    consumers see.
     """
     # 1. Alpaca (primary for NYSE/NASDAQ listed equities)
     can_try_alpaca = (
@@ -532,14 +545,14 @@ def _download_ohlcv_once(
 
     # 3. yfinance Ticker.history() (fallback, blocked on cloud)
     try:
-        df = _download_ohlcv_via_ticker(symbol, period=period, interval=interval)
+        df = _download_ohlcv_via_ticker(symbol, period=period, interval=interval, prepost=prepost)
         if df is not None and not df.empty:
             return df
     except Exception as e:
         log.debug(f"{symbol}: Ticker.history() failed ({e}), trying yf.download()")
 
     # 4. yf.download() (last resort)
-    return _download_ohlcv_via_download(symbol, period=period, interval=interval)
+    return _download_ohlcv_via_download(symbol, period=period, interval=interval, prepost=prepost)
 
 
 def _merge_fast_info_fields(info: dict, ticker_obj: yf.Ticker, symbol: str) -> dict:
@@ -898,15 +911,26 @@ def fetch_ohlcv(
     period: str = "1y",
     interval: str = "1d",
     use_cache: bool = True,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     """
     Fetch OHLCV data for a ticker.
+
+    ``prepost`` requests extended-hours (pre/post-market) bars for intraday
+    intervals. Alpaca and Polygon intraday aggregates include extended-hours
+    bars regardless (neither API offers an RTH-only switch), so the flag's
+    effect is on the yfinance fallbacks — and on the cache key, so extended
+    frames never mix with regular-session ones. Callers that need session
+    boundaries must slice by exchange time themselves (see
+    src/scanner/premarket_scan.py); daily bars ignore the flag.
 
     Returns a DataFrame with columns: Open, High, Low, Close, Volume.
     Returns empty DataFrame on failure (allows callers to skip gracefully).
     """
     symbol = ticker.upper()
     cache_key = f"ohlcv:{symbol}:{period}:{interval}"
+    if prepost:
+        cache_key += ":ext"
 
     if use_cache:
         cached = cache.get(cache_key)
@@ -919,6 +943,7 @@ def fetch_ohlcv(
             symbol,
             period=period,
             interval=interval,
+            prepost=prepost,
             retries=_MAX_RETRIES,
             backoff=_BACKOFF,
         )
@@ -1004,6 +1029,7 @@ def fetch_intraday(
     period: str | None = None,
     use_cache: bool = True,
     now: datetime | None = None,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     """Fetch intraday OHLCV bars, look-ahead-sanitized (upgrade plan P1.1).
 
@@ -1036,7 +1062,9 @@ def fetch_intraday(
             f"(expected one of {sorted(_INTRADAY_INTERVALS)}); use fetch_ohlcv for daily bars"
         )
     lookback = period or _INTRADAY_DEFAULT_PERIOD.get(iv, "5d")
-    df = fetch_ohlcv(ticker, period=lookback, interval=iv, use_cache=use_cache)
+    df = fetch_ohlcv(
+        ticker, period=lookback, interval=iv, use_cache=use_cache, prepost=prepost
+    )
     if df is None or df.empty:
         return pd.DataFrame()
     tolerance = float(getattr(config, "INTRADAY_FUTURE_BAR_TOLERANCE_SEC", 5))
