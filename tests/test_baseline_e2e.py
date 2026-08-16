@@ -80,16 +80,38 @@ def _composite_mode():
     Stride 5 keeps this affordable in the default suite: these tests are about
     the plumbing between stages, not the fidelity of the replay, and stride 1
     scores every bar for no extra coverage here.
+
+    The other two pins isolate the fixture from ambient configuration that
+    would otherwise decide whether it trades at all:
+
+    - `universe_history_path` is a supported production setting, and
+      `backtest_signal_system` auto-loads it when the caller passes nothing
+      (`engine._entry_candidates_for_date` then skips any ticker that is not a
+      member on the date). A real S&P membership file does not contain the
+      synthetic tickers below, so the run would produce zero trades on a
+      developer machine that has one configured while staying green in CI.
+    - `composite_min_score` is a tunable strategy knob. Raising it in
+      `config.yaml` would drop the fixture below the entry threshold and break
+      this plumbing test for an unrelated reason.
+
+    Both are pinned rather than left to the environment so a failure here means
+    the chain broke, not that someone tuned the strategy.
     """
     original_source = cfg.BACKTEST_SIGNAL_SOURCE
     original_stride = cfg.BACKTEST_COMPOSITE_STRIDE
+    original_history = cfg.BACKTEST_UNIVERSE_HISTORY_PATH
+    original_min_score = cfg.BACKTEST_COMPOSITE_MIN_SCORE
     cfg.BACKTEST_SIGNAL_SOURCE = "composite"
     cfg.BACKTEST_COMPOSITE_STRIDE = 5
+    cfg.BACKTEST_UNIVERSE_HISTORY_PATH = None
+    cfg.BACKTEST_COMPOSITE_MIN_SCORE = 65.0
     try:
         yield
     finally:
         cfg.BACKTEST_SIGNAL_SOURCE = original_source
         cfg.BACKTEST_COMPOSITE_STRIDE = original_stride
+        cfg.BACKTEST_UNIVERSE_HISTORY_PATH = original_history
+        cfg.BACKTEST_COMPOSITE_MIN_SCORE = original_min_score
 
 
 @pytest.fixture(scope="module")
