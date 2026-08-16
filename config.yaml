@@ -368,6 +368,55 @@ screener:
       min_avg_volume: 100000
       min_roe_pct: 20         # optional quality filter (skipped when ROE unknown)
 
+# Pre-market gap screener (src/scanner/premarket_scan.py, --mode premarket-scan,
+# GET /api/scan-premarket). SCREENER ONLY: a ranked research watchlist from
+# extended-hours bars — not trade signals, and no protection filter is loosened.
+# Threshold provenance is documented in docs/PREMARKET_SCREENER.md (consensus
+# practitioner defaults + published-evidence direction; none are validated alpha).
+premarket:
+  interval: "5m"                  # extended-hours bar size for aggregates
+  period: "15d"                   # lookback (must cover rvol history sessions)
+  max_results: 20
+  # Hard gates (mechanical liquidity/size floors)
+  min_gap_pct: 4.0                # consensus gap-and-go floor ("under 4% tends to fill")
+  min_price: 2.0                  # sub-$2 = delisting/reverse-split adverse-selection zone
+  max_price: 100.0
+  min_pm_volume: 100000           # modal practitioner floor (shares)
+  min_pm_dollar_volume: 1000000   # the honest liquidity measure ($)
+  min_adv_20d: 500000             # regular-session backstop (shares/day)
+  # Time-of-day RVOL (cum PM volume vs same clock window on prior sessions)
+  rvol_min_history_sessions: 5
+  rvol_min_baseline_shares: 10000 # below this the ratio is a mirage → rvol omitted
+  # Liquidity floor: the continuation/fade divider from the evidence review.
+  # RVOL only earns score above it; below it extreme volume marks the fade cohort.
+  liquidity_floor_price: 10.0
+  liquidity_floor_adv: 1000000
+  micro_float_shares: 10000000
+  # Gap-band score: rises to [peak_lo, peak_hi], decays to floor_beyond at extreme
+  # (extreme gaps buy variance, not mean).
+  gap_score_min: 4.0
+  gap_score_peak_lo: 6.0
+  gap_score_peak_hi: 15.0
+  gap_score_extreme: 30.0
+  gap_score_floor_beyond: 0.2
+  # Composite weights (sum needn't be 1; renormalised). NOT validated alpha —
+  # they encode the direction of published evidence only.
+  weights:
+    rvol: 0.35                    # best-supported factor (SSRN 4729284)
+    gap_band: 0.20
+    dollar_volume: 0.15
+    float_rotation: 0.15
+    catalyst: 0.15                # earnings-calendar hit; unknown stays neutral
+  # Saturation scales (the ~0.63 point of each diminishing-returns curve)
+  rvol_scale: 5.0                 # "5x = super in play"
+  dollar_volume_scale: 5000000
+  rotation_scale: 0.25            # 0.25–0.5x PM rotation on a small float = exceptional
+  # Profile tags
+  fade_extreme_gap_pct: 20.0
+  fade_pm_volume_shares: 5000000  # SmallCapLab: 5M+ PM shares → 71.5% fade (micro floats)
+  continuation_min_rvol: 2.0      # "in play" threshold
+  catalyst_earnings_window_days: 1
+
 # Signal classification thresholds (score out of 100)
 signal_thresholds:
   - [80, "STRONG_BUY",  "VERY_HIGH"]

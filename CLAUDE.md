@@ -172,6 +172,18 @@ pytest --cov=src       # coverage
   (order/dedupe, drop future-labelled bars, `as_of` clamp, stale-frame check).
   Use it (not `fetch_ohlcv`) for anything real-time; daily bars still use
   `fetch_ohlcv`. Knobs live under `config.yaml` `intraday:` / `INTRADAY_*`.
+- **Pre-market screener:** `--mode premarket-scan` (`src/scanner/premarket_scan.py`,
+  config `premarket:`) ranks extended-hours gappers by evidence-backed factors
+  (time-of-day RVOL — rewarded only above a liquidity floor, its sign is
+  conditional; banded gap score that penalises extremes; PM dollar volume;
+  float rotation; earnings-calendar catalyst) and tags candidates
+  continuation/fade_risk/neutral. **Screener only** — firewalled from the
+  money path, no filter loosened; `fetch_ohlcv/fetch_intraday(prepost=True)`
+  supplies the 4:00–9:30 ET bars (yfinance flag; Alpaca/Polygon already span
+  the extended session; cache keys get an `:ext` suffix). Free Finviz cannot
+  see pre-market (Elite-only) — the finviz provider is prior-day context only.
+  Thresholds/weights in `config.yaml` `premarket:` with cited provenance;
+  see `docs/PREMARKET_SCREENER.md`.
 - **Intraday scan → entry pipeline (P1.2/P1.3):** `--mode intraday-scan` runs a
   `ContinuousScanner` (`src/scanner/intraday_scan.py`) that scores live intraday
   bars for volume/momentum/breakout/gap and pushes deduped hits into a
@@ -317,6 +329,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/scan` | Full-universe scan (slow: 60–120s) |
 | GET | `/api/scan-gaps` | Pre-market gap scan |
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
+| GET | `/api/scan-premarket` | Pre-market gap screener: ranked research watchlist from extended-hours bars with continuation/fade_risk evidence profiles — screener only, not signals |
 | GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4), plus the paper-vs-validated-backtest tolerance comparison |
 | GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
 | GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |

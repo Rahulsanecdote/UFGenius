@@ -1,0 +1,508 @@
+"""Pre-market gap screener — ranked watchlist from extended-hours bars.
+
+Answers "what is gapping, on what volume, right now, before the open" from the
+extended-hours (4:00–9:30 ET) session, and ranks candidates by the factors the
+measured evidence actually supports. It is a **screener, not a signal**: the
+output is a research watchlist. Nothing here touches the executor, loosens a
+disqualifier, or implies an entry — the standard scan → filters → RiskGuard
+pipeline is unchanged, and its chaser-trap / liquidity protections still apply
+to anything that later becomes a trade candidate.
+
+Evidence base (docs/PREMARKET_SCREENER.md carries the full citation table):
+
+* **Relative volume, computed by time-of-day**, is the best-supported ranking
+  factor (Zarattini/Barbon/Aziz 2024, SSRN 4729284: the RVOL filter carried
+  essentially the whole edge). The correct formula is cumulative session volume
+  through the current clock time divided by the mean of prior sessions' volume
+  through the *same* window — never raw volume over a full-day average, which
+  understates pre-market activity by construction.
+* **RVOL's sign is conditional**: above a liquidity floor it supports
+  continuation; in micro-cap gappers extreme pre-market volume predicts *fade*
+  (SmallCapLab n≈2,350: 5M+ pre-market shares → 71.5% fade rate). So volume
+  raises rank only above the floor, and feeds the ``fade_risk`` profile below.
+* **Catalyst beats gap size** (Savor 2012; PEAD literature): news-backed moves
+  drift, no-news moves revert. We can only observe one catalyst source offline
+  (the P1.4 earnings calendar), so catalyst is scored known/unknown — an
+  unknown is neutral, never treated as proof of "no news".
+* **Extreme gaps buy variance, not mean** (fill probability falls with size,
+  but 100%+ small-cap gaps average −32% high-to-close): the gap-size score
+  rises through a moderate band and *declines* beyond it.
+
+Data notes: gap and session aggregates come from ``fetch_intraday(prepost=True)``
+— Alpaca/Polygon intraday bars already span the extended session; the flag turns
+it on for yfinance. The free-tier caveats (sparse IEX pre-market prints, delayed
+yfinance extended bars) are disclosed per result in ``data_notes``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, time as dtime, timezone
+from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
+
+from src.data.fetcher import fetch_intraday, fetch_ohlcv, fetch_ticker_info_yfinance
+from src.utils import config
+from src.utils.logger import get_logger
+
+log = get_logger(__name__)
+
+_EASTERN = ZoneInfo("America/New_York")
+_PM_START = dtime(4, 0)
+_RTH_OPEN = dtime(9, 30)
+
+
+# ── session utilities ─────────────────────────────────────────────────────────
+
+def to_eastern_index(index: pd.Index) -> pd.DatetimeIndex:
+    """Convert a bar index to America/New_York.
+
+    The fetch layer normalises intraday frames to naive UTC; provider quirks can
+    still hand back tz-aware indexes, so both are accepted. Naive timestamps are
+    read as UTC — the one convention the pipeline guarantees.
+    """
+    idx = pd.DatetimeIndex(index)
+    if idx.tz is None:
+        idx = idx.tz_localize(timezone.utc)
+    return idx.tz_convert(_EASTERN)
+
+
+def premarket_bars(df: pd.DataFrame, session_date) -> pd.DataFrame:
+    """Bars in the 04:00–09:30 ET window of ``session_date`` (ET calendar date).
+
+    Slices by exchange-time wall clock, NOT by calendar date of the raw index —
+    a 8:00 ET bar is 12:00/13:00 UTC, so date-slicing a UTC index misassigns
+    late-evening UTC bars and DST shifts the boundary. (The existing
+    ``current_session_bars`` date-slice is left untouched; this module owns its
+    own session math.)
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    et = to_eastern_index(df.index)
+    mask = (
+        (et.date == session_date)
+        & (et.time >= _PM_START)
+        & (et.time < _RTH_OPEN)
+    )
+    out = df.loc[mask].copy()
+    out.index = et[mask]
+    return out
+
+
+def cumulative_volume_through(df_pm: pd.DataFrame, cutoff: dtime) -> float:
+    """Cumulative pre-market share volume through an ET wall-clock cutoff."""
+    if df_pm is None or df_pm.empty or "Volume" not in df_pm.columns:
+        return 0.0
+    et = pd.DatetimeIndex(df_pm.index)
+    return float(df_pm.loc[et.time <= cutoff, "Volume"].sum())
+
+
+def time_of_day_rvol(
+    frame: pd.DataFrame,
+    session_date,
+    cutoff: dtime,
+    *,
+    min_history_sessions: int,
+    min_baseline_shares: float,
+) -> tuple[Optional[float], str]:
+    """Pre-market RVOL vs the same clock window on prior sessions.
+
+    ``today's cumulative pre-market volume through cutoff ÷ mean of prior
+    sessions' cumulative pre-market volume through the same cutoff`` — the
+    formula Trade-Ideas implements and SSRN 4729284 validates, restricted to the
+    pre-market session. Numerator and denominator come from the same frame, so
+    a partial feed (e.g. IEX-only) still yields an internally consistent ratio.
+
+    Returns ``(rvol, basis)`` where basis is one of:
+      * ``time_of_day``      — proper same-window comparison.
+      * ``thin_baseline``    — baseline below ``min_baseline_shares``; rvol is
+        None because 100K over a 5K-share baseline would print "20x" while the
+        name is still illiquid in absolute terms (the ratio pathology every
+        scanner guide warns about).
+      * ``insufficient_history`` — fewer than ``min_history_sessions`` prior
+        sessions with pre-market bars; rvol is None and the caller falls back
+        to absolute volume floors.
+    """
+    et_dates = sorted({d for d in to_eastern_index(frame.index).date})
+    prior = [d for d in et_dates if d < session_date]
+    baselines = []
+    for d in prior:
+        vol = cumulative_volume_through(premarket_bars(frame, d), cutoff)
+        if vol > 0:
+            baselines.append(vol)
+    if len(baselines) < max(1, int(min_history_sessions)):
+        return None, "insufficient_history"
+    mean_base = float(np.mean(baselines))
+    if mean_base < float(min_baseline_shares):
+        return None, "thin_baseline"
+    today = cumulative_volume_through(premarket_bars(frame, session_date), cutoff)
+    return today / mean_base, "time_of_day"
+
+
+# ── per-ticker snapshot ───────────────────────────────────────────────────────
+
+@dataclass
+class PremarketSnapshot:
+    ticker: str
+    gap_pct: Optional[float] = None
+    last_price: Optional[float] = None
+    prev_close: Optional[float] = None
+    pm_volume: float = 0.0
+    pm_dollar_volume: float = 0.0
+    rvol: Optional[float] = None
+    rvol_basis: str = "unavailable"
+    float_shares: Optional[float] = None
+    float_rotation: Optional[float] = None
+    adv_20d: Optional[float] = None
+    catalyst: str = "unknown"          # "earnings" | "unknown"
+    days_to_earnings: Optional[int] = None
+    flags: list[str] = field(default_factory=list)
+    data_notes: list[str] = field(default_factory=list)
+
+
+def _prev_regular_close(daily: pd.DataFrame, session_date) -> Optional[float]:
+    """Previous session's regular close from the daily frame.
+
+    Daily bars are the reliable source for the prior close — deriving it from
+    extended bars would splice yesterday's after-hours drift into the gap.
+    """
+    if daily is None or daily.empty or "Close" not in daily.columns:
+        return None
+    idx = pd.DatetimeIndex(daily.index)
+    if idx.tz is not None:
+        idx = idx.tz_convert(_EASTERN)
+    dates = idx.date
+    prior = dates < session_date
+    if not prior.any():
+        return None
+    val = daily["Close"].to_numpy()[prior][-1]
+    return float(val) if np.isfinite(val) else None
+
+
+def build_snapshot(
+    ticker: str,
+    *,
+    now_et: datetime,
+    settings: dict,
+    intraday: Optional[pd.DataFrame] = None,
+    daily: Optional[pd.DataFrame] = None,
+    info: Optional[dict] = None,
+    days_to_earnings: Optional[Callable[[str], Optional[int]]] = None,
+) -> Optional[PremarketSnapshot]:
+    """Compute one ticker's pre-market aggregates. None when no usable data.
+
+    All data dependencies are injectable for offline tests; production callers
+    let the defaults fetch through the provider cascade.
+    """
+    symbol = ticker.upper()
+    session_date = now_et.date()
+    cutoff = min(now_et.time(), _RTH_OPEN)
+
+    if intraday is None:
+        intraday = fetch_intraday(
+            symbol,
+            interval=str(settings.get("interval", "5m")),
+            period=str(settings.get("period", "15d")),
+            prepost=True,
+        )
+    pm = premarket_bars(intraday, session_date)
+    if pm.empty:
+        return None  # no pre-market prints — nothing to screen
+
+    if daily is None:
+        daily = fetch_ohlcv(symbol, period="3mo", interval="1d")
+    prev_close = _prev_regular_close(daily, session_date)
+
+    snap = PremarketSnapshot(ticker=symbol)
+    snap.prev_close = prev_close
+    last = pm["Close"].iloc[-1]
+    snap.last_price = float(last) if np.isfinite(last) else None
+    if prev_close and snap.last_price and prev_close > 0:
+        snap.gap_pct = (snap.last_price - prev_close) / prev_close * 100.0
+
+    snap.pm_volume = cumulative_volume_through(pm, cutoff)
+    closes = pm["Close"].to_numpy(dtype=float)
+    vols = pm["Volume"].to_numpy(dtype=float)
+    snap.pm_dollar_volume = float(np.nansum(closes * vols))
+
+    snap.rvol, snap.rvol_basis = time_of_day_rvol(
+        intraday, session_date, cutoff,
+        min_history_sessions=int(settings.get("rvol_min_history_sessions", 5)),
+        min_baseline_shares=float(settings.get("rvol_min_baseline_shares", 10_000)),
+    )
+    if snap.rvol_basis != "time_of_day":
+        snap.data_notes.append(f"rvol:{snap.rvol_basis}")
+
+    if daily is not None and not daily.empty and "Volume" in daily.columns:
+        tail = daily["Volume"].tail(21).iloc[:-1]  # exclude today's partial bar
+        if len(tail) >= 5:
+            snap.adv_20d = float(tail.mean())
+
+    if info is None:
+        info = fetch_ticker_info_yfinance(symbol) or {}
+    flt = info.get("floatShares") or info.get("sharesOutstanding")
+    try:
+        snap.float_shares = float(flt) if flt else None
+    except (TypeError, ValueError):
+        snap.float_shares = None
+    if snap.float_shares and snap.float_shares > 0:
+        snap.float_rotation = snap.pm_volume / snap.float_shares
+    if info.get("floatShares") is None and snap.float_shares is not None:
+        snap.data_notes.append("float:shares_outstanding_fallback")
+
+    if days_to_earnings is None:
+        def days_to_earnings(sym: str) -> Optional[int]:
+            try:
+                from src.catalysts.earnings_calendar import default_calendar
+                return default_calendar().days_to_earnings(sym)
+            except Exception:
+                return None
+    snap.days_to_earnings = days_to_earnings(symbol)
+    window = int(settings.get("catalyst_earnings_window_days", 1))
+    if snap.days_to_earnings is not None and abs(snap.days_to_earnings) <= window:
+        snap.catalyst = "earnings"
+    return snap
+
+
+# ── gates, scoring, profiles ─────────────────────────────────────────────────
+
+def passes_gates(snap: PremarketSnapshot, settings: dict) -> tuple[bool, list[str]]:
+    """Mechanical liquidity/size gates. Returns (passed, failure reasons)."""
+    reasons: list[str] = []
+    price = snap.last_price
+    if price is None or snap.gap_pct is None:
+        return False, ["no_price_or_gap"]
+    if abs(snap.gap_pct) < float(settings.get("min_gap_pct", 4.0)):
+        reasons.append("gap_below_min")
+    if price < float(settings.get("min_price", 2.0)):
+        reasons.append("price_below_min")
+    if price > float(settings.get("max_price", 100.0)):
+        reasons.append("price_above_max")
+    if snap.pm_volume < float(settings.get("min_pm_volume", 100_000)):
+        reasons.append("pm_volume_below_min")
+    if snap.pm_dollar_volume < float(settings.get("min_pm_dollar_volume", 1_000_000)):
+        reasons.append("pm_dollar_volume_below_min")
+    adv_floor = float(settings.get("min_adv_20d", 500_000))
+    if snap.adv_20d is not None and snap.adv_20d < adv_floor:
+        reasons.append("adv_below_min")
+    return (not reasons), reasons
+
+
+def _gap_band_score(gap_abs: float, settings: dict) -> float:
+    """0–1 score rising through the moderate band, declining beyond it.
+
+    Extreme gaps raise variance, not mean (100–150% small-cap gappers average
+    −32% high-to-close), so score peaks over [peak_lo, peak_hi] and decays
+    linearly to ``floor_beyond`` at ``extreme`` — never rewarding the blow-off.
+    """
+    lo = float(settings.get("gap_score_min", 4.0))
+    peak_lo = float(settings.get("gap_score_peak_lo", 6.0))
+    peak_hi = float(settings.get("gap_score_peak_hi", 15.0))
+    extreme = float(settings.get("gap_score_extreme", 30.0))
+    floor_beyond = float(settings.get("gap_score_floor_beyond", 0.2))
+    if gap_abs <= lo:
+        return 0.0
+    if gap_abs < peak_lo:
+        return (gap_abs - lo) / max(peak_lo - lo, 1e-9)
+    if gap_abs <= peak_hi:
+        return 1.0
+    if gap_abs >= extreme:
+        return floor_beyond
+    frac = (gap_abs - peak_hi) / max(extreme - peak_hi, 1e-9)
+    return 1.0 - frac * (1.0 - floor_beyond)
+
+
+def _saturating(value: float, scale: float) -> float:
+    """Map [0, ∞) → [0, 1) with diminishing returns; scale = the ~0.63 point."""
+    if value <= 0 or scale <= 0:
+        return 0.0
+    return float(1.0 - np.exp(-value / scale))
+
+
+def liquidity_floor_passed(snap: PremarketSnapshot, settings: dict) -> bool:
+    """The evidence's continuation/fade divider: price, ADV and float floors.
+
+    Above it, high RVOL supports continuation (SSRN 4729284); below it the same
+    reading marks the fade cohort (SmallCapLab), so scoring must not reward it.
+    """
+    price_ok = (snap.last_price or 0) >= float(settings.get("liquidity_floor_price", 10.0))
+    adv_ok = (snap.adv_20d or 0) >= float(settings.get("liquidity_floor_adv", 1_000_000))
+    micro = snap.float_shares is not None and snap.float_shares < float(
+        settings.get("micro_float_shares", 10_000_000)
+    )
+    return price_ok and adv_ok and not micro
+
+
+def score_snapshot(snap: PremarketSnapshot, settings: dict) -> float:
+    """Composite 0–100. Weights are config-driven and deliberately NOT a claim
+    of validated alpha — see docs; the ordering encodes the evidence review's
+    direction-of-support, nothing more."""
+    weights = settings.get("weights") or {}
+    w_rvol = float(weights.get("rvol", 0.35))
+    w_gap = float(weights.get("gap_band", 0.20))
+    w_dollar = float(weights.get("dollar_volume", 0.15))
+    w_rot = float(weights.get("float_rotation", 0.15))
+    w_cat = float(weights.get("catalyst", 0.15))
+    total_w = w_rvol + w_gap + w_dollar + w_rot + w_cat
+    if total_w <= 0:
+        return 0.0
+
+    liquid = liquidity_floor_passed(snap, settings)
+    # RVOL: rewarded only above the liquidity floor (sign-conditional evidence).
+    if snap.rvol is not None and liquid:
+        rvol_score = _saturating(snap.rvol, float(settings.get("rvol_scale", 5.0)))
+    else:
+        rvol_score = 0.0
+    gap_score = _gap_band_score(abs(snap.gap_pct or 0.0), settings)
+    dollar_score = _saturating(
+        snap.pm_dollar_volume, float(settings.get("dollar_volume_scale", 5_000_000))
+    )
+    rot_score = (
+        _saturating(snap.float_rotation, float(settings.get("rotation_scale", 0.25)))
+        if snap.float_rotation is not None
+        else 0.0
+    )
+    cat_score = 1.0 if snap.catalyst == "earnings" else 0.0
+
+    raw = (
+        w_rvol * rvol_score
+        + w_gap * gap_score
+        + w_dollar * dollar_score
+        + w_rot * rot_score
+        + w_cat * cat_score
+    )
+    return round(100.0 * raw / total_w, 2)
+
+
+def classify_profile(snap: PremarketSnapshot, settings: dict) -> str:
+    """Direction-of-evidence tag: 'continuation' | 'fade_risk' | 'neutral'.
+
+    fade_risk encodes the measured fade cohort — extreme gap in an illiquid /
+    micro-float name, with huge pre-market volume as an aggravator, catalyst
+    unknown. continuation requires the only combination all three literatures
+    support: catalyst + liquidity floor + confirmed relative volume + moderate
+    gap. Everything else is neutral — honesty over false precision.
+    """
+    gap_abs = abs(snap.gap_pct or 0.0)
+    liquid = liquidity_floor_passed(snap, settings)
+    extreme = gap_abs >= float(settings.get("fade_extreme_gap_pct", 20.0))
+    if not liquid and extreme and snap.catalyst != "earnings":
+        return "fade_risk"
+    if (
+        liquid
+        and snap.catalyst == "earnings"
+        and snap.rvol is not None
+        and snap.rvol >= float(settings.get("continuation_min_rvol", 2.0))
+        and gap_abs <= float(settings.get("gap_score_extreme", 30.0))
+    ):
+        return "continuation"
+    return "neutral"
+
+
+def annotate_flags(snap: PremarketSnapshot, settings: dict) -> None:
+    """Context flags — informational, never gates (screener-only scope)."""
+    gap_abs = abs(snap.gap_pct or 0.0)
+    if gap_abs >= float(settings.get("fade_extreme_gap_pct", 20.0)):
+        snap.flags.append("extreme_gap")
+    if not liquidity_floor_passed(snap, settings):
+        snap.flags.append("below_liquidity_floor")
+    micro = snap.float_shares is not None and snap.float_shares < float(
+        settings.get("micro_float_shares", 10_000_000)
+    )
+    if micro:
+        snap.flags.append("micro_float")
+    if micro and snap.pm_volume >= float(settings.get("fade_pm_volume_shares", 5_000_000)):
+        # SmallCapLab: 5M+ premarket shares in the gapper cohort → 71.5% fade.
+        snap.flags.append("crowded_micro_float")
+    if snap.rvol is None:
+        snap.flags.append("rvol_unavailable")
+
+
+# ── orchestration ─────────────────────────────────────────────────────────────
+
+def scan_premarket(
+    tickers: list[str],
+    *,
+    now: Optional[datetime] = None,
+    settings: Optional[dict] = None,
+    snapshot_fn: Optional[Callable[..., Optional[PremarketSnapshot]]] = None,
+) -> dict[str, Any]:
+    """Run the pre-market screen over ``tickers`` and return the ranked result.
+
+    Output contract: ``candidates`` (gate-passing, score-desc, capped),
+    ``near_misses`` (failed exactly one gate — the "almost qualifiers" pattern),
+    counts, and ``disclosures`` restating what this is and is not.
+    """
+    settings = dict(settings or config.PREMARKET_SETTINGS)
+    now_utc = now or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    now_et = now_utc.astimezone(_EASTERN)
+    build = snapshot_fn or build_snapshot
+
+    candidates: list[dict[str, Any]] = []
+    near_misses: list[dict[str, Any]] = []
+    scanned = 0
+    for ticker in tickers:
+        try:
+            snap = build(ticker, now_et=now_et, settings=settings)
+        except Exception as exc:
+            log.debug(f"{ticker}: premarket snapshot failed ({exc})")
+            continue
+        if snap is None:
+            continue
+        scanned += 1
+        passed, reasons = passes_gates(snap, settings)
+        annotate_flags(snap, settings)
+        row = {
+            "ticker": snap.ticker,
+            "gap_pct": None if snap.gap_pct is None else round(snap.gap_pct, 2),
+            "last_price": snap.last_price,
+            "prev_close": snap.prev_close,
+            "pm_volume": int(snap.pm_volume),
+            "pm_dollar_volume": round(snap.pm_dollar_volume, 0),
+            "rvol": None if snap.rvol is None else round(snap.rvol, 2),
+            "rvol_basis": snap.rvol_basis,
+            "float_shares": snap.float_shares,
+            "float_rotation": (
+                None if snap.float_rotation is None else round(snap.float_rotation, 4)
+            ),
+            "adv_20d": snap.adv_20d,
+            "catalyst": snap.catalyst,
+            "days_to_earnings": snap.days_to_earnings,
+            "profile": classify_profile(snap, settings),
+            "score": score_snapshot(snap, settings),
+            "flags": snap.flags,
+            "data_notes": snap.data_notes,
+        }
+        if passed:
+            candidates.append(row)
+        elif len(reasons) == 1:
+            row["failed_gate"] = reasons[0]
+            near_misses.append(row)
+
+    candidates.sort(key=lambda r: (-r["score"], r["ticker"]))
+    near_misses.sort(key=lambda r: (-r["score"], r["ticker"]))
+    cap = int(settings.get("max_results", 20))
+    return {
+        "as_of_et": now_et.isoformat(),
+        "scanned_with_premarket_data": scanned,
+        "candidates": candidates[:cap],
+        "near_misses": near_misses[: max(5, cap // 2)],
+        "disclosures": [
+            "Screener output: a ranked research watchlist, not trade signals. "
+            "No validated edge is claimed for this ranking; the composite "
+            "weights encode the direction of published evidence only.",
+            "Buying gap-ups at the open is, unconditionally, ~zero-to-negative "
+            "expectancy in the academic record; profile=continuation marks the "
+            "only factor combination the measured evidence supports, and "
+            "profile=fade_risk marks the measured fade cohort.",
+            "Catalyst detection covers the earnings calendar only; "
+            "catalyst=unknown does NOT mean no news exists.",
+            "Free-tier data caveats apply pre-market (sparse IEX prints, "
+            "delayed yfinance extended bars); see per-row data_notes.",
+        ],
+    }

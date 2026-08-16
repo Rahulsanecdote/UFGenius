@@ -4780,6 +4780,34 @@ def api_scan():
         return _error_response("Internal server error", 500)
 
 
+@app.route("/api/scan-premarket")
+def api_scan_premarket():
+    """Pre-market gap screener: ranked research watchlist from extended-hours bars.
+
+    Screener only — candidates carry a continuation/fade_risk/neutral evidence
+    profile and disclosures; nothing here is a trade signal.
+    """
+    try:
+        from src.scanner.premarket_scan import scan_premarket
+        from src.data.universe import get_custom_watchlist, get_universe
+
+        source = request.args.get("universe", "WATCHLIST").upper()
+        if source == "WATCHLIST":
+            tickers = get_custom_watchlist()
+        else:
+            tickers = get_universe(source)[:50]  # cap for rate limits
+
+        if not tickers:
+            return jsonify({
+                "error": "No tickers configured. Set CUSTOM_WATCHLIST env var.",
+                "candidates": [],
+            })
+        return jsonify(scan_premarket(tickers))
+    except Exception:
+        log.exception("Pre-market scan error")
+        return _error_response("Internal server error", 500)
+
+
 @app.route("/api/scan-gaps")
 def api_scan_gaps():
     """Scan watchlist for gap-up/gap-down openings."""
