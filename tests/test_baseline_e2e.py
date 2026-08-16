@@ -144,12 +144,20 @@ class TestRealResultFeedsTheBaseline:
         # below vacuous rather than failing loudly.
         assert validation_result["out_of_sample"]["total_trades"] > 0
 
-    def test_baseline_reads_the_comparable_metrics_off_a_real_result(self, baseline):
+    def test_baseline_reads_the_comparable_metrics_off_a_real_result(
+        self, validation_result, baseline
+    ):
         # The seam: these two keys are what the tolerance gate compares, and
         # they must survive the trip from validate_strategy's OOS block.
+        # Asserted by value, not merely non-null: the baseline must carry the
+        # HELD-OUT metrics, and a non-null check would pass just as happily on
+        # in-sample or walk-forward numbers — which is the whole distinction
+        # this module exists to pin down.
         metrics = baseline["metrics"]
-        assert metrics.get("win_rate_pct") is not None
-        assert metrics.get("profit_factor") is not None
+        oos = validation_result["out_of_sample"]
+        assert metrics["win_rate_pct"] == oos["win_rate_pct"]
+        assert metrics["profit_factor"] == oos["profit_factor"]
+        assert metrics["total_trades"] == oos["total_trades"]
 
     def test_provenance_records_the_signal_source(self, baseline):
         # A proxy baseline is refused by the gate, so the source must be
@@ -158,15 +166,15 @@ class TestRealResultFeedsTheBaseline:
 
     def test_save_load_round_trip_preserves_the_gate_inputs(self, validation_result, tmp_path):
         path = str(tmp_path / "baseline.json")
-        save_baseline(
+        saved = save_baseline(
             validation_result, tickers=TICKERS, start=START, end=END,
             initial_capital=10_000, seed=12345, path=path,
         )
         reloaded = load_baseline(path)
-        assert reloaded is not None
-        assert reloaded["provenance"]["signal_source"] == "composite"
-        assert reloaded["metrics"]["win_rate_pct"] is not None
-        assert reloaded["metrics"]["profit_factor"] is not None
+        # Whole-record equality: the gate reads the file, not the in-memory
+        # record, so anything the JSON round trip drops or coerces is a real
+        # divergence — including fields these tests do not name individually.
+        assert reloaded == saved
 
 
 class TestGateAgainstARealBaseline:
