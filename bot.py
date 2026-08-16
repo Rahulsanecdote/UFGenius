@@ -729,6 +729,52 @@ def cmd_intraday_scan(args) -> None:
         print("\n  Scanner stopped.\n")
 
 
+def cmd_premarket_scan(args) -> None:
+    """Pre-market gap screener: ranked research watchlist from extended-hours bars.
+
+    SCREENER ONLY — no signals, no orders, no filter loosening. Ranks by the
+    factors the published evidence supports (time-of-day RVOL above a liquidity
+    floor, moderate catalyst-backed gaps, dollar volume, float rotation) and
+    tags each candidate continuation / fade_risk / neutral. Best run in staged
+    passes (~7:00 discovery, ~8:45 post-macro, ~9:15 confirmation ET); the
+    ranking is only as fresh as the last poll. See docs/PREMARKET_SCREENER.md.
+    """
+    from src.scanner.premarket_scan import scan_premarket
+
+    tickers = _resolve_tickers(args, what="Pre-market screen")
+    result = scan_premarket(tickers)
+
+    print(f"\n{'='*76}")
+    print(f"  PRE-MARKET GAP SCREENER — as of {result['as_of_et']}")
+    print(f"{'='*76}")
+    rows = result["candidates"]
+    if not rows:
+        print(f"  No gate-passing candidates "
+              f"({result['scanned_with_premarket_data']} tickers had pre-market data).")
+    else:
+        print(f"  {'#':>2}  {'TICKER':<7}{'GAP%':>7}{'PRICE':>9}{'PM VOL':>10}"
+              f"{'PM $VOL':>12}{'RVOL':>7}{'ROT':>7}{'SCORE':>7}  PROFILE       FLAGS")
+        print(f"  {'-'*86}")
+        for i, r in enumerate(rows, 1):
+            rvol = f"{r['rvol']:.1f}x" if r["rvol"] is not None else "—"
+            rot = f"{r['float_rotation']:.2f}" if r["float_rotation"] is not None else "—"
+            print(f"  {i:>2}  {r['ticker']:<7}{r['gap_pct']:>6.1f}%{r['last_price']:>9.2f}"
+                  f"{r['pm_volume']:>10,}{r['pm_dollar_volume']:>12,.0f}{rvol:>7}{rot:>7}"
+                  f"{r['score']:>7.1f}  {r['profile']:<13} {','.join(r['flags']) or '—'}")
+    if result["near_misses"]:
+        misses = ", ".join(
+            f"{r['ticker']}({r['failed_gate']})" for r in result["near_misses"][:8]
+        )
+        print(f"\n  Near misses (failed one gate): {misses}")
+    print()
+    for d in result["disclosures"]:
+        print(f"  ⚠️  {d}")
+    print(f"{'='*76}\n")
+
+    if args.json:
+        _print_json(result)
+
+
 def cmd_movers(args) -> None:
     """Discover and rank today's market-wide movers (the MOVERS universe).
 
@@ -1064,6 +1110,7 @@ Modes:
   validate  Walk-forward + held-out OOS + bootstrap edge check (P0.1)
   optimize  Parameter search scored in-sample only, OOS-confirmed (P0.2)
   portfolio View Alpaca portfolio (read-only)
+  premarket-scan  Pre-market gap screener → ranked research watchlist (not signals)
 
 Examples:
   python bot.py --mode scan --ticker AAPL
@@ -1074,12 +1121,13 @@ Examples:
   python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31
   python bot.py --mode intraday-scan                 # Continuous intraday candidate scan (P1.2)
   python bot.py --mode earnings-calendar             # Build/refresh the earnings calendar (P1.4)
+  python bot.py --mode premarket-scan --universe WATCHLIST  # Pre-market gap screener (research watchlist)
   python bot.py --mode paper
         """,
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream", "premarket-scan"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -1105,7 +1153,7 @@ Examples:
     parser.add_argument("--seed",         type=int, default=DEFAULT_SEED,
                         help=f"validate: RNG seed for reproducible bootstrap (default {DEFAULT_SEED})")
     parser.add_argument("--max-tickers", type=_positive_int, default=None, dest="max_tickers",
-                        help=("backtest/validate/optimize: cap the universe at N tickers. "
+                        help=("backtest/validate/optimize/premarket-scan: cap the universe at N tickers. "
                               "Default is the FULL universe. Takes the alphabetical head, so "
                               "a capped run is a subsample — use it for quick checks, not for "
                               "a result you intend to report as the whole index."))
@@ -1198,6 +1246,8 @@ Examples:
         cmd_intraday_scan(args)
     elif args.mode == "earnings-calendar":
         cmd_earnings_calendar(args)
+    elif args.mode == "premarket-scan":
+        cmd_premarket_scan(args)
     elif args.mode == "movers":
         cmd_movers(args)
     elif args.mode == "movers-monitor":

@@ -122,9 +122,10 @@ def test_fetch_intraday_sanitizes_output(monkeypatch):
 def test_fetch_intraday_uses_default_interval(monkeypatch):
     calls = {}
 
-    def fake_fetch(ticker, period=None, interval=None, use_cache=True):
+    def fake_fetch(ticker, period=None, interval=None, use_cache=True, prepost=False):
         calls["interval"] = interval
         calls["period"] = period
+        calls["prepost"] = prepost
         return _frame(["2026-01-02 15:00"])
 
     monkeypatch.setattr(fetcher.config, "INTRADAY_DEFAULT_INTERVAL", "5m")
@@ -132,6 +133,7 @@ def test_fetch_intraday_uses_default_interval(monkeypatch):
     fetcher.fetch_intraday("AAPL", now=datetime(2026, 1, 2, 15, 30))
     assert calls["interval"] == "5m"
     assert calls["period"] == "5d"  # per-interval default lookback
+    assert calls["prepost"] is False  # regular-session default preserved
 
 
 def test_fetch_intraday_empty_provider_returns_empty(monkeypatch):

@@ -767,6 +767,10 @@ DASHBOARD_TRUST_PROXY: bool = env_bool("DASHBOARD_TRUST_PROXY", False)
 # A dict of {preset_name: {criteria...}} consumed by src/screener/. Empty when
 # unconfigured; unknown preset names are rejected loudly at call time.
 SCREENER_PRESETS: dict = get("screener.presets", {}) or {}
+# Pre-market gap screener settings (src/scanner/premarket_scan.py). Passed as a
+# dict so the module's per-key defaults apply when the block is absent; the
+# screener is read-only research surface, so no per-key env overrides needed.
+PREMARKET_SETTINGS: dict = get("premarket", {}) or {}
 # Feature lookback periods (config-driven, not hardcoded). SMA periods drive
 # which `sma{p}` features exist, so a preset can reference any configured period.
 SCREENER_SMA_PERIODS: list = [
