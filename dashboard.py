@@ -3814,10 +3814,13 @@ HTML = '''
     }
     async function runPremarketScan() {
       const status = $('pmStatus');
-      const btn = $('pmRunButton');
+      // Freeze every criterion control, not just the button: the universe and
+      // penny mode are snapshotted here, so leaving them live would let the
+      // visible settings describe different criteria than the shown results.
+      const controls = [$('pmRunButton'), $('pmPennyButton'), $('pmUniverse')];
       const universe = $('pmUniverse').value;
       const penny = state.pmPenny ? '&penny=true' : '';
-      btn.disabled = true;
+      controls.forEach(el => { el.disabled = true; });
       status.textContent = 'Screening extended-hours gappers — up to a minute on a cold cache…';
       try {
         renderPremarket(await apiFetchJson(
@@ -3832,7 +3835,7 @@ HTML = '''
           status.textContent = `Screener failed: ${error.message}`;
         }
       } finally {
-        btn.disabled = false;
+        controls.forEach(el => { el.disabled = false; });
       }
     }
     function setPmPenny(on) {

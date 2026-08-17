@@ -330,3 +330,34 @@ def test_recomputation_that_is_also_implausible_fails_closed():
     # is still absurd we have verified nothing.
     out, _ = _run_split(1500.0)
     assert "SPLT" not in out
+
+
+def test_merge_keeps_the_price_from_the_row_that_won_the_change():
+    """Price and change must come from the SAME source row.
+
+    The endpoints can carry different snapshots, and the verification measures
+    the kept change's quote against our previous close — a price left over from
+    the losing row would silently corrupt that recomputation (CodeRabbit).
+    """
+    payloads = {
+        # Same ticker in two lists: the most-actives row carries the larger
+        # move AND its own (different) price.
+        "gainers": [{"symbol": "DUP", "price": 10.0, "changesPercentage": 20.0}],
+        "most_actives": [{"symbol": "DUP", "price": 11.5, "changesPercentage": 38.0}],
+        "losers": [],
+    }
+    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
+                MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
+                MOVERS_SUSPECT_CHANGE_PCT=300.0)
+    ps = [patch.object(cfg, k, v) for k, v in base.items()]
+    ps.append(patch.object(mv, "_fetch_source", lambda s: payloads.get(s, [])))
+    for p in ps:
+        p.start()
+    try:
+        out = {c.ticker: c for c in mv.fetch_market_movers()}
+    finally:
+        for p in ps:
+            p.stop()
+    assert out["DUP"].change_pct == 38.0
+    assert out["DUP"].price == 11.5          # not the 10.0 from the first row

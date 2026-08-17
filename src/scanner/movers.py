@@ -283,8 +283,13 @@ def fetch_market_movers(
             else:
                 if source not in existing.sources:
                     existing.sources.append(source)
-                # Keep the largest-magnitude move and its direction.
+                # Keep the largest-magnitude move, with the price and direction
+                # from the SAME row: the two endpoints can carry different
+                # snapshots, and _verified_change_pct measures the kept change's
+                # quote against our previous close — a price from another row
+                # would silently make that recomputation wrong (CodeRabbit).
                 if abs(change) > abs(existing.change_pct):
+                    existing.price = price
                     existing.change_pct = change
                     existing.direction = direction
 
