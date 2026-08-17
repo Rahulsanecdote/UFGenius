@@ -3793,7 +3793,7 @@ HTML = '''
             <td class="num">${pmDollars(r.pm_dollar_volume)}</td>
             <td${headline}>${escapeHtml(catalyst)}${r.catalyst_headline ? ' ℹ' : ''}</td>
             <td>${escapeHtml(r.profile || '—')}</td>
-            <td class="num movers-score">${Math.round((Number(r.score) || 0) * 100)}</td>
+            <td class="num movers-score">${Math.round(Number(r.score) || 0)}</td>
             <td>${flags}</td>
           </tr>`;
         }).join('');
@@ -3825,7 +3825,10 @@ HTML = '''
         ));
       } catch (error) {
         if (!/Authorization/i.test(error.message || '')) {
+          // Clear BOTH result surfaces: near-misses left over from an earlier
+          // successful scan would read as results of the failed one.
           $('pmTable').hidden = true;
+          $('pmNearMisses').hidden = true;
           status.textContent = `Screener failed: ${error.message}`;
         }
       } finally {
