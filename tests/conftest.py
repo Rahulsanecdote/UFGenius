@@ -68,3 +68,15 @@ def _isolate_peak_equity_store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cfg, "PORTFOLIO_PEAK_EQUITY_PATH", str(tmp_path / "portfolio_peak_equity.json")
     )
+
+
+@pytest.fixture(autouse=True)
+def _disable_halt_feed(monkeypatch):
+    """Keep the halt lookup off the network for the suite by default.
+
+    ``movers.halts.enabled`` ships ON, so without this every discovery test
+    would pay a real connect-timeout to the Nasdaq feed. Tests that exercise
+    halt behaviour re-enable it and patch the HTTP boundary (tests/test_halts.py).
+    """
+    monkeypatch.setattr(cfg, "MOVERS_HALTS_ENABLED", False)
+    monkeypatch.setattr(cfg, "MOVERS_HALT_SKIP_INVALIDATION", False)

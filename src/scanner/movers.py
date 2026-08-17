@@ -64,12 +64,19 @@ class MoverCandidate:
     # replaced it with a split-adjusted recomputation — see _verified_change_pct.
     change_verified: bool = False
 
+    # Trade-halt state (src/data/halts.py). A halted name is untradeable now and
+    # its volume signals are suppressed by the halt itself.
+    is_halted: bool = False
+    halt_reason: str = ""
+
     def as_dict(self) -> dict:
         return {
             "ticker": self.ticker,
             "price": round(self.price, 4),
             "change_pct": round(self.change_pct, 2),
             "change_verified": self.change_verified,
+            "is_halted": self.is_halted,
+            "halt_reason": self.halt_reason,
             "direction": self.direction,
             "sources": list(self.sources),
             "name": self.name,
@@ -165,6 +172,38 @@ def _verified_change_pct(ticker: str, price: float) -> float | None:
     except Exception as exc:  # verification is best-effort — never break discovery
         log.debug(f"movers: change verification for {ticker} failed ({type(exc).__name__})")
         return None
+
+
+def annotate_halts(candidates: list["MoverCandidate"]) -> list["MoverCandidate"]:
+    """Flag halted candidates, and drop them when configured to.
+
+    One feed lookup covers the whole list, so this costs a single cached
+    request regardless of candidate count. Default is **flag, don't drop**:
+    the movers list is discovery, and a halted name is genuinely informative
+    (it is usually the day's biggest move) — it just must not be alerted on or
+    invalidated. Set ``movers.halts.exclude_from_list`` to remove them instead.
+    """
+    try:
+        from src.data.halts import active_halts
+
+        halted = active_halts()
+    except Exception as exc:  # halt lookup must never break discovery
+        log.debug(f"movers: halt lookup failed ({type(exc).__name__})")
+        return candidates
+    if not halted:
+        return candidates
+    for c in candidates:
+        record = halted.get(c.ticker)
+        if record is not None:
+            c.is_halted = True
+            c.halt_reason = record.reason
+    n = sum(1 for c in candidates if c.is_halted)
+    if n and config.MOVERS_HALT_EXCLUDE_FROM_LIST:
+        log.info(f"movers: dropping {n} halted candidate(s) (halts.exclude_from_list)")
+        return [c for c in candidates if not c.is_halted]
+    if n:
+        log.info(f"movers: {n} candidate(s) currently halted — flagged, not alertable")
+    return candidates
 
 
 def _score(change_pct: float, n_sources: int) -> float:
@@ -345,6 +384,10 @@ def fetch_market_movers(
         for c in candidates[:cap]:
             _enrich_candidate(c)
         candidates.sort(key=lambda x: x.score, reverse=True)
+
+    # Halt state last: it annotates (and optionally trims) the final list, and
+    # costs one cached feed lookup for the whole batch.
+    candidates = annotate_halts(candidates)
 
     n_enriched = sum(1 for c in candidates if c.enriched)
     log.info(f"movers: {len(candidates)} candidates after filters "

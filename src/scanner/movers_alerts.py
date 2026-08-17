@@ -80,6 +80,11 @@ class MoversAlerter:
         self._recent: dict[tuple[str, str], float] = {}
 
     def _eligible(self, c, now: datetime) -> bool:
+        # A halted name is untradeable right now, and an alert says "act". Its
+        # score is also stale by construction — the halt suppressed the very
+        # prints the score was computed from.
+        if config.MOVERS_HALT_SUPPRESS_ALERTS and getattr(c, "is_halted", False):
+            return False
         if c.score < float(config.MOVERS_ALERTS_MIN_SCORE):
             return False
         if config.MOVERS_ALERTS_REQUIRE_ENRICHED and not c.enriched:

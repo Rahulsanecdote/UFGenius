@@ -24,6 +24,18 @@ movers:
   suspect_change_pct: 300.0
   limit: 40                 # max ranked candidates returned
   include_short_setups: true  # losers → SHORT-direction candidates
+  # Trade-halt awareness. A halted name cannot be acted on, and LULD reopens gap
+  # violently — but the bigger problem is the monitor: while halted no trades
+  # print, so relative volume collapses and the invalidation rules read a fake
+  # "the move is fading". Halted movers are flagged everywhere, kept OUT of
+  # alerts, and skipped by invalidation. Source: Nasdaq Trader's official UTP
+  # halt feed (free, no key). Fails OPEN — a feed outage never mutes alerting.
+  halts:
+    enabled: true             # fetch + flag halted symbols
+    suppress_alerts: true     # never alert a name you cannot trade
+    skip_invalidation: true   # don't invalidate on volume that a halt suppressed
+    exclude_from_list: false  # keep halted movers visible (flagged), don't drop them
+    cache_ttl_sec: 45         # halts are time-critical — keep this short
   # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,
   # momentum, VWAP position, breakout) and rank by early-momentum QUALITY, not
   # just raw % change. Adds one intraday fetch per candidate (Alpaca/Polygon/yf).

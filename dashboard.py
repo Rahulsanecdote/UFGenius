@@ -479,6 +479,11 @@ HTML = '''
     /* Market Movers panel */
     .movers-actions { display: flex; gap: 8px; }
     .chg-adj { color: var(--text-muted); font-size: 11px; margin-left: 3px; cursor: help; }
+    .mv-halt {
+      margin-left: 6px; padding: 1px 6px; border-radius: 999px; cursor: help;
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      color: #ffb454; background: rgba(255, 180, 84, 0.16);
+    }
     /* Screener heading carries a select + two buttons — on narrow screens the
        flex row must wrap under the title instead of crushing it. */
     #premarketPanel .panel-heading { flex-wrap: wrap; }
@@ -3642,9 +3647,14 @@ HTML = '''
         const adj = m.change_verified
           ? '<span class="chg-adj" title="Feed value was implausible for one session (corporate action, e.g. a reverse split) — recomputed from split-adjusted bars">†</span>'
           : '';
+        // A halted name can't be traded now and its volume signals are frozen
+        // by the halt itself — say so rather than showing it as a live setup.
+        const halt = m.is_halted
+          ? `<span class="mv-halt" title="${escapeHtml(m.halt_reason || 'halted')} — not tradeable until it resumes; alerts suppressed">HALTED</span>`
+          : '';
         return `<tr>
           <td class="movers-rank">${i + 1}</td>
-          <td class="movers-sym">${escapeHtml(m.ticker)}</td>
+          <td class="movers-sym">${escapeHtml(m.ticker)}${halt}</td>
           <td class="num">$${Number(m.price).toFixed(2)}</td>
           <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%${adj}</td>
           <td><span class="movers-dir ${dir}">${dir.toUpperCase()}</span></td>

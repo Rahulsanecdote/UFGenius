@@ -114,6 +114,13 @@ MOVERS_SUSPECT_CHANGE_PCT: float = (
     else 300.0
 )
 MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
+
+_MOVERS_HALTS: dict = _MOVERS.get("halts", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_HALTS_ENABLED: bool = env_bool("MOVERS_HALTS_ENABLED", bool(_MOVERS_HALTS.get("enabled", True)))
+MOVERS_HALT_SUPPRESS_ALERTS: bool = bool(_MOVERS_HALTS.get("suppress_alerts", True))
+MOVERS_HALT_SKIP_INVALIDATION: bool = bool(_MOVERS_HALTS.get("skip_invalidation", True))
+MOVERS_HALT_EXCLUDE_FROM_LIST: bool = bool(_MOVERS_HALTS.get("exclude_from_list", False))
+MOVERS_HALT_CACHE_TTL_SEC: float = _as_float(_MOVERS_HALTS.get("cache_ttl_sec", 45), 45.0)
 MOVERS_INCLUDE_SHORT: bool = bool(_MOVERS.get("include_short_setups", True))
 # Phase 2 — intraday enrichment / early-momentum ranking.
 MOVERS_ENRICH_INTRADAY: bool = bool(_MOVERS.get("enrich_intraday", True))
