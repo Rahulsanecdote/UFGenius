@@ -310,6 +310,26 @@ pytest --cov=src       # coverage
   subscribed to its live watch set and the snapshot carries live prices + stream
   status. Advisory/telemetry only — no import of the executor/broker; the stream
   is a data source, never a gate.
+- **Catalyst-triggered alerts** (`src/catalysts/catalyst_alerts.py`, config
+  `movers.catalyst_alerts`, **default off**): the movers path is structurally
+  late — a name only reaches it after moving enough to appear on a provider's
+  gainers list, and rediscovery runs every ~5 cycles. This fires on the **news
+  wire** instead, where a catalyst has a definite publication time that precedes
+  the price reaction. `news_feed.fetch_news_batch()` is one Alpaca request for a
+  whole watchlist (or, with `universe: all`, the market-wide firehose, so a name
+  can surface before anyone has listed it as a mover), so the worker polls it
+  **every cycle** rather than on the discovery cadence. Each headline is
+  classified **alone** by the existing `news_feed` tier taxonomy (so `strong`
+  means what it means to the screener), routed to every ticker the wire attached
+  to it, deduped per (symbol, story), and **suppressed for halted symbols**.
+  Explicitly **not prediction** — it reports that a catalyst was published
+  sooner than a price-derived scanner can notice the consequence; the alert text
+  says so. Discovery/alerting only; fail-soft everywhere.
+- **Discovery-source health** (`movers.last_source_errors()`): every fetcher
+  fails soft to `[]`, so a dead FMP key or an exhausted quota used to render
+  identically to a quiet market ("no movers cleared the filters"). Failures are
+  now recorded per run and surfaced by `/api/movers` as `available:false` +
+  `reason` (nothing returned) or `degraded:true` + `source_errors` (partial).
 - **Trade-halt awareness** (`src/data/halts.py`, config `movers.halts`): the
   movers feed reports a halted stock as a normal (usually top-ranked) mover.
   Halt state comes from Nasdaq Trader's official UTP feed (free, no key, all US

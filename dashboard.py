@@ -3668,7 +3668,12 @@ HTML = '''
       const enrichedNote = payload.enrich_requested
         ? `${payload.enriched} ranked by live intraday signals`
         : 'discovery ranking — click Deep scan for early-momentum ranking';
-      status.textContent = `${movers.length} movers · ${enrichedNote}.`;
+      // A partial source failure still returns rows — say the list is incomplete
+      // rather than presenting it as the whole market.
+      const degraded = payload.degraded
+        ? ` ⚠️ incomplete — ${escapeHtml((payload.source_errors || []).join('; '))}`
+        : '';
+      status.textContent = `${movers.length} movers · ${enrichedNote}.${degraded}`;
     }
 
     async function loadMovers(enrich = false) {
@@ -5055,7 +5060,7 @@ def api_movers():
     — direction (long/short), the move, and the intraday signals behind the rank.
     """
     try:
-        from src.scanner.movers import fetch_market_movers
+        from src.scanner.movers import fetch_market_movers, last_source_health
 
         if not config.FMP_KEY:
             return jsonify({
@@ -5071,9 +5076,29 @@ def api_movers():
         except (TypeError, ValueError):
             limit = 25
         movers = fetch_market_movers(limit=limit, enrich=enrich)
+        # Distinguish "quiet market" from "the data source failed": every
+        # fetcher fails soft to [], so without this an exhausted FMP quota or a
+        # dead key renders identically to nothing qualifying. Unavailable only
+        # when EVERY attempted source failed — one source answering with an
+        # honestly empty list is a degraded result, not an outage (CodeRabbit).
+        health = last_source_health()
+        source_errors = health["failed"]
+        if source_errors and not health["succeeded"]:
+            return jsonify({
+                "available": False,
+                "reason": ("Movers discovery source failed — "
+                           f"{'; '.join(source_errors)}. Check the FMP key and "
+                           "its daily quota."),
+                "source_errors": source_errors,
+                "source_health": health,
+                "movers": [],
+            })
         return jsonify({
             "available": True,
             "count": len(movers),
+            "source_errors": source_errors,
+            "source_health": health,
+            "degraded": bool(source_errors),
             "enriched": sum(1 for m in movers if m.enriched),
             "enrich_requested": enrich,
             "movers": [m.as_dict() for m in movers],

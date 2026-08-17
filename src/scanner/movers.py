@@ -18,6 +18,7 @@ list and never raises.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -38,6 +39,21 @@ _ENDPOINTS = {
 # Which direction a source implies before we look at the sign of the move.
 _SOURCE_DIRECTION = {"gainers": "long", "losers": "short"}
 _EASTERN = ZoneInfo("America/New_York")
+
+# Per-run source health. THREAD-LOCAL on purpose: on Render the in-process
+# worker runs in a daemon thread inside the same gunicorn process that serves
+# the dashboard (RUN_WORKER_IN_PROCESS + --threads 4), so two discovery runs
+# genuinely overlap — module-global state would let one run clear or append to
+# the other's health before the caller read it (CodeRabbit).
+_health_state = threading.local()
+
+
+def _health() -> dict:
+    health = getattr(_health_state, "health", None)
+    if health is None:
+        health = {"attempted": [], "succeeded": [], "failed": []}
+        _health_state.health = health
+    return health
 
 
 @dataclass
@@ -97,15 +113,39 @@ def _num(value):
         return None
 
 
+def last_source_health() -> dict:
+    """Which sources were attempted, succeeded, and failed on this thread's run.
+
+    Without this an upstream failure is indistinguishable from a quiet market:
+    every fetcher fails soft to [], so a dead key or an exhausted quota renders
+    as "no movers cleared the filters". Callers use it to say which it was —
+    and, because successes are tracked too, to tell "everything failed" from
+    "one source answered and legitimately had nothing".
+    """
+    return {key: list(value) for key, value in _health().items()}
+
+
+def last_source_errors() -> list[str]:
+    """Just the failures from this thread's most recent discovery run."""
+    return list(_health()["failed"])
+
+
 def _fetch_source(source: str) -> list[dict]:
-    """Fetch one FMP mover list. Returns [] on no key / any error (never raises)."""
+    """Fetch one FMP mover list. Returns [] on no key / any error (never raises).
+
+    Records its outcome in the per-run health so a soft failure cannot pass for
+    an empty market.
+    """
     endpoint = _ENDPOINTS.get(source)
     if endpoint is None:
         log.warning(f"movers: unknown source '{source}' — skipping")
         return []
+    health = _health()
+    health["attempted"].append(source)
     key = config.FMP_KEY
     if not key:
         log.debug("movers: FMP_KEY not set — discovery unavailable")
+        health["failed"].append(f"{source}: no_api_key")
         return []
     try:
         resp = get_retry_session().get(
@@ -115,10 +155,21 @@ def _fetch_source(source: str) -> list[dict]:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data if isinstance(data, list) else []
     except Exception as exc:  # network / JSON / HTTP — discovery must never break
         log.warning(f"movers: FMP {endpoint} failed ({type(exc).__name__})")
+        health["failed"].append(f"{source}: {type(exc).__name__}")
         return []
+    if not isinstance(data, list):
+        # THE quota case: FMP answers HTTP 200 with a JSON *object* such as
+        # {"Error Message": "Limit Reach..."}, so raise_for_status passes and
+        # nothing throws. Treating that as an empty list is what made an
+        # exhausted quota look like a quiet market (CodeRabbit).
+        log.warning(f"movers: FMP {endpoint} returned a non-list payload "
+                    f"({type(data).__name__}) — treating as a source failure")
+        health["failed"].append(f"{source}: unexpected_payload")
+        return []
+    health["succeeded"].append(source)
+    return data
 
 
 def _verified_change_pct(ticker: str, price: float) -> float | None:
@@ -299,6 +350,8 @@ def fetch_market_movers(
     include_short = config.MOVERS_INCLUDE_SHORT if include_short_setups is None else include_short_setups
     enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else enrich
 
+    # Fresh health for this run, on this thread only.
+    _health_state.health = {"attempted": [], "succeeded": [], "failed": []}
     merged: dict[str, MoverCandidate] = {}
     for source in sources:
         for row in _fetch_source(source):

@@ -258,3 +258,57 @@ def test_bad_cycle_does_not_crash_the_loop():
             p.stop()
     assert stats["cycles"] == 3          # kept looping despite the error
     assert stats["discoveries"] == 0
+
+
+# ── catalyst alerts run on the wire cadence, not the discovery cadence ───────
+
+class _CatalystAlerter:
+    def __init__(self, fired=1):
+        self.calls = 0
+        self._fired = fired
+    def poll(self, *, now=None, send=True, fetch=None):
+        self.calls += 1
+        return [{"ticker": "NEWS", "direction": "long", "sent": True}] * self._fired
+
+
+def test_catalyst_alerter_polls_every_cycle_not_the_rediscovery_cadence():
+    # The whole point of the wire path is that it is cheap enough to run every
+    # cycle — polling it on the 5-cycle discovery cadence would throw the
+    # latency advantage away.
+    ctx = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=3)
+    for p in ctx:
+        p.start()
+    try:
+        news = _CatalystAlerter()
+        stats, _, _ = _run(max_cycles=6, catalyst_alerter=news)
+    finally:
+        for p in ctx:
+            p.stop()
+    assert news.calls == 6                     # every cycle...
+    assert stats["discoveries"] == 2           # ...while discovery stayed on cadence
+    assert stats["catalyst_alerts"] == 6
+
+
+def test_catalyst_alerter_is_optional():
+    ctx = _cfg()
+    for p in ctx:
+        p.start()
+    try:
+        stats, _, _ = _run(max_cycles=2, catalyst_alerter=None)
+    finally:
+        for p in ctx:
+            p.stop()
+    assert stats["catalyst_alerts"] == 0
+
+
+def test_catalyst_alerts_are_skipped_outside_the_scan_window():
+    ctx = _cfg(MOVERS_WORKER_MARKET_HOURS_ONLY=True)
+    for p in ctx:
+        p.start()
+    try:
+        news = _CatalystAlerter()
+        _run(max_cycles=3, scan_window=lambda: False, catalyst_alerter=news)
+    finally:
+        for p in ctx:
+            p.stop()
+    assert news.calls == 0

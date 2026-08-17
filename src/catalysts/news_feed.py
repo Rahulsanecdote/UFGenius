@@ -33,7 +33,7 @@ the executor or loosens a filter.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -61,6 +61,10 @@ class NewsHeadline:
     url: str = ""
     published: Optional[datetime] = None
     provider: str = ""  # which fetcher produced it: alpaca | yfinance | newsapi
+    # Tickers the wire attached to this story. Populated by the batch/firehose
+    # fetch (one story can name several); the per-symbol fetchers leave it empty
+    # because the caller already knows the symbol it asked for.
+    symbols: list[str] = field(default_factory=list)
 
 
 # ── classification taxonomy ───────────────────────────────────────────────────
@@ -187,6 +191,75 @@ def _fetch_alpaca(
     except Exception as exc:
         log.debug(f"{symbol}: Alpaca news fetch failed ({exc})")
         return []
+
+
+def fetch_news_batch(
+    symbols: Optional[list[str]] = None,
+    *,
+    since: Optional[datetime] = None,
+    limit: int = 50,
+) -> list[NewsHeadline]:
+    """Recent stories for MANY symbols in one Alpaca call — or the whole wire.
+
+    The per-symbol fetchers above answer "what is the story on X". This answers
+    "what just crossed", which is the question an early alert has to ask: it is
+    one request for a whole watchlist, and with ``symbols=None`` it is the
+    market-wide firehose, so a name can be surfaced before anyone has listed it
+    as a mover.
+
+    Each headline carries the ``symbols`` the wire attached to it, so the caller
+    can route a story to a ticker. Alpaca-only (the other providers are
+    per-symbol) and fail-soft: no keys or any error yields [].
+    """
+    if not (config.ALPACA_API_KEY and config.ALPACA_SECRET_KEY):
+        return []
+    since = since or (datetime.now(timezone.utc) - timedelta(minutes=15))
+    params: dict = {
+        "start": since.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "limit": max(1, min(50, int(limit))),
+        "sort": "desc",
+    }
+    if symbols:
+        # Bounded: the URL is a GET query, and a runaway watchlist would make it
+        # unsendable. The firehose (symbols=None) is the unbounded path.
+        params["symbols"] = ",".join(str(s).upper().strip() for s in symbols[:200])
+    try:
+        resp = get_retry_session().get(
+            _ALPACA_NEWS_URL,
+            headers={
+                "APCA-API-KEY-ID": config.ALPACA_API_KEY,
+                "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+            },
+            params=params,
+            timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+        )
+        resp.raise_for_status()
+        items = (resp.json() or {}).get("news") or []
+    except Exception as exc:
+        log.debug(f"news batch fetch failed ({type(exc).__name__})")
+        return []
+
+    out: list[NewsHeadline] = []
+    for it in items:
+        title = str(it.get("headline") or "")
+        if not title:
+            continue
+        published = _parse_ts(it.get("created_at"))
+        # The server-side `start` is authoritative, but enforce it locally too —
+        # the same guarantee the single-symbol paths make.
+        if published is not None and published < since:
+            continue
+        raw_symbols = it.get("symbols")
+        out.append(NewsHeadline(
+            title=title,
+            source=str(it.get("source") or ""),
+            url=str(it.get("url") or ""),
+            published=published,
+            provider="alpaca",
+            symbols=[str(s).upper().strip() for s in raw_symbols
+                     if str(s).strip()] if isinstance(raw_symbols, list) else [],
+        ))
+    return out
 
 
 def _fetch_yfinance(

@@ -361,3 +361,107 @@ def test_merge_keeps_the_price_from_the_row_that_won_the_change():
             p.stop()
     assert out["DUP"].change_pct == 38.0
     assert out["DUP"].price == 11.5          # not the 10.0 from the first row
+
+# ── discovery-source health (observability) ──────────────────────────────────
+#
+# Every fetcher fails soft to [], so without an explicit signal a dead key or an
+# exhausted quota is indistinguishable from a quiet market — the dashboard was
+# rendering both as "nothing qualified".
+
+def _run_with(session_factory, **cfgover):
+    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers"], MOVERS_ENRICH_INTRADAY=False,
+                MOVERS_HALTS_ENABLED=False)
+    base.update(cfgover)
+    ps = [patch.object(cfg, k, v) for k, v in base.items()]
+    ps.append(patch("src.scanner.movers.get_retry_session", session_factory))
+    for p in ps:
+        p.start()
+    try:
+        return mv.fetch_market_movers()
+    finally:
+        for p in ps:
+            p.stop()
+
+
+def _json_session(payload, status_ok=True):
+    def _factory():
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None if status_ok else RuntimeError("http")
+        resp.json.return_value = payload
+        session = MagicMock()
+        session.get.return_value = resp
+        return session
+    return _factory
+
+
+def test_exception_is_recorded_as_a_source_failure():
+    def _boom():
+        raise RuntimeError("quota exceeded")
+    assert _run_with(_boom) == []
+    health = mv.last_source_health()
+    assert health["failed"] == ["gainers: RuntimeError"]
+    assert health["succeeded"] == []
+    assert health["attempted"] == ["gainers"]
+
+
+def test_non_list_payload_is_a_failure_not_an_empty_market():
+    # FMP answers an exhausted quota with HTTP 200 and a JSON *object*, so
+    # nothing raises. Treating that as [] is exactly what made a dead quota
+    # look like a quiet market.
+    assert _run_with(_json_session({"Error Message": "Limit Reach..."})) == []
+    health = mv.last_source_health()
+    assert health["failed"] == ["gainers: unexpected_payload"]
+    assert health["succeeded"] == []
+
+
+def test_missing_key_is_recorded_as_a_failure():
+    assert _run_with(_json_session([]), FMP_KEY="") == []
+    assert mv.last_source_health()["failed"] == ["gainers: no_api_key"]
+
+
+def test_healthy_empty_source_is_a_success_not_a_failure():
+    # A genuinely quiet market: the source answered, it just had nothing.
+    assert _run_with(_json_session([])) == []
+    health = mv.last_source_health()
+    assert health["succeeded"] == ["gainers"]
+    assert health["failed"] == []
+
+
+def test_health_resets_between_runs():
+    def _boom():
+        raise RuntimeError("down")
+    _run_with(_boom)
+    assert mv.last_source_health()["failed"]        # failed run recorded
+    _run_with(_json_session([]))
+    assert mv.last_source_health()["failed"] == []  # healthy run cleared it
+
+
+def test_health_is_isolated_between_concurrent_runs():
+    """On Render the in-process worker and a dashboard request share a process,
+    so two discovery runs genuinely overlap. Module-global health let one run
+    clobber the other's (CodeRabbit)."""
+    import threading
+
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def _healthy():
+        _run_with(_json_session([]))
+        barrier.wait()                       # both mid-flight before reading
+        results["healthy"] = mv.last_source_health()
+
+    def _failing():
+        def _boom():
+            raise RuntimeError("down")
+        _run_with(_boom)
+        barrier.wait()
+        results["failing"] = mv.last_source_health()
+
+    threads = [threading.Thread(target=_healthy), threading.Thread(target=_failing)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results["healthy"]["failed"] == []
+    assert results["failing"]["failed"] == ["gainers: RuntimeError"]

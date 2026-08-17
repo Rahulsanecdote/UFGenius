@@ -36,6 +36,21 @@ movers:
     skip_invalidation: true   # don't invalidate on volume that a halt suppressed
     exclude_from_list: false  # keep halted movers visible (flagged), don't drop them
     cache_ttl_sec: 45         # halts are time-critical — keep this short
+  # Catalyst-triggered alerts — fire on the WIRE, not on the price. The movers
+  # path can only notice a name after it has already moved enough to reach a
+  # gainers list; a published catalyst has a definite timestamp that precedes
+  # the price reaction. One Alpaca news request per cycle covers a whole
+  # watchlist, so this runs every cycle instead of every fifth.
+  # NOT prediction — it reports that a catalyst was published, sooner than a
+  # price-derived scanner can notice the consequence. Needs ALPACA keys.
+  catalyst_alerts:
+    enabled: false            # master switch (default OFF — opt in deliberately)
+    universe: watchlist       # watchlist (CUSTOM_WATCHLIST) | all (market-wide firehose)
+    tiers: [strong]           # which news_feed tiers alert: strong/moderate/weak/dilution
+    lookback_sec: 300         # how far back each poll looks (overlap absorbs jitter)
+    dedup_ttl_sec: 3600       # don't re-alert the same story for a symbol
+    max_per_run: 5            # spam guard per cycle
+    suppress_halted: true     # never alert a name that is currently halted
   # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,
   # momentum, VWAP position, breakout) and rank by early-momentum QUALITY, not
   # just raw % change. Adds one intraday fetch per candidate (Alpaca/Polygon/yf).
