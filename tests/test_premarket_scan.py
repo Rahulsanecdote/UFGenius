@@ -177,6 +177,7 @@ def _standard_inputs(
     pm_volume: float = 400_000,
     float_shares: float | None = 40_000_000,
     days_to_earnings: int | None = None,
+    news: dict | None = None,
 ):
     intraday = make_frame([
         (datetime(2026, 7, 13, 8, 0), prev_close, 120_000),
@@ -194,6 +195,7 @@ def _standard_inputs(
         daily=daily,
         info=info,
         days_to_earnings=lambda _t: days_to_earnings,
+        news_fn=lambda _t: dict(news) if news else {"tier": "none"},
     )
 
 
@@ -261,6 +263,43 @@ class TestBuildSnapshot:
         assert snap.catalyst == "earnings"
         far = build_snapshot("GAPR", **_standard_inputs(days_to_earnings=10))
         assert far.catalyst == "unknown"
+
+    def test_strong_news_sets_catalyst_and_headline(self):
+        snap = build_snapshot("NEWS", **_standard_inputs(
+            news={"tier": "strong", "headline": "FDA approves widget", "provider": "alpaca"},
+        ))
+        assert snap.catalyst == "news_strong"
+        assert snap.catalyst_headline == "FDA approves widget"
+        assert snap.catalyst_provider == "alpaca"
+
+    def test_earnings_calendar_takes_precedence_over_news(self):
+        snap = build_snapshot("BOTH", **_standard_inputs(
+            days_to_earnings=0,
+            news={"tier": "moderate", "headline": "hosts investor day"},
+        ))
+        assert snap.catalyst == "earnings"          # verified event wins
+        assert snap.catalyst_headline == "hosts investor day"  # receipt still kept
+
+    def test_dilution_news_flags_without_becoming_a_catalyst(self):
+        snap = build_snapshot("DILU", **_standard_inputs(
+            news={"tier": "dilution", "headline": "prices public offering"},
+        ))
+        assert snap.catalyst == "unknown"
+        assert snap.dilution_news is True
+
+    def test_news_disabled_and_absent_stays_unknown(self):
+        inputs = _standard_inputs()
+        inputs["news_fn"] = None            # no injection AND settings lack news.enabled
+        snap = build_snapshot("NONF", **inputs)
+        assert snap.catalyst == "unknown"
+
+    def test_news_fn_errors_are_isolated(self):
+        inputs = _standard_inputs()
+        def boom(_t):
+            raise RuntimeError("feed exploded")
+        inputs["news_fn"] = boom
+        snap = build_snapshot("BOOM", **inputs)
+        assert snap is not None and snap.catalyst == "unknown"
 
     def test_no_premarket_bars_returns_none(self):
         inputs = _standard_inputs()
@@ -364,6 +403,16 @@ class TestScoringShape:
         with_cat = _snap(catalyst="earnings")
         assert score_snapshot(with_cat, SETTINGS) > score_snapshot(without, SETTINGS)
 
+    def test_strong_news_scores_like_earnings_and_moderate_half(self):
+        earnings = _snap(catalyst="earnings")
+        strong = _snap(catalyst="news_strong")
+        moderate = _snap(catalyst="news_moderate")
+        weak = _snap(catalyst="news_weak")
+        assert score_snapshot(strong, SETTINGS) == score_snapshot(earnings, SETTINGS)
+        assert score_snapshot(moderate, SETTINGS) < score_snapshot(strong, SETTINGS)
+        assert score_snapshot(moderate, SETTINGS) > score_snapshot(weak, SETTINGS)
+        assert score_snapshot(weak, SETTINGS) == score_snapshot(_snap(), SETTINGS)
+
     def test_zero_weights_do_not_crash(self):
         settings = dict(SETTINGS, weights={"rvol": 0, "gap_band": 0, "dollar_volume": 0,
                                            "float_rotation": 0, "catalyst": 0})
@@ -378,6 +427,15 @@ class TestProfiles:
     def test_fade_risk_is_the_measured_cohort(self):
         snap = _snap(last_price=4.0, adv_20d=300_000, gap_pct=45.0,
                      float_shares=5_000_000, catalyst="unknown")
+        assert classify_profile(snap, SETTINGS) == "fade_risk"
+
+    def test_strong_news_supports_continuation(self):
+        snap = _snap(last_price=15.0, adv_20d=2_000_000, rvol=3.0, catalyst="news_strong")
+        assert classify_profile(snap, SETTINGS) == "continuation"
+
+    def test_weak_news_does_not_rescue_the_fade_cohort(self):
+        snap = _snap(last_price=4.0, adv_20d=300_000, gap_pct=45.0,
+                     float_shares=5_000_000, catalyst="news_weak")
         assert classify_profile(snap, SETTINGS) == "fade_risk"
 
     def test_everything_else_is_neutral(self):

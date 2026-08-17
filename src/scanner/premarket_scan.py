@@ -162,7 +162,11 @@ class PremarketSnapshot:
     float_shares: Optional[float] = None
     float_rotation: Optional[float] = None
     adv_20d: Optional[float] = None
-    catalyst: str = "unknown"          # "earnings" | "unknown"
+    # "earnings" | "news_strong" | "news_moderate" | "news_weak" | "unknown"
+    catalyst: str = "unknown"
+    catalyst_headline: Optional[str] = None
+    catalyst_provider: Optional[str] = None
+    dilution_news: bool = False
     days_to_earnings: Optional[int] = None
     flags: list[str] = field(default_factory=list)
     data_notes: list[str] = field(default_factory=list)
@@ -220,6 +224,7 @@ def build_snapshot(
     daily: Optional[pd.DataFrame] = None,
     info: Optional[dict] = None,
     days_to_earnings: Optional[Callable[[str], Optional[int]]] = None,
+    news_fn: Optional[Callable[[str], dict]] = None,
 ) -> Optional[PremarketSnapshot]:
     """Compute one ticker's pre-market aggregates. None when no usable data.
 
@@ -321,6 +326,36 @@ def build_snapshot(
     window = int(settings.get("catalyst_earnings_window_days", 1))
     if snap.days_to_earnings is not None and abs(snap.days_to_earnings) <= window:
         snap.catalyst = "earnings"
+
+    # News catalyst feed (config `premarket.news`, absent/disabled → skipped so
+    # offline runs and tests never touch the network). The earnings-calendar
+    # hit takes precedence — it is the verified event; headlines refine the
+    # rest. A dilution headline is NOT a catalyst: it sets a warning flag and
+    # leaves the tier to the remaining classification.
+    news_cfg = settings.get("news") or {}
+    if news_fn is None and bool(news_cfg.get("enabled", False)):
+        def news_fn(sym: str) -> dict:
+            from src.catalysts.news_feed import catalyst_news_for
+            return catalyst_news_for(
+                sym,
+                max_age_hours=float(news_cfg.get("max_age_hours", 36)),
+            )
+    if news_fn is not None:
+        try:
+            news = news_fn(symbol) or {}
+        except Exception as exc:
+            log.debug(f"{symbol}: news catalyst lookup failed ({exc})")
+            news = {}
+        tier = str(news.get("tier") or "none")
+        if tier == "dilution":
+            snap.dilution_news = True
+            snap.catalyst_headline = news.get("headline")
+            snap.catalyst_provider = news.get("provider")
+        elif tier in ("strong", "moderate", "weak"):
+            if snap.catalyst != "earnings":
+                snap.catalyst = f"news_{tier}"
+            snap.catalyst_headline = news.get("headline")
+            snap.catalyst_provider = news.get("provider")
     return snap
 
 
@@ -422,7 +457,13 @@ def score_snapshot(snap: PremarketSnapshot, settings: dict) -> float:
         if snap.float_rotation is not None
         else 0.0
     )
-    cat_score = 1.0 if snap.catalyst == "earnings" else 0.0
+    cat_scores = settings.get("catalyst_scores") or {}
+    cat_defaults = {
+        "earnings": 1.0, "news_strong": 1.0, "news_moderate": 0.5,
+        "news_weak": 0.0, "unknown": 0.0,
+    }
+    cat_score = float(cat_scores.get(snap.catalyst, cat_defaults.get(snap.catalyst, 0.0)))
+    cat_score = max(0.0, min(1.0, cat_score))
 
     raw = (
         w_rvol * rvol_score
@@ -446,11 +487,14 @@ def classify_profile(snap: PremarketSnapshot, settings: dict) -> str:
     gap_abs = abs(snap.gap_pct or 0.0)
     liquid = liquidity_floor_passed(snap, settings)
     extreme = gap_abs >= float(settings.get("fade_extreme_gap_pct", 20.0))
-    if not liquid and extreme and snap.catalyst != "earnings":
+    strong_catalysts = set(
+        settings.get("continuation_catalysts") or ["earnings", "news_strong"]
+    )
+    if not liquid and extreme and snap.catalyst not in strong_catalysts:
         return "fade_risk"
     if (
         liquid
-        and snap.catalyst == "earnings"
+        and snap.catalyst in strong_catalysts
         and snap.rvol is not None
         and snap.rvol >= float(settings.get("continuation_min_rvol", 2.0))
         and gap_abs <= float(settings.get("gap_score_extreme", 30.0))
@@ -476,6 +520,10 @@ def annotate_flags(snap: PremarketSnapshot, settings: dict) -> None:
         snap.flags.append("crowded_micro_float")
     if snap.rvol is None:
         snap.flags.append("rvol_unavailable")
+    if snap.dilution_news:
+        # Offerings/warrants/reverse splits: a measured bearish overhang for
+        # gappers — surfaced loudly, still never a gate (screener-only scope).
+        snap.flags.append("dilution_news")
 
 
 # ── orchestration ─────────────────────────────────────────────────────────────
@@ -562,6 +610,8 @@ def scan_premarket(
             ),
             "adv_20d": snap.adv_20d,
             "catalyst": snap.catalyst,
+            "catalyst_headline": snap.catalyst_headline,
+            "catalyst_provider": snap.catalyst_provider,
             "days_to_earnings": snap.days_to_earnings,
             "profile": classify_profile(snap, settings),
             "score": score_snapshot(snap, settings),
@@ -591,8 +641,10 @@ def scan_premarket(
             "expectancy in the academic record; profile=continuation marks the "
             "only factor combination the measured evidence supports, and "
             "profile=fade_risk marks the measured fade cohort.",
-            "Catalyst detection covers the earnings calendar only; "
-            "catalyst=unknown does NOT mean no news exists.",
+            "Catalyst detection covers the earnings calendar plus, when "
+            "premarket.news is enabled, a keyword-classified headline feed "
+            "(a deterministic heuristic, not verification); catalyst=unknown "
+            "still does NOT mean no news exists.",
             "Free-tier data caveats apply pre-market (sparse IEX prints, "
             "delayed yfinance extended bars); see per-row data_notes.",
         ],

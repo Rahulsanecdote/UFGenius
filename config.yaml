@@ -431,6 +431,27 @@ premarket:
   fade_pm_volume_shares: 5000000  # SmallCapLab: 5M+ PM shares → 71.5% fade (micro floats)
   continuation_min_rvol: 2.0      # "in play" threshold
   catalyst_earnings_window_days: 1
+  # News catalyst feed (src/catalysts/news_feed.py). Headlines fetched via
+  # Alpaca News API (existing keys) → yfinance → NewsAPI, keyword-classified
+  # into tiers: strong (beat/guidance-raise/FDA/M&A/contract/upgrade),
+  # moderate (earnings mention, investor day, initiation), weak
+  # ("why is X soaring" churn), dilution (offering/warrants/reverse split →
+  # dilution_news flag, never a catalyst). Deterministic heuristic, not
+  # verification; fail-soft (no source ⇒ catalyst stays unknown).
+  news:
+    enabled: true
+    max_age_hours: 36
+  # Catalyst score per tier (0-1, clamped). Provenance: post-news drift is
+  # measured for hard events (PEAD/Savor); moderate news gets half weight;
+  # attention-churn gets none.
+  catalyst_scores:
+    earnings: 1.0
+    news_strong: 1.0
+    news_moderate: 0.5
+    news_weak: 0.0
+    unknown: 0.0
+  # Which catalyst tiers count toward the `continuation` profile.
+  continuation_catalysts: [earnings, news_strong]
 
 # Signal classification thresholds (score out of 100)
 signal_thresholds:

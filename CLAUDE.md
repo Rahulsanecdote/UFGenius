@@ -177,7 +177,9 @@ pytest --cov=src       # coverage
   config `premarket:`) ranks extended-hours gappers by evidence-backed factors
   (time-of-day RVOL — rewarded only above a liquidity floor, its sign is
   conditional; banded gap score that penalises extremes; PM dollar volume;
-  float rotation; earnings-calendar catalyst) and tags candidates
+  float rotation; catalyst = earnings calendar + a keyword-classified news
+  feed (`src/catalysts/news_feed.py`: Alpaca News → yfinance → NewsAPI, tiers
+  strong/moderate/weak/dilution, fail-soft)) and tags candidates
   continuation/fade_risk/neutral. **Screener only** — firewalled from the
   money path, no filter loosened; `fetch_ohlcv/fetch_intraday(prepost=True)`
   supplies the 4:00–9:30 ET bars (yfinance flag; Alpaca/Polygon already span
