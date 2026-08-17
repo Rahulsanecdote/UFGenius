@@ -138,6 +138,13 @@ class CatalystAlerter:
 
         allowed = set(universe) if universe else None
         halted = self._halted()
+        # Drop expired dedup keys before use. The TTL only ever changed the
+        # comparison, so entries accumulated for the worker's whole lifetime —
+        # unbounded in `universe: all`, where the firehose supplies a fresh
+        # (symbol, story) pair for every story on the wire (CodeRabbit).
+        now_ts = now.timestamp()
+        cutoff = now_ts - max(ttl, 0.0)
+        self._recent = {k: seen for k, seen in self._recent.items() if seen >= cutoff}
         fired: list[dict] = []
         for headline in headlines:
             if len(fired) >= cap:
@@ -157,13 +164,13 @@ class CatalystAlerter:
                     continue
                 key = (symbol, headline.title)
                 last = self._recent.get(key)
-                if last is not None and (now.timestamp() - last) < ttl:
+                if last is not None and (now_ts - last) < ttl:
                     continue
                 message = format_catalyst_alert(symbol, tier, headline)
                 sent = False
                 if send:
                     sent = bool(send_text_alert(message, context=f"catalyst {symbol}"))
-                self._recent[key] = now.timestamp()
+                self._recent[key] = now_ts
                 fired.append({
                     "ticker": symbol,
                     "direction": _TIER_TAG.get(tier, ("", "long"))[1],

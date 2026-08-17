@@ -445,8 +445,9 @@ def test_movers_reports_a_failed_discovery_source(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
     monkeypatch.setattr("src.scanner.movers.fetch_market_movers",
                         lambda **kwargs: [])
-    monkeypatch.setattr("src.scanner.movers.last_source_errors",
-                        lambda: ["gainers: HTTPError"])
+    monkeypatch.setattr("src.scanner.movers.last_source_health",
+                        lambda: {"attempted": ["gainers"], "succeeded": [],
+                                 "failed": ["gainers: HTTPError"]})
     payload = client.get("/api/movers").get_json()
     assert payload["available"] is False
     assert "gainers: HTTPError" in payload["reason"]
@@ -464,8 +465,10 @@ def test_movers_flags_a_partial_source_failure_as_degraded(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
     monkeypatch.setattr("src.scanner.movers.fetch_market_movers",
                         lambda **kwargs: [_M()])
-    monkeypatch.setattr("src.scanner.movers.last_source_errors",
-                        lambda: ["losers: Timeout"])
+    monkeypatch.setattr("src.scanner.movers.last_source_health",
+                        lambda: {"attempted": ["gainers", "losers"],
+                                 "succeeded": ["gainers"],
+                                 "failed": ["losers: Timeout"]})
     payload = client.get("/api/movers").get_json()
     assert payload["available"] is True
     assert payload["degraded"] is True
@@ -475,7 +478,25 @@ def test_movers_flags_a_partial_source_failure_as_degraded(client, monkeypatch):
 def test_movers_is_not_degraded_when_all_sources_are_healthy(client, monkeypatch):
     monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
     monkeypatch.setattr("src.scanner.movers.fetch_market_movers", lambda **kwargs: [])
-    monkeypatch.setattr("src.scanner.movers.last_source_errors", lambda: [])
+    monkeypatch.setattr("src.scanner.movers.last_source_health",
+                        lambda: {"attempted": ["gainers"], "succeeded": ["gainers"],
+                                 "failed": []})
     payload = client.get("/api/movers").get_json()
     assert payload["available"] is True
     assert payload["degraded"] is False
+
+
+def test_movers_stays_available_when_one_source_answered_empty(client, monkeypatch):
+    # One source succeeded with an honestly empty list, another failed. That is
+    # a degraded result, not an outage — reporting it unavailable would call a
+    # quiet market a broken one (CodeRabbit).
+    monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
+    monkeypatch.setattr("src.scanner.movers.fetch_market_movers", lambda **kwargs: [])
+    monkeypatch.setattr("src.scanner.movers.last_source_health",
+                        lambda: {"attempted": ["gainers", "losers"],
+                                 "succeeded": ["gainers"],
+                                 "failed": ["losers: Timeout"]})
+    payload = client.get("/api/movers").get_json()
+    assert payload["available"] is True
+    assert payload["degraded"] is True
+    assert payload["count"] == 0

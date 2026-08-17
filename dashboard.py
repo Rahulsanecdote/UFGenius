@@ -5060,7 +5060,7 @@ def api_movers():
     — direction (long/short), the move, and the intraday signals behind the rank.
     """
     try:
-        from src.scanner.movers import fetch_market_movers, last_source_errors
+        from src.scanner.movers import fetch_market_movers, last_source_health
 
         if not config.FMP_KEY:
             return jsonify({
@@ -5078,21 +5078,26 @@ def api_movers():
         movers = fetch_market_movers(limit=limit, enrich=enrich)
         # Distinguish "quiet market" from "the data source failed": every
         # fetcher fails soft to [], so without this an exhausted FMP quota or a
-        # dead key renders identically to nothing qualifying.
-        source_errors = last_source_errors()
-        if source_errors and not movers:
+        # dead key renders identically to nothing qualifying. Unavailable only
+        # when EVERY attempted source failed — one source answering with an
+        # honestly empty list is a degraded result, not an outage (CodeRabbit).
+        health = last_source_health()
+        source_errors = health["failed"]
+        if source_errors and not health["succeeded"]:
             return jsonify({
                 "available": False,
                 "reason": ("Movers discovery source failed — "
                            f"{'; '.join(source_errors)}. Check the FMP key and "
                            "its daily quota."),
                 "source_errors": source_errors,
+                "source_health": health,
                 "movers": [],
             })
         return jsonify({
             "available": True,
             "count": len(movers),
             "source_errors": source_errors,
+            "source_health": health,
             "degraded": bool(source_errors),
             "enriched": sum(1 for m in movers if m.enriched),
             "enrich_requested": enrich,

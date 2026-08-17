@@ -174,3 +174,35 @@ class TestMessage:
 
         CatalystAlerter().poll(now=_NOW, send=False, fetch=_fetch)
         assert seen["since"] == _NOW - timedelta(seconds=120)
+
+
+class TestDedupPruning:
+    """The dedup map must not grow for the worker's lifetime.
+
+    The TTL only ever changed the comparison, so in `universe: all` the
+    firehose supplied an unbounded stream of new (symbol, story) keys
+    (CodeRabbit).
+    """
+
+    def test_expired_entries_are_pruned(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_DEDUP_TTL_SEC", 600)
+        alerter = CatalystAlerter()
+        assert len(_poll(alerter, [_news("FDA approves ACME drug", ["ACME"])])) == 1
+        assert len(alerter._recent) == 1
+
+        # A later poll, past the TTL, with an unrelated story: the stale key goes.
+        later = _NOW + timedelta(seconds=1200)
+        alerter.poll(now=later, send=False,
+                     fetch=lambda *a, **k: [_news("FDA approves BCME drug", ["BCME"],
+                                                  published=later)])
+        assert list(alerter._recent) == [("BCME", "FDA approves BCME drug")]
+
+    def test_live_entries_survive_the_prune(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_DEDUP_TTL_SEC", 3600)
+        alerter = CatalystAlerter()
+        items = [_news("FDA approves ACME drug", ["ACME"])]
+        assert len(_poll(alerter, items)) == 1
+        # Still inside the TTL → key retained, so the story stays deduped.
+        assert alerter.poll(now=_NOW + timedelta(seconds=60), send=False,
+                            fetch=lambda *a, **k: items) == []
+        assert len(alerter._recent) == 1
