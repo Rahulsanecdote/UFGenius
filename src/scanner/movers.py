@@ -19,6 +19,8 @@ list and never raises.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.utils import config
 from src.utils.http import get_retry_session
@@ -35,6 +37,7 @@ _ENDPOINTS = {
 }
 # Which direction a source implies before we look at the sign of the move.
 _SOURCE_DIRECTION = {"gainers": "long", "losers": "short"}
+_EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -111,35 +114,54 @@ def _fetch_source(source: str) -> list[dict]:
         return []
 
 
-def _verified_change_pct(ticker: str) -> float | None:
-    """Recompute the latest daily % change from SPLIT-ADJUSTED bars.
+def _verified_change_pct(ticker: str, price: float) -> float | None:
+    """Recompute the move as ``price`` vs OUR SPLIT-ADJUSTED previous close.
 
     The FMP mover lists report a raw quote change that is NOT adjusted for
     corporate actions, so on the effective date of a reverse split the feed
     reports the mechanical price multiple as if it were a real move: AiRWA
     (YYAI) 1-for-20 on 2026-08-17 surfaced as "+1668%" while the stock was
     actually up ~23%. Our own daily bars come through the provider stack
-    split-adjusted, so recomputing from them gives an honest number.
+    split-adjusted, so measuring the feed's quote against our previous close
+    puts both operands on one basis — which is how a split-aware quote source
+    arrives at +23%.
 
-    Note this measures the last two COMPLETE sessions — pre-market it reads
-    yesterday's move, not today's. That is sufficient for its only job:
-    replacing a number we know to be fictional on a discovery list.
+    Deliberately NOT "the change between the last two closes": that answers a
+    different question (the prior completed session) than the field it
+    replaces, and pre-market it would overwrite today's move — and the
+    direction derived from it — with an unrelated day's (Codex P1).
 
-    Returns None when bars are unavailable (caller fails closed).
+    Returns None when bars or the reference close are unusable, so the caller
+    can fail closed.
     """
     try:
+        import pandas as pd
+
         from src.data.fetcher import fetch_ohlcv
 
+        if price is None or price <= 0:
+            return None
         df = fetch_ohlcv(ticker, period="1mo", interval="1d")
         if df is None or df.empty or "Close" not in df:
             return None
         closes = df["Close"].dropna()
-        if len(closes) < 2:
+        if closes.empty:
             return None
-        prev, last = float(closes.iloc[-2]), float(closes.iloc[-1])
+        # The reference must be the PREVIOUS close: once the session has
+        # produced its own bar, the last row is today's and measuring against
+        # it would report ~0% for every candidate.
+        try:
+            last_date = pd.Timestamp(closes.index[-1]).date()
+            if last_date >= datetime.now(_EASTERN).date():
+                closes = closes.iloc[:-1]
+        except (TypeError, ValueError):
+            pass  # non-datetime index — treat the last row as the prior close
+        if closes.empty:
+            return None
+        prev = float(closes.iloc[-1])
         if prev <= 0:
             return None
-        return (last - prev) / prev * 100.0
+        return (price - prev) / prev * 100.0
     except Exception as exc:  # verification is best-effort — never break discovery
         log.debug(f"movers: change verification for {ticker} failed ({type(exc).__name__})")
         return None
@@ -274,8 +296,11 @@ def fetch_market_movers(
         # far more often a reverse-split artifact than a real session — and an
         # unverifiable extreme claim is dropped rather than published.
         if suspect > 0 and abs(c.change_pct) >= suspect:
-            verified = _verified_change_pct(c.ticker)
-            if verified is None:
+            verified = _verified_change_pct(c.ticker, c.price)
+            # A recomputation that is ALSO implausible means our own bars have
+            # not picked the corporate action up either (provider adjustment
+            # lags the effective date) — nothing was verified, so fail closed.
+            if verified is None or abs(verified) >= suspect:
                 log.warning(
                     f"movers: dropping {c.ticker} — feed change {c.change_pct:+.1f}% "
                     "is implausible for one session and could not be verified "

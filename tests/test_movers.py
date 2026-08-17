@@ -205,6 +205,8 @@ def test_enrich_candidate_keeps_base_score_when_no_intraday_data():
 # effective date the mechanical price multiple is published as a move: AiRWA
 # (YYAI) 1-for-20 on 2026-08-17 surfaced as "+1668%" against a real ~+23%.
 
+from datetime import datetime, timedelta
+
 import pandas as pd
 import pytest
 
@@ -233,8 +235,8 @@ def _run_split(verified, **cfgover):
     patches.append(patch.object(mv, "_fetch_source", lambda s: _SPLIT_FAKE.get(s, [])))
     calls = []
 
-    def _verify(ticker):
-        calls.append(ticker)
+    def _verify(ticker, price):
+        calls.append((ticker, price))
         return verified
 
     patches.append(patch.object(mv, "_verified_change_pct", _verify))
@@ -249,7 +251,9 @@ def _run_split(verified, **cfgover):
 
 def test_split_artifact_change_is_replaced_with_the_verified_value():
     out, calls = _run_split(-11.6)
-    assert calls == ["SPLT"]                       # only the implausible one costs a fetch
+    # Only the implausible one costs a fetch, and it is measured against the
+    # feed's CURRENT quote, not a stale pair of closes.
+    assert calls == [("SPLT", 1.13)]
     assert out["SPLT"].change_pct == pytest.approx(-11.6)
     assert out["SPLT"].change_verified is True
     assert out["SPLT"].direction == "short"        # direction follows the real sign
@@ -277,22 +281,52 @@ def test_guard_disabled_passes_the_raw_feed_value_through():
     assert out["SPLT"].change_verified is False
 
 
-def test_verified_change_pct_reads_split_adjusted_closes():
-    df = pd.DataFrame({"Close": [1.0, 1.278, 1.13]})
-    with patch("src.data.fetcher.fetch_ohlcv", return_value=df):
-        assert mv._verified_change_pct("SPLT") == pytest.approx(-11.58, abs=0.01)
+def _daily(closes, last_day_offset=1):
+    """Daily frame whose final bar is `last_day_offset` days before today (ET)."""
+    end = datetime.now(mv._EASTERN).date() - timedelta(days=last_day_offset)
+    idx = pd.DatetimeIndex([pd.Timestamp(end) - pd.Timedelta(days=i)
+                            for i in range(len(closes) - 1, -1, -1)])
+    return pd.DataFrame({"Close": list(closes)}, index=idx)
 
 
-@pytest.mark.parametrize("frame", [
-    pd.DataFrame(),                       # no data at all
-    pd.DataFrame({"Close": [1.0]}),       # single bar — no prior close
-    pd.DataFrame({"Close": [0.0, 1.0]}),  # zero prior close — undefined change
-])
-def test_verified_change_pct_returns_none_when_unusable(frame):
+def test_verified_change_pct_measures_the_quote_against_the_adjusted_prev_close():
+    # YYAI shape: split-adjusted prior close 1.13, live quote 1.39 → +23%,
+    # which is what a split-aware quote source reports (NOT the -11.6% that
+    # the prior completed session would give).
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=_daily([1.278, 1.13])):
+        assert mv._verified_change_pct("YYAI", 1.39) == pytest.approx(23.01, abs=0.01)
+
+
+def test_verified_change_pct_skips_todays_own_bar():
+    # Once the session has printed a bar, the reference is still the PREVIOUS
+    # close — otherwise every candidate measures ~0% against itself.
+    frame = _daily([1.13, 1.39], last_day_offset=0)   # final bar is today
     with patch("src.data.fetcher.fetch_ohlcv", return_value=frame):
-        assert mv._verified_change_pct("X") is None
+        assert mv._verified_change_pct("YYAI", 1.39) == pytest.approx(23.01, abs=0.01)
+
+
+@pytest.mark.parametrize("frame,price", [
+    (pd.DataFrame(), 1.0),                    # no data at all
+    (_daily([1.0]), 0.0),                     # unusable quote
+    (_daily([0.0]), 1.0),                     # zero prior close — undefined
+])
+def test_verified_change_pct_returns_none_when_unusable(frame, price):
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=frame):
+        assert mv._verified_change_pct("X", price) is None
+
+
+def test_verified_change_pct_returns_none_when_only_todays_bar_exists():
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=_daily([1.0], last_day_offset=0)):
+        assert mv._verified_change_pct("X", 1.0) is None
 
 
 def test_verified_change_pct_never_raises():
     with patch("src.data.fetcher.fetch_ohlcv", side_effect=RuntimeError("provider down")):
-        assert mv._verified_change_pct("X") is None
+        assert mv._verified_change_pct("X", 1.0) is None
+
+
+def test_recomputation_that_is_also_implausible_fails_closed():
+    # Provider split-adjustment can lag the effective date; if our own number
+    # is still absurd we have verified nothing.
+    out, _ = _run_split(1500.0)
+    assert "SPLT" not in out
