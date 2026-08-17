@@ -76,6 +76,17 @@ _DILUTION_RE = re.compile(
     r"(public|direct) offering)\b",
     re.IGNORECASE,
 )
+# Negated/adverse forms: a headline matching this can NEVER classify as
+# `strong` — "fails to meet its primary endpoint" contains "meet ... endpoint"
+# and would otherwise earn full catalyst credit for an explicitly bad result
+# (Codex P1). For a long-continuation screener, adverse events get no credit;
+# they fall through to the lower tiers or none.
+_NEGATION_RE = re.compile(
+    r"\b(fail\w* to|fails?|failed|did not|does not|doesn'?t|will not|won'?t|"
+    r"miss(es|ed)?|unable to|falls? short|halt(s|ed)?|terminat\w+|"
+    r"discontinu\w+|withdraw\w+|reject\w+|declin\w+ to)\b",
+    re.IGNORECASE,
+)
 _STRONG_RE = re.compile(
     r"\b(beats?( on)? (earnings|estimates|expectations|revenue)|"
     r"(raises?|raised|boosts?|hikes?) .{0,30}(guidance|outlook|forecast)|"
@@ -119,8 +130,11 @@ def classify_headlines(headlines: list[NewsHeadline]) -> dict:
     for tier, pattern in _TIER_PATTERNS:
         for h in headlines:
             title = (h.title or "").strip()
-            if title and pattern.search(title):
-                return {"tier": tier, "headline": title[:160], "provider": h.provider}
+            if not title or not pattern.search(title):
+                continue
+            if tier == "strong" and _NEGATION_RE.search(title):
+                continue  # adverse phrasing never earns the strong tier
+            return {"tier": tier, "headline": title[:160], "provider": h.provider}
     return {"tier": "none", "headline": None, "provider": None}
 
 
@@ -137,7 +151,9 @@ def _parse_ts(value) -> Optional[datetime]:
         return None
 
 
-def _fetch_alpaca(symbol: str, since: datetime) -> list[NewsHeadline]:
+def _fetch_alpaca(
+    symbol: str, since: datetime, company_name: str = ""
+) -> list[NewsHeadline]:
     if not (config.ALPACA_API_KEY and config.ALPACA_SECRET_KEY):
         return []
     try:
@@ -173,7 +189,9 @@ def _fetch_alpaca(symbol: str, since: datetime) -> list[NewsHeadline]:
         return []
 
 
-def _fetch_yfinance(symbol: str, since: datetime) -> list[NewsHeadline]:
+def _fetch_yfinance(
+    symbol: str, since: datetime, company_name: str = ""
+) -> list[NewsHeadline]:
     try:
         import yfinance as yf
 
@@ -207,31 +225,61 @@ def _fetch_yfinance(symbol: str, since: datetime) -> list[NewsHeadline]:
         return []
 
 
-def _fetch_newsapi(symbol: str, since: datetime) -> list[NewsHeadline]:
+def _newsapi_identity_ok(title: str, symbol: str, company_name: str) -> bool:
+    """Does a keyword-search result actually concern this security?
+
+    NewsAPI is full-text search, not a symbol feed: querying "AI"/"ON"/"CAT"
+    matches ordinary English (Codex P2). Accept an article only when the title
+    carries the symbol as a standalone CASE-SENSITIVE token, or the company
+    name case-insensitively.
+    """
+    if company_name and company_name.lower() in title.lower():
+        return True
+    return re.search(rf"\b{re.escape(symbol)}\b", title) is not None
+
+
+def _fetch_newsapi(
+    symbol: str, since: datetime, company_name: str = ""
+) -> list[NewsHeadline]:
     if not config.NEWSAPI_KEY:
+        return []
+    if len(symbol) <= 2 and not company_name:
+        # An ultra-short symbol with no company name to validate against is
+        # indistinguishable from ordinary English in full-text search — skip
+        # rather than mis-attribute (Codex P2).
         return []
     try:
         from newsapi import NewsApiClient
 
+        query = f'"{symbol}"'
+        if company_name:
+            query += f' OR "{company_name}"'
         client = NewsApiClient(api_key=config.NEWSAPI_KEY)
         response = client.get_everything(
-            q=f'"{symbol}"',
+            q=query,
             language="en",
             sort_by="publishedAt",
             from_param=since.strftime("%Y-%m-%d"),
             page_size=_MAX_HEADLINES,
         )
-        return [
-            NewsHeadline(
-                title=str(a.get("title") or ""),
+        out: list[NewsHeadline] = []
+        for a in response.get("articles") or []:
+            title = str(a.get("title") or "")
+            if not title or not _newsapi_identity_ok(title, symbol, company_name):
+                continue
+            published = _parse_ts(a.get("publishedAt"))
+            # from_param is date-granular, which silently widens the window
+            # back to midnight — enforce the precise cutoff locally (Codex P2).
+            if published is not None and published < since:
+                continue
+            out.append(NewsHeadline(
+                title=title,
                 source=str((a.get("source") or {}).get("name") or ""),
                 url=str(a.get("url") or ""),
-                published=_parse_ts(a.get("publishedAt")),
+                published=published,
                 provider="newsapi",
-            )
-            for a in (response.get("articles") or [])
-            if a.get("title")
-        ]
+            ))
+        return out
     except Exception as exc:
         log.debug(f"{symbol}: NewsAPI fetch failed ({exc})")
         return []
@@ -247,6 +295,7 @@ def fetch_headlines(
     use_cache: bool = True,
     cache_ttl_sec: int = _DEFAULT_CACHE_TTL_SEC,
     now: Optional[datetime] = None,
+    company_name: str = "",
 ) -> list[NewsHeadline]:
     """Recent headlines for ``ticker`` — first provider with results wins.
 
@@ -264,7 +313,7 @@ def fetch_headlines(
     now_utc = now or datetime.now(timezone.utc)
     since = now_utc - timedelta(hours=max(1.0, float(max_age_hours)))
     for fetcher in _FETCHERS:
-        items = fetcher(symbol, since)
+        items = fetcher(symbol, since, company_name)
         if items:
             if use_cache:
                 cache.set(
@@ -282,11 +331,13 @@ def catalyst_news_for(
     max_age_hours: float = _DEFAULT_MAX_AGE_HOURS,
     use_cache: bool = True,
     now: Optional[datetime] = None,
+    company_name: str = "",
 ) -> dict:
     """One-call convenience for the screener: fetch + classify. Never raises."""
     try:
         headlines = fetch_headlines(
-            ticker, max_age_hours=max_age_hours, use_cache=use_cache, now=now
+            ticker, max_age_hours=max_age_hours, use_cache=use_cache, now=now,
+            company_name=company_name,
         )
         return classify_headlines(headlines)
     except Exception as exc:

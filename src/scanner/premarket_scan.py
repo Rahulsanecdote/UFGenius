@@ -340,11 +340,16 @@ def build_snapshot(
     # leaves the tier to the remaining classification.
     news_cfg = settings.get("news") or {}
     if news_fn is None and bool(news_cfg.get("enabled", False)):
+        # Company name lets the NewsAPI fallback validate article identity —
+        # short symbols ("AI", "ON") are ordinary English in full-text search.
+        company = str(info.get("shortName") or info.get("longName") or "")
+
         def news_fn(sym: str) -> dict:
             from src.catalysts.news_feed import catalyst_news_for
             return catalyst_news_for(
                 sym,
                 max_age_hours=float(news_cfg.get("max_age_hours", 36)),
+                company_name=company,
             )
     if news_fn is not None:
         try:
