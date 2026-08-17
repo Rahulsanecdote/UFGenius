@@ -478,6 +478,7 @@ HTML = '''
 
     /* Market Movers panel */
     .movers-actions { display: flex; gap: 8px; }
+    .chg-adj { color: var(--text-muted); font-size: 11px; margin-left: 3px; cursor: help; }
     /* Screener heading carries a select + two buttons — on narrow screens the
        flex row must wrap under the title instead of crushing it. */
     #premarketPanel .panel-heading { flex-wrap: wrap; }
@@ -1821,7 +1822,7 @@ HTML = '''
             <tbody id="moversBody"></tbody>
           </table>
         </div>
-        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs an FMP key. <b>Deep scan</b> re-ranks by early-momentum quality.</p>
+        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs an FMP key. <b>Deep scan</b> re-ranks by early-momentum quality. A <b>†</b> marks a change the feed reported unadjusted for a corporate action (e.g. a reverse split), recomputed here from split-adjusted bars.</p>
       </section>
 
       <section class="panel" id="premarketPanel" aria-labelledby="premarketTitle">
@@ -3636,11 +3637,16 @@ HTML = '''
       body.innerHTML = movers.map((m, i) => {
         const dir = m.direction === 'short' ? 'short' : 'long';
         const chgCls = m.change_pct >= 0 ? 'chg-up' : 'chg-down';
+        // The feed's raw change is unadjusted for corporate actions; when it
+        // was implausible we recomputed it from split-adjusted bars — say so.
+        const adj = m.change_verified
+          ? '<span class="chg-adj" title="Feed value was implausible for one session (corporate action, e.g. a reverse split) — recomputed from split-adjusted bars">†</span>'
+          : '';
         return `<tr>
           <td class="movers-rank">${i + 1}</td>
           <td class="movers-sym">${escapeHtml(m.ticker)}</td>
           <td class="num">$${Number(m.price).toFixed(2)}</td>
-          <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%</td>
+          <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%${adj}</td>
           <td><span class="movers-dir ${dir}">${dir.toUpperCase()}</span></td>
           <td class="num movers-score">${Math.round(m.score)}</td>
           <td class="num">${moversNum(m.rel_volume, 'x')}</td>

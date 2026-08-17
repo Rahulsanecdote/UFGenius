@@ -14,6 +14,14 @@ movers:
   min_price: 1.0            # drop sub-$1 names (penny/liquidity guard); lower at your own risk
   max_price: 0              # 0 = no upper cap
   min_change_pct: 3.0       # only consider names moving at least this % (absolute)
+  # Corporate-action guard. The FMP lists report an UNADJUSTED quote change, so
+  # on a reverse-split effective date the mechanical price multiple is reported
+  # as a move (AiRWA/YYAI 1-for-20 on 2026-08-17 showed as "+1668%" while the
+  # stock was up ~23%). Above this magnitude the number is re-derived from our
+  # own split-adjusted daily bars, and dropped if it can't be verified.
+  # 0 disables the guard. 300% is far above a plausible single session and far
+  # below the ratios reverse splits produce.
+  suspect_change_pct: 300.0
   limit: 40                 # max ranked candidates returned
   include_short_setups: true  # losers → SHORT-direction candidates
   # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,

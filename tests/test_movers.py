@@ -197,3 +197,102 @@ def test_enrich_candidate_keeps_base_score_when_no_intraday_data():
         for p in ps:
             p.stop()
     assert c.enriched is False and c.score == 20.0   # unchanged
+
+
+# ── corporate-action guard (reverse-split artifacts) ─────────────────────────
+#
+# The FMP lists report an UNADJUSTED quote change, so on a reverse-split
+# effective date the mechanical price multiple is published as a move: AiRWA
+# (YYAI) 1-for-20 on 2026-08-17 surfaced as "+1668%" against a real ~+23%.
+
+import pandas as pd
+import pytest
+
+_SPLIT_FAKE = {
+    "gainers": [
+        {"symbol": "SPLT", "price": 1.13, "name": "Split Co", "changesPercentage": 1668.4},
+        {"symbol": "REAL", "price": 12.0, "name": "Real Co", "changesPercentage": 30.0},
+    ],
+    "losers": [],
+    "most_actives": [],
+}
+
+
+def _run_split(verified, **cfgover):
+    """Discovery over a payload holding one reverse-split artifact.
+
+    ``verified`` is what the split-adjusted recomputation returns (None = bars
+    unavailable). Returns (candidates by ticker, tickers that were verified).
+    """
+    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
+                MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
+                MOVERS_SUSPECT_CHANGE_PCT=300.0)
+    base.update(cfgover)
+    patches = [patch.object(cfg, k, v) for k, v in base.items()]
+    patches.append(patch.object(mv, "_fetch_source", lambda s: _SPLIT_FAKE.get(s, [])))
+    calls = []
+
+    def _verify(ticker):
+        calls.append(ticker)
+        return verified
+
+    patches.append(patch.object(mv, "_verified_change_pct", _verify))
+    for p in patches:
+        p.start()
+    try:
+        return {c.ticker: c for c in mv.fetch_market_movers()}, calls
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_split_artifact_change_is_replaced_with_the_verified_value():
+    out, calls = _run_split(-11.6)
+    assert calls == ["SPLT"]                       # only the implausible one costs a fetch
+    assert out["SPLT"].change_pct == pytest.approx(-11.6)
+    assert out["SPLT"].change_verified is True
+    assert out["SPLT"].direction == "short"        # direction follows the real sign
+    # A plausible mover is untouched.
+    assert out["REAL"].change_pct == 30.0
+    assert out["REAL"].change_verified is False
+
+
+def test_unverifiable_extreme_move_is_dropped():
+    # Fail closed: an extreme claim we cannot check is not published.
+    out, _ = _run_split(None)
+    assert "SPLT" not in out
+    assert "REAL" in out
+
+
+def test_corrected_move_below_the_floor_stops_being_a_mover():
+    out, _ = _run_split(0.4)                       # < min_change_pct 3.0
+    assert "SPLT" not in out
+
+
+def test_guard_disabled_passes_the_raw_feed_value_through():
+    out, calls = _run_split(-11.6, MOVERS_SUSPECT_CHANGE_PCT=0.0)
+    assert calls == []                             # no verification attempted
+    assert out["SPLT"].change_pct == pytest.approx(1668.4)
+    assert out["SPLT"].change_verified is False
+
+
+def test_verified_change_pct_reads_split_adjusted_closes():
+    df = pd.DataFrame({"Close": [1.0, 1.278, 1.13]})
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=df):
+        assert mv._verified_change_pct("SPLT") == pytest.approx(-11.58, abs=0.01)
+
+
+@pytest.mark.parametrize("frame", [
+    pd.DataFrame(),                       # no data at all
+    pd.DataFrame({"Close": [1.0]}),       # single bar — no prior close
+    pd.DataFrame({"Close": [0.0, 1.0]}),  # zero prior close — undefined change
+])
+def test_verified_change_pct_returns_none_when_unusable(frame):
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=frame):
+        assert mv._verified_change_pct("X") is None
+
+
+def test_verified_change_pct_never_raises():
+    with patch("src.data.fetcher.fetch_ohlcv", side_effect=RuntimeError("provider down")):
+        assert mv._verified_change_pct("X") is None

@@ -57,11 +57,16 @@ class MoverCandidate:
     is_breakout: bool = False
     enriched: bool = False
 
+    # True when the feed's % change was implausible (corporate action) and we
+    # replaced it with a split-adjusted recomputation — see _verified_change_pct.
+    change_verified: bool = False
+
     def as_dict(self) -> dict:
         return {
             "ticker": self.ticker,
             "price": round(self.price, 4),
             "change_pct": round(self.change_pct, 2),
+            "change_verified": self.change_verified,
             "direction": self.direction,
             "sources": list(self.sources),
             "name": self.name,
@@ -104,6 +109,40 @@ def _fetch_source(source: str) -> list[dict]:
     except Exception as exc:  # network / JSON / HTTP — discovery must never break
         log.warning(f"movers: FMP {endpoint} failed ({type(exc).__name__})")
         return []
+
+
+def _verified_change_pct(ticker: str) -> float | None:
+    """Recompute the latest daily % change from SPLIT-ADJUSTED bars.
+
+    The FMP mover lists report a raw quote change that is NOT adjusted for
+    corporate actions, so on the effective date of a reverse split the feed
+    reports the mechanical price multiple as if it were a real move: AiRWA
+    (YYAI) 1-for-20 on 2026-08-17 surfaced as "+1668%" while the stock was
+    actually up ~23%. Our own daily bars come through the provider stack
+    split-adjusted, so recomputing from them gives an honest number.
+
+    Note this measures the last two COMPLETE sessions — pre-market it reads
+    yesterday's move, not today's. That is sufficient for its only job:
+    replacing a number we know to be fictional on a discovery list.
+
+    Returns None when bars are unavailable (caller fails closed).
+    """
+    try:
+        from src.data.fetcher import fetch_ohlcv
+
+        df = fetch_ohlcv(ticker, period="1mo", interval="1d")
+        if df is None or df.empty or "Close" not in df:
+            return None
+        closes = df["Close"].dropna()
+        if len(closes) < 2:
+            return None
+        prev, last = float(closes.iloc[-2]), float(closes.iloc[-1])
+        if prev <= 0:
+            return None
+        return (last - prev) / prev * 100.0
+    except Exception as exc:  # verification is best-effort — never break discovery
+        log.debug(f"movers: change verification for {ticker} failed ({type(exc).__name__})")
+        return None
 
 
 def _score(change_pct: float, n_sources: int) -> float:
@@ -228,7 +267,29 @@ def fetch_market_movers(
                     existing.direction = direction
 
     candidates: list[MoverCandidate] = []
+    suspect = float(config.MOVERS_SUSPECT_CHANGE_PCT)
     for c in merged.values():
+        # Corporate-action guard, BEFORE the magnitude/direction filters so the
+        # corrected number flows through all of them. A move past `suspect` is
+        # far more often a reverse-split artifact than a real session — and an
+        # unverifiable extreme claim is dropped rather than published.
+        if suspect > 0 and abs(c.change_pct) >= suspect:
+            verified = _verified_change_pct(c.ticker)
+            if verified is None:
+                log.warning(
+                    f"movers: dropping {c.ticker} — feed change {c.change_pct:+.1f}% "
+                    "is implausible for one session and could not be verified "
+                    "against split-adjusted bars (corporate action?)"
+                )
+                continue
+            log.warning(
+                f"movers: {c.ticker} feed change {c.change_pct:+.1f}% is implausible "
+                f"(corporate action?) — using split-adjusted {verified:+.1f}%"
+            )
+            c.change_pct = verified
+            c.change_verified = True
+            # The source list's implied direction rested on the bogus number.
+            c.direction = "short" if verified < 0 else "long"
         if abs(c.change_pct) < float(min_change):
             continue
         if c.price < float(min_price):

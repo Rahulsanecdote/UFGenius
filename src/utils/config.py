@@ -104,6 +104,7 @@ MOVERS_SOURCES: list = list(_MOVERS.get("sources", ["gainers", "losers", "most_a
 MOVERS_MIN_PRICE: float = _as_float(_MOVERS.get("min_price", 1.0), 1.0)
 MOVERS_MAX_PRICE: float = _as_float(_MOVERS.get("max_price", 0), 0.0)
 MOVERS_MIN_CHANGE_PCT: float = _as_float(_MOVERS.get("min_change_pct", 3.0), 3.0)
+MOVERS_SUSPECT_CHANGE_PCT: float = _as_float(_MOVERS.get("suspect_change_pct", 300.0), 300.0)
 MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
 MOVERS_INCLUDE_SHORT: bool = bool(_MOVERS.get("include_short_setups", True))
 # Phase 2 — intraday enrichment / early-momentum ranking.
