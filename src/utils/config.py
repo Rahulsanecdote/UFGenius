@@ -104,7 +104,23 @@ MOVERS_SOURCES: list = list(_MOVERS.get("sources", ["gainers", "losers", "most_a
 MOVERS_MIN_PRICE: float = _as_float(_MOVERS.get("min_price", 1.0), 1.0)
 MOVERS_MAX_PRICE: float = _as_float(_MOVERS.get("max_price", 0), 0.0)
 MOVERS_MIN_CHANGE_PCT: float = _as_float(_MOVERS.get("min_change_pct", 3.0), 3.0)
+_suspect_change_pct = _as_float(_MOVERS.get("suspect_change_pct", 300.0), 300.0)
+# Only 0 may disable the guard. NaN/inf/negative would all fail the `> 0` test
+# downstream and switch it off SILENTLY — the unsafe direction for a check whose
+# job is to keep false data off the list — so they fall back to the default.
+MOVERS_SUSPECT_CHANGE_PCT: float = (
+    _suspect_change_pct
+    if math.isfinite(_suspect_change_pct) and _suspect_change_pct >= 0
+    else 300.0
+)
 MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
+
+_MOVERS_HALTS: dict = _MOVERS.get("halts", {}) if isinstance(_MOVERS, dict) else {}
+MOVERS_HALTS_ENABLED: bool = env_bool("MOVERS_HALTS_ENABLED", bool(_MOVERS_HALTS.get("enabled", True)))
+MOVERS_HALT_SUPPRESS_ALERTS: bool = bool(_MOVERS_HALTS.get("suppress_alerts", True))
+MOVERS_HALT_SKIP_INVALIDATION: bool = bool(_MOVERS_HALTS.get("skip_invalidation", True))
+MOVERS_HALT_EXCLUDE_FROM_LIST: bool = bool(_MOVERS_HALTS.get("exclude_from_list", False))
+MOVERS_HALT_CACHE_TTL_SEC: float = _as_float(_MOVERS_HALTS.get("cache_ttl_sec", 45), 45.0)
 MOVERS_INCLUDE_SHORT: bool = bool(_MOVERS.get("include_short_setups", True))
 # Phase 2 — intraday enrichment / early-momentum ranking.
 MOVERS_ENRICH_INTRADAY: bool = bool(_MOVERS.get("enrich_intraday", True))

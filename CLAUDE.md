@@ -310,6 +310,19 @@ pytest --cov=src       # coverage
   subscribed to its live watch set and the snapshot carries live prices + stream
   status. Advisory/telemetry only — no import of the executor/broker; the stream
   is a data source, never a gate.
+- **Trade-halt awareness** (`src/data/halts.py`, config `movers.halts`): the
+  movers feed reports a halted stock as a normal (usually top-ranked) mover.
+  Halt state comes from Nasdaq Trader's official UTP feed (free, no key, all US
+  venues), parsed **by local tag name** so a namespace change degrades to "no
+  data" rather than wrong data, TTL-cached (~45s) with a 5-minute backoff after a
+  failure so a dead feed can't cost a timeout on every worker cycle. Halted
+  candidates are **flagged, not dropped** by default (`exclude_from_list`), kept
+  out of alerts (`suppress_alerts` — you can't act on a halt), and **skipped by
+  the monitor's invalidation rules** (`skip_invalidation`): while halted no
+  trades print, so relative volume decays toward zero and rule 3 would report
+  "relative volume faded" on a setup the market never let move. **Fails open** —
+  an outage yields "no halts known" rather than muting every alert; callers can
+  distinguish the two via `halts.last_fetch_ok()`.
 
 ### Adding a technical indicator
 Add a vectorized function in the relevant `src/technical/*.py`, wire it into the

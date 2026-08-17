@@ -19,6 +19,8 @@ list and never raises.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.utils import config
 from src.utils.http import get_retry_session
@@ -35,6 +37,7 @@ _ENDPOINTS = {
 }
 # Which direction a source implies before we look at the sign of the move.
 _SOURCE_DIRECTION = {"gainers": "long", "losers": "short"}
+_EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -57,11 +60,23 @@ class MoverCandidate:
     is_breakout: bool = False
     enriched: bool = False
 
+    # True when the feed's % change was implausible (corporate action) and we
+    # replaced it with a split-adjusted recomputation — see _verified_change_pct.
+    change_verified: bool = False
+
+    # Trade-halt state (src/data/halts.py). A halted name is untradeable now and
+    # its volume signals are suppressed by the halt itself.
+    is_halted: bool = False
+    halt_reason: str = ""
+
     def as_dict(self) -> dict:
         return {
             "ticker": self.ticker,
             "price": round(self.price, 4),
             "change_pct": round(self.change_pct, 2),
+            "change_verified": self.change_verified,
+            "is_halted": self.is_halted,
+            "halt_reason": self.halt_reason,
             "direction": self.direction,
             "sources": list(self.sources),
             "name": self.name,
@@ -104,6 +119,91 @@ def _fetch_source(source: str) -> list[dict]:
     except Exception as exc:  # network / JSON / HTTP — discovery must never break
         log.warning(f"movers: FMP {endpoint} failed ({type(exc).__name__})")
         return []
+
+
+def _verified_change_pct(ticker: str, price: float) -> float | None:
+    """Recompute the move as ``price`` vs OUR SPLIT-ADJUSTED previous close.
+
+    The FMP mover lists report a raw quote change that is NOT adjusted for
+    corporate actions, so on the effective date of a reverse split the feed
+    reports the mechanical price multiple as if it were a real move: AiRWA
+    (YYAI) 1-for-20 on 2026-08-17 surfaced as "+1668%" while the stock was
+    actually up ~23%. Our own daily bars come through the provider stack
+    split-adjusted, so measuring the feed's quote against our previous close
+    puts both operands on one basis — which is how a split-aware quote source
+    arrives at +23%.
+
+    Deliberately NOT "the change between the last two closes": that answers a
+    different question (the prior completed session) than the field it
+    replaces, and pre-market it would overwrite today's move — and the
+    direction derived from it — with an unrelated day's (Codex P1).
+
+    Returns None when bars or the reference close are unusable, so the caller
+    can fail closed.
+    """
+    try:
+        import pandas as pd
+
+        from src.data.fetcher import fetch_ohlcv
+
+        if price is None or price <= 0:
+            return None
+        df = fetch_ohlcv(ticker, period="1mo", interval="1d")
+        if df is None or df.empty or "Close" not in df:
+            return None
+        closes = df["Close"].dropna()
+        if closes.empty:
+            return None
+        # The reference must be the PREVIOUS close: once the session has
+        # produced its own bar, the last row is today's and measuring against
+        # it would report ~0% for every candidate.
+        try:
+            last_date = pd.Timestamp(closes.index[-1]).date()
+            if last_date >= datetime.now(_EASTERN).date():
+                closes = closes.iloc[:-1]
+        except (TypeError, ValueError):
+            pass  # non-datetime index — treat the last row as the prior close
+        if closes.empty:
+            return None
+        prev = float(closes.iloc[-1])
+        if prev <= 0:
+            return None
+        return (price - prev) / prev * 100.0
+    except Exception as exc:  # verification is best-effort — never break discovery
+        log.debug(f"movers: change verification for {ticker} failed ({type(exc).__name__})")
+        return None
+
+
+def annotate_halts(candidates: list["MoverCandidate"]) -> list["MoverCandidate"]:
+    """Flag halted candidates, and drop them when configured to.
+
+    One feed lookup covers the whole list, so this costs a single cached
+    request regardless of candidate count. Default is **flag, don't drop**:
+    the movers list is discovery, and a halted name is genuinely informative
+    (it is usually the day's biggest move) — it just must not be alerted on or
+    invalidated. Set ``movers.halts.exclude_from_list`` to remove them instead.
+    """
+    try:
+        from src.data.halts import active_halts
+
+        halted = active_halts()
+    except Exception as exc:  # halt lookup must never break discovery
+        log.debug(f"movers: halt lookup failed ({type(exc).__name__})")
+        return candidates
+    if not halted:
+        return candidates
+    for c in candidates:
+        record = halted.get(c.ticker)
+        if record is not None:
+            c.is_halted = True
+            c.halt_reason = record.reason
+    n = sum(1 for c in candidates if c.is_halted)
+    if n and config.MOVERS_HALT_EXCLUDE_FROM_LIST:
+        log.info(f"movers: dropping {n} halted candidate(s) (halts.exclude_from_list)")
+        return [c for c in candidates if not c.is_halted]
+    if n:
+        log.info(f"movers: {n} candidate(s) currently halted — flagged, not alertable")
+    return candidates
 
 
 def _score(change_pct: float, n_sources: int) -> float:
@@ -222,13 +322,43 @@ def fetch_market_movers(
             else:
                 if source not in existing.sources:
                     existing.sources.append(source)
-                # Keep the largest-magnitude move and its direction.
+                # Keep the largest-magnitude move, with the price and direction
+                # from the SAME row: the two endpoints can carry different
+                # snapshots, and _verified_change_pct measures the kept change's
+                # quote against our previous close — a price from another row
+                # would silently make that recomputation wrong (CodeRabbit).
                 if abs(change) > abs(existing.change_pct):
+                    existing.price = price
                     existing.change_pct = change
                     existing.direction = direction
 
     candidates: list[MoverCandidate] = []
+    suspect = float(config.MOVERS_SUSPECT_CHANGE_PCT)
     for c in merged.values():
+        # Corporate-action guard, BEFORE the magnitude/direction filters so the
+        # corrected number flows through all of them. A move past `suspect` is
+        # far more often a reverse-split artifact than a real session — and an
+        # unverifiable extreme claim is dropped rather than published.
+        if suspect > 0 and abs(c.change_pct) >= suspect:
+            verified = _verified_change_pct(c.ticker, c.price)
+            # A recomputation that is ALSO implausible means our own bars have
+            # not picked the corporate action up either (provider adjustment
+            # lags the effective date) — nothing was verified, so fail closed.
+            if verified is None or abs(verified) >= suspect:
+                log.warning(
+                    f"movers: dropping {c.ticker} — feed change {c.change_pct:+.1f}% "
+                    "is implausible for one session and could not be verified "
+                    "against split-adjusted bars (corporate action?)"
+                )
+                continue
+            log.warning(
+                f"movers: {c.ticker} feed change {c.change_pct:+.1f}% is implausible "
+                f"(corporate action?) — using split-adjusted {verified:+.1f}%"
+            )
+            c.change_pct = verified
+            c.change_verified = True
+            # The source list's implied direction rested on the bogus number.
+            c.direction = "short" if verified < 0 else "long"
         if abs(c.change_pct) < float(min_change):
             continue
         if c.price < float(min_price):
@@ -254,6 +384,10 @@ def fetch_market_movers(
         for c in candidates[:cap]:
             _enrich_candidate(c)
         candidates.sort(key=lambda x: x.score, reverse=True)
+
+    # Halt state last: it annotates (and optionally trims) the final list, and
+    # costs one cached feed lookup for the whole batch.
+    candidates = annotate_halts(candidates)
 
     n_enriched = sum(1 for c in candidates if c.enriched)
     log.info(f"movers: {len(candidates)} candidates after filters "

@@ -197,3 +197,167 @@ def test_enrich_candidate_keeps_base_score_when_no_intraday_data():
         for p in ps:
             p.stop()
     assert c.enriched is False and c.score == 20.0   # unchanged
+
+
+# ── corporate-action guard (reverse-split artifacts) ─────────────────────────
+#
+# The FMP lists report an UNADJUSTED quote change, so on a reverse-split
+# effective date the mechanical price multiple is published as a move: AiRWA
+# (YYAI) 1-for-20 on 2026-08-17 surfaced as "+1668%" against a real ~+23%.
+
+from datetime import datetime, timedelta
+
+import pandas as pd
+import pytest
+
+_SPLIT_FAKE = {
+    "gainers": [
+        {"symbol": "SPLT", "price": 1.13, "name": "Split Co", "changesPercentage": 1668.4},
+        {"symbol": "REAL", "price": 12.0, "name": "Real Co", "changesPercentage": 30.0},
+    ],
+    "losers": [],
+    "most_actives": [],
+}
+
+
+def _run_split(verified, **cfgover):
+    """Discovery over a payload holding one reverse-split artifact.
+
+    ``verified`` is what the split-adjusted recomputation returns (None = bars
+    unavailable). Returns (candidates by ticker, tickers that were verified).
+    """
+    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
+                MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
+                MOVERS_SUSPECT_CHANGE_PCT=300.0)
+    base.update(cfgover)
+    patches = [patch.object(cfg, k, v) for k, v in base.items()]
+    patches.append(patch.object(mv, "_fetch_source", lambda s: _SPLIT_FAKE.get(s, [])))
+    calls = []
+
+    def _verify(ticker, price):
+        calls.append((ticker, price))
+        return verified
+
+    patches.append(patch.object(mv, "_verified_change_pct", _verify))
+    for p in patches:
+        p.start()
+    try:
+        return {c.ticker: c for c in mv.fetch_market_movers()}, calls
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_split_artifact_change_is_replaced_with_the_verified_value():
+    out, calls = _run_split(-11.6)
+    # Only the implausible one costs a fetch, and it is measured against the
+    # feed's CURRENT quote, not a stale pair of closes.
+    assert calls == [("SPLT", 1.13)]
+    assert out["SPLT"].change_pct == pytest.approx(-11.6)
+    assert out["SPLT"].change_verified is True
+    assert out["SPLT"].direction == "short"        # direction follows the real sign
+    # A plausible mover is untouched.
+    assert out["REAL"].change_pct == 30.0
+    assert out["REAL"].change_verified is False
+
+
+def test_unverifiable_extreme_move_is_dropped():
+    # Fail closed: an extreme claim we cannot check is not published.
+    out, _ = _run_split(None)
+    assert "SPLT" not in out
+    assert "REAL" in out
+
+
+def test_corrected_move_below_the_floor_stops_being_a_mover():
+    out, _ = _run_split(0.4)                       # < min_change_pct 3.0
+    assert "SPLT" not in out
+
+
+def test_guard_disabled_passes_the_raw_feed_value_through():
+    out, calls = _run_split(-11.6, MOVERS_SUSPECT_CHANGE_PCT=0.0)
+    assert calls == []                             # no verification attempted
+    assert out["SPLT"].change_pct == pytest.approx(1668.4)
+    assert out["SPLT"].change_verified is False
+
+
+def _daily(closes, last_day_offset=1):
+    """Daily frame whose final bar is `last_day_offset` days before today (ET)."""
+    end = datetime.now(mv._EASTERN).date() - timedelta(days=last_day_offset)
+    idx = pd.DatetimeIndex([pd.Timestamp(end) - pd.Timedelta(days=i)
+                            for i in range(len(closes) - 1, -1, -1)])
+    return pd.DataFrame({"Close": list(closes)}, index=idx)
+
+
+def test_verified_change_pct_measures_the_quote_against_the_adjusted_prev_close():
+    # YYAI shape: split-adjusted prior close 1.13, live quote 1.39 → +23%,
+    # which is what a split-aware quote source reports (NOT the -11.6% that
+    # the prior completed session would give).
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=_daily([1.278, 1.13])):
+        assert mv._verified_change_pct("YYAI", 1.39) == pytest.approx(23.01, abs=0.01)
+
+
+def test_verified_change_pct_skips_todays_own_bar():
+    # Once the session has printed a bar, the reference is still the PREVIOUS
+    # close — otherwise every candidate measures ~0% against itself.
+    frame = _daily([1.13, 1.39], last_day_offset=0)   # final bar is today
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=frame):
+        assert mv._verified_change_pct("YYAI", 1.39) == pytest.approx(23.01, abs=0.01)
+
+
+@pytest.mark.parametrize("frame,price", [
+    (pd.DataFrame(), 1.0),                    # no data at all
+    (_daily([1.0]), 0.0),                     # unusable quote
+    (_daily([0.0]), 1.0),                     # zero prior close — undefined
+])
+def test_verified_change_pct_returns_none_when_unusable(frame, price):
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=frame):
+        assert mv._verified_change_pct("X", price) is None
+
+
+def test_verified_change_pct_returns_none_when_only_todays_bar_exists():
+    with patch("src.data.fetcher.fetch_ohlcv", return_value=_daily([1.0], last_day_offset=0)):
+        assert mv._verified_change_pct("X", 1.0) is None
+
+
+def test_verified_change_pct_never_raises():
+    with patch("src.data.fetcher.fetch_ohlcv", side_effect=RuntimeError("provider down")):
+        assert mv._verified_change_pct("X", 1.0) is None
+
+
+def test_recomputation_that_is_also_implausible_fails_closed():
+    # Provider split-adjustment can lag the effective date; if our own number
+    # is still absurd we have verified nothing.
+    out, _ = _run_split(1500.0)
+    assert "SPLT" not in out
+
+
+def test_merge_keeps_the_price_from_the_row_that_won_the_change():
+    """Price and change must come from the SAME source row.
+
+    The endpoints can carry different snapshots, and the verification measures
+    the kept change's quote against our previous close — a price left over from
+    the losing row would silently corrupt that recomputation (CodeRabbit).
+    """
+    payloads = {
+        # Same ticker in two lists: the most-actives row carries the larger
+        # move AND its own (different) price.
+        "gainers": [{"symbol": "DUP", "price": 10.0, "changesPercentage": 20.0}],
+        "most_actives": [{"symbol": "DUP", "price": 11.5, "changesPercentage": 38.0}],
+        "losers": [],
+    }
+    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
+                MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
+                MOVERS_SUSPECT_CHANGE_PCT=300.0)
+    ps = [patch.object(cfg, k, v) for k, v in base.items()]
+    ps.append(patch.object(mv, "_fetch_source", lambda s: payloads.get(s, [])))
+    for p in ps:
+        p.start()
+    try:
+        out = {c.ticker: c for c in mv.fetch_market_movers()}
+    finally:
+        for p in ps:
+            p.stop()
+    assert out["DUP"].change_pct == 38.0
+    assert out["DUP"].price == 11.5          # not the 10.0 from the first row

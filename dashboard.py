@@ -478,6 +478,17 @@ HTML = '''
 
     /* Market Movers panel */
     .movers-actions { display: flex; gap: 8px; }
+    .chg-adj { color: var(--text-muted); font-size: 11px; margin-left: 3px; cursor: help; }
+    .mv-halt {
+      margin-left: 6px; padding: 1px 6px; border-radius: 999px; cursor: help;
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      color: #ffb454; background: rgba(255, 180, 84, 0.16);
+    }
+    /* Screener heading carries a select + two buttons — on narrow screens the
+       flex row must wrap under the title instead of crushing it. */
+    #premarketPanel .panel-heading { flex-wrap: wrap; }
+    #premarketPanel .movers-actions { flex-wrap: wrap; align-items: center; }
+    #premarketPanel .field-select { width: auto; }
     .movers-live {
       font-size: 11px; font-weight: 700; letter-spacing: .06em; vertical-align: middle;
       margin-left: 8px; padding: 2px 8px; border-radius: 999px;
@@ -1622,6 +1633,9 @@ HTML = '''
     @media (max-width: 767px) {
       .topbar {
         padding: 16px;
+        /* On phones the wrapped topbar stack is ~1/4 of the viewport — let it
+           scroll away instead of staying stuck over every panel heading. */
+        position: static;
       }
 
       .topbar-actions {
@@ -1813,7 +1827,40 @@ HTML = '''
             <tbody id="moversBody"></tbody>
           </table>
         </div>
-        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs an FMP key. <b>Deep scan</b> re-ranks by early-momentum quality.</p>
+        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs an FMP key. <b>Deep scan</b> re-ranks by early-momentum quality. A <b>†</b> marks a change the feed reported unadjusted for a corporate action (e.g. a reverse split), recomputed here from split-adjusted bars.</p>
+      </section>
+
+      <section class="panel" id="premarketPanel" aria-labelledby="premarketTitle">
+        <div class="panel-heading">
+          <div>
+            <h2 id="premarketTitle">Pre-market Screener</h2>
+            <p>Extended-hours gappers ranked by evidence-backed factors — a research watchlist, not signals.</p>
+          </div>
+          <div class="movers-actions">
+            <select id="pmUniverse" class="field-select" aria-label="Screener universe">
+              <option value="WATCHLIST" selected>Watchlist</option>
+              <option value="MOVERS">Movers</option>
+              <option value="SP500">S&amp;P 500 (first 50)</option>
+            </select>
+            <button id="pmPennyButton" class="summary-action" type="button" aria-pressed="false" title="Gate from the penny hard rails: $0.50–$10 band, $50M market-cap floor, share-volume backstop">Penny: Auto</button>
+            <button id="pmRunButton" class="summary-action" type="button">Run screener</button>
+          </div>
+        </div>
+        <div id="pmStatus" class="movers-status">Runs on 4:00–9:30 ET extended-hours bars — most informative from ~7:00 ET on trading days. Manual run only (each scan costs provider calls).</div>
+        <div class="movers-table-wrap">
+          <table class="movers-table" id="pmTable" hidden>
+            <thead>
+              <tr>
+                <th>#</th><th>Ticker</th><th class="num">Gap%</th><th class="num">Price</th>
+                <th class="num">RVOL</th><th class="num">PM $Vol</th><th>Catalyst</th>
+                <th>Profile</th><th class="num">Score</th><th>Flags</th>
+              </tr>
+            </thead>
+            <tbody id="pmBody"></tbody>
+          </table>
+        </div>
+        <div id="pmNearMisses" class="movers-status" hidden></div>
+        <p class="movers-note panel-note">Screener only — firewalled from the money path; no protection filter is loosened. <b>Penny: On</b> swaps the gates for the <b>penny hard rails</b>; scoring and labels stay strict. Watchlist universe needs <b>CUSTOM_WATCHLIST</b> set.</p>
       </section>
 
       <section class="panel" aria-labelledby="workspaceTitle">
@@ -2338,6 +2385,7 @@ HTML = '''
       currentRegime: null,
       moversAutoRefresh: true,
       moversLastLoad: null,
+      pmPenny: false,
       providerHealth: null,
       providerCheckedAt: null,
       chartRange: '3M',
@@ -3594,11 +3642,21 @@ HTML = '''
       body.innerHTML = movers.map((m, i) => {
         const dir = m.direction === 'short' ? 'short' : 'long';
         const chgCls = m.change_pct >= 0 ? 'chg-up' : 'chg-down';
+        // The feed's raw change is unadjusted for corporate actions; when it
+        // was implausible we recomputed it from split-adjusted bars — say so.
+        const adj = m.change_verified
+          ? '<span class="chg-adj" title="Feed value was implausible for one session (corporate action, e.g. a reverse split) — recomputed from split-adjusted bars">†</span>'
+          : '';
+        // A halted name can't be traded now and its volume signals are frozen
+        // by the halt itself — say so rather than showing it as a live setup.
+        const halt = m.is_halted
+          ? `<span class="mv-halt" title="${escapeHtml(m.halt_reason || 'halted')} — not tradeable until it resumes; alerts suppressed">HALTED</span>`
+          : '';
         return `<tr>
           <td class="movers-rank">${i + 1}</td>
-          <td class="movers-sym">${escapeHtml(m.ticker)}</td>
+          <td class="movers-sym">${escapeHtml(m.ticker)}${halt}</td>
           <td class="num">$${Number(m.price).toFixed(2)}</td>
-          <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%</td>
+          <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%${adj}</td>
           <td><span class="movers-dir ${dir}">${dir.toUpperCase()}</span></td>
           <td class="num movers-score">${Math.round(m.score)}</td>
           <td class="num">${moversNum(m.rel_volume, 'x')}</td>
@@ -3686,6 +3744,115 @@ HTML = '''
       } catch (error) {
         if (!/Authorization/i.test(error.message || '')) $('moversWorker').hidden = true;
       }
+    }
+
+    // ── Pre-market screener panel: manual run only — every scan is a fan-out
+    // of provider calls, so no auto-refresh timer touches it. Research
+    // watchlist output; nothing here is a trade signal.
+    function pmDollars(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '—';
+      if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+      if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+      if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
+      return `$${n.toFixed(0)}`;
+    }
+    function pmNum(v, digits, suffix) {
+      const n = Number(v);
+      return (v === null || v === undefined || !Number.isFinite(n))
+        ? '—' : `${n.toFixed(digits)}${suffix || ''}`;
+    }
+    function renderPremarket(payload) {
+      const status = $('pmStatus');
+      const table = $('pmTable');
+      const nearBox = $('pmNearMisses');
+      if (!payload || payload.error) {
+        table.hidden = true;
+        nearBox.hidden = true;
+        status.textContent = (payload && payload.error) || 'Pre-market screener unavailable.';
+        return;
+      }
+      const rows = Array.isArray(payload.candidates) ? payload.candidates : [];
+      const near = Array.isArray(payload.near_misses) ? payload.near_misses : [];
+      const asOf = String(payload.as_of_et || '');
+      const asOfNote = asOf.length >= 16 ? ` · as of ${asOf.slice(11, 16)} ET` : '';
+      const truncNote = payload.universe_truncated_from
+        ? ` · universe capped from ${payload.universe_truncated_from}` : '';
+      if (!rows.length) {
+        table.hidden = true;
+        status.textContent = `No candidates passed the ${payload.profile_gates || 'standard'} gates — `
+          + `${payload.scanned_with_premarket_data || 0} tickers had pre-market data${truncNote}${asOfNote}. `
+          + 'Outside the 4:00–9:30 ET session an empty result is expected.';
+      } else {
+        $('pmBody').innerHTML = rows.map((r, i) => {
+          const gapCls = (Number(r.gap_pct) || 0) >= 0 ? 'chg-up' : 'chg-down';
+          const gapSign = (Number(r.gap_pct) || 0) >= 0 ? '+' : '';
+          const catalyst = (!r.catalyst || r.catalyst === 'unknown')
+            ? '—' : String(r.catalyst).replace(/_/g, ' ');
+          // Headline is external news text — escaped, and only ever an attribute.
+          const headline = r.catalyst_headline
+            ? ` title="${escapeHtml(r.catalyst_headline)}"` : '';
+          const flags = (Array.isArray(r.flags) ? r.flags : [])
+            .map(f => escapeHtml(String(f).replace(/_/g, ' '))).join(', ') || '—';
+          return `<tr>
+            <td class="movers-rank">${i + 1}</td>
+            <td class="movers-sym">${escapeHtml(r.ticker)}</td>
+            <td class="num ${gapCls}">${gapSign}${pmNum(r.gap_pct, 1, '%')}</td>
+            <td class="num">$${pmNum(r.last_price, 2)}</td>
+            <td class="num">${pmNum(r.rvol, 1, 'x')}</td>
+            <td class="num">${pmDollars(r.pm_dollar_volume)}</td>
+            <td${headline}>${escapeHtml(catalyst)}${r.catalyst_headline ? ' ℹ' : ''}</td>
+            <td>${escapeHtml(r.profile || '—')}</td>
+            <td class="num movers-score">${Math.round(Number(r.score) || 0)}</td>
+            <td>${flags}</td>
+          </tr>`;
+        }).join('');
+        table.hidden = false;
+        status.textContent = `${rows.length} candidate${rows.length === 1 ? '' : 's'} · `
+          + `${payload.profile_gates || 'standard'} gates · `
+          + `${payload.scanned_with_premarket_data || 0} scanned${truncNote}${asOfNote}. `
+          + 'Tap a catalyst for its headline. Research watchlist only.';
+      }
+      if (near.length) {
+        nearBox.hidden = false;
+        nearBox.innerHTML = '<b>Near-misses</b> (one gate failed): ' + near.map(r =>
+          `${escapeHtml(r.ticker)} (${escapeHtml(String(r.failed_gate || '').replace(/_/g, ' '))})`
+        ).join(' · ');
+      } else {
+        nearBox.hidden = true;
+      }
+    }
+    async function runPremarketScan() {
+      const status = $('pmStatus');
+      // Freeze every criterion control, not just the button: the universe and
+      // penny mode are snapshotted here, so leaving them live would let the
+      // visible settings describe different criteria than the shown results.
+      const controls = [$('pmRunButton'), $('pmPennyButton'), $('pmUniverse')];
+      const universe = $('pmUniverse').value;
+      const penny = state.pmPenny ? '&penny=true' : '';
+      controls.forEach(el => { el.disabled = true; });
+      status.textContent = 'Screening extended-hours gappers — up to a minute on a cold cache…';
+      try {
+        renderPremarket(await apiFetchJson(
+          `/api/scan-premarket?universe=${encodeURIComponent(universe)}&limit=50${penny}`
+        ));
+      } catch (error) {
+        if (!/Authorization/i.test(error.message || '')) {
+          // Clear BOTH result surfaces: near-misses left over from an earlier
+          // successful scan would read as results of the failed one.
+          $('pmTable').hidden = true;
+          $('pmNearMisses').hidden = true;
+          status.textContent = `Screener failed: ${error.message}`;
+        }
+      } finally {
+        controls.forEach(el => { el.disabled = false; });
+      }
+    }
+    function setPmPenny(on) {
+      state.pmPenny = on;
+      const btn = $('pmPennyButton');
+      btn.textContent = on ? 'Penny: On' : 'Penny: Auto';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
 
     // ── Live auto-refresh (Phase 6): the dashboard updates itself, no manual
@@ -4152,6 +4319,8 @@ HTML = '''
     });
     $('refreshHealthButton').addEventListener('click', loadProviderHealth);
     $('moversRefreshButton').addEventListener('click', () => loadMovers(false));
+    $('pmRunButton').addEventListener('click', runPremarketScan);
+    $('pmPennyButton').addEventListener('click', () => setPmPenny(!state.pmPenny));
     $('moversDeepButton').addEventListener('click', () => loadMovers(true));
     $('moversAutoButton').addEventListener('click', () => setMoversAuto(!state.moversAutoRefresh));
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);

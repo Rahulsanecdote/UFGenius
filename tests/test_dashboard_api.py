@@ -264,6 +264,31 @@ def test_ai_narrative_panel_present():
     assert "loadAiNarrative" in dashboard.HTML
 
 
+def test_premarket_panel_present():
+    # The pre-market screener panel, its penny toggle, and its loader are
+    # wired (manual run only — no auto-refresh timer may reference it).
+    assert 'id="premarketPanel"' in dashboard.HTML
+    for element_id in ("pmRunButton", "pmPennyButton", "pmUniverse",
+                       "pmTable", "pmBody", "pmStatus", "pmNearMisses"):
+        assert f'id="{element_id}"' in dashboard.HTML, element_id
+    assert "runPremarketScan" in dashboard.HTML
+    assert "setPmPenny" in dashboard.HTML
+    assert "/api/scan-premarket?universe=" in dashboard.HTML
+
+
+def test_premarket_scan_stays_manual_only():
+    # Every scan is a provider fan-out, so no timer may drive it — a future
+    # setInterval/setTimeout regression would otherwise pass the wiring test
+    # above (CodeRabbit). Tripwire, not a proof.
+    import re
+    assert not re.search(r"set(Interval|Timeout)\s*\([^;]{0,200}?runPremarketScan",
+                         dashboard.HTML, re.DOTALL)
+    # ...and it must not be added to the live-refresh loop or its visibility hook.
+    live_refresh = dashboard.HTML.split("function startLiveRefresh")
+    assert len(live_refresh) == 2, "startLiveRefresh moved — update this guard"
+    assert "runPremarketScan" not in live_refresh[1][:2000]
+
+
 @pytest.mark.parametrize("path", ["/api/metrics", "/api/attribution"])
 def test_new_endpoints_require_api_key_when_remote(client, monkeypatch, path):
     # The global /api/ guard authenticates both new P2.3 routes in remote mode.
