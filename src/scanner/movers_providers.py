@@ -28,6 +28,7 @@ than reporting a false failure.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -60,6 +61,12 @@ def _num(value) -> Optional[float]:
     try:
         out = float(value)
     except (TypeError, ValueError):
+        return None
+    # float() happily accepts NaN and infinity. A NaN price would make an
+    # unusable payload look usable (so the chain stops instead of falling
+    # through) AND slip past every downstream price filter, since every
+    # comparison against NaN is False (CodeRabbit).
+    if not math.isfinite(out):
         return None
     return out
 

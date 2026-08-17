@@ -268,3 +268,47 @@ class TestUnusablePayloadFallsThrough:
         assert [c.ticker for c in out] == ["AAA"]
         assert good_calls == ["gainers"]
         assert mv.last_source_health()["served_by"] == {"gainers": "good"}
+
+
+class TestNonFiniteNumbers:
+    """float() accepts NaN and infinity, and NaN defeats every comparison.
+
+    A NaN price would make an unusable payload look usable (stopping the chain
+    instead of falling through) and then slip past the min/max price filters,
+    since `nan < 1.0` and `nan > 100.0` are both False (CodeRabbit).
+    """
+
+    @pytest.mark.parametrize("bad", ["nan", "inf", "-inf", float("nan"), float("inf")])
+    def test_non_finite_values_are_rejected(self, bad):
+        assert mp._num(bad) is None
+
+    def test_a_non_finite_price_makes_the_row_unusable(self):
+        assert mp._row("AAA", float("nan"), 5.0) is None
+        assert mp._row("AAA", 10.0, float("inf")) is None
+
+    def test_a_payload_of_non_finite_rows_cannot_answer(self, monkeypatch):
+        _with(monkeypatch, _session([
+            {"symbol": "AAA", "price": "NaN", "changesPercentage": 5.0},
+        ]), FMP_KEY="k")
+        assert mp.fetch_fmp("gainers") is None
+
+    def test_a_non_finite_row_never_reaches_the_ranked_list(self, monkeypatch):
+        mixed, _ = _fake("mixed", ["gainers"], [
+            {"symbol": "GOOD", "price": 10.0, "changesPercentage": 20.0, "name": ""},
+            {"symbol": "NANP", "price": float("nan"), "changesPercentage": 20.0,
+             "name": ""},
+        ])
+        out = _discover(monkeypatch, [mixed])
+        assert [c.ticker for c in out] == ["GOOD"]
+
+
+def test_an_unknown_source_is_recorded_as_a_failure(monkeypatch):
+    # A typo in movers.sources must surface as a config error, not as a quiet
+    # market: with no health recorded the dashboard reports available:true.
+    monkeypatch.setattr(cfg, "MOVERS_SOURCES", ["typo_source"])
+    monkeypatch.setattr(cfg, "MOVERS_HALTS_ENABLED", False)
+    monkeypatch.setattr(cfg, "MOVERS_ENRICH_INTRADAY", False)
+    assert mv.fetch_market_movers() == []
+    health = mv.last_source_health()
+    assert health["failed"] == ["typo_source: unknown_source"]
+    assert health["succeeded"] == []

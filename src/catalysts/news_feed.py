@@ -86,11 +86,11 @@ _DILUTION_RE = re.compile(
     r"(\b(offering|registered direct|at-the-market|atm program|dilut\w*|"
     r"warrants?|reverse (stock )?split|shelf registration|"
     r"private placement|equity (line|purchase agreement|distribution agreement)|"
-    r"convertible (note|debenture|bond|preferred|security)s?|"
+    r"convertible (notes?|debentures?|bonds?|preferred|securit(y|ies))|"
     r"contingent value rights?|share issuance|registration statement|"
     r"prices? .{0,30}(public|direct) offering|"
-    r"issu\w+ .{0,25}(additional|new) shares|"
-    r"(additional|new) shares .{0,25}(per|to) (share|cvr|holder)|"
+    r"(issu\w+|grant\w+) .{0,25}(additional|new) shares|"
+    r"(additional|new) shares .{0,25}(per|to) (shares?|cvr|holders?|shareholders?)|"
     r"private investment in public equity|"
     # "CVR" needs a qualifier: bare \bCVR\b would flag CVR Energy's earnings
     # as a dilution event. Deliberately NOT matching the bare acronym.

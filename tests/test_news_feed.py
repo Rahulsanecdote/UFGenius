@@ -286,3 +286,20 @@ class TestDilutionInstruments:
             _h("Acme announces Shareholder Loyalty CVR Program"),
         ])
         assert result["tier"] == "dilution"
+
+
+class TestDilutionPlurals:
+    """Standard plural forms must match too — the singular-only patterns let
+    "convertible securities" and "grants new shares to shareholders" classify
+    as `none`, dropping the warning entirely (CodeRabbit)."""
+
+    @pytest.mark.parametrize("title", [
+        "Acme issues convertible securities",
+        "Acme announces convertible notes financing",
+        "Acme prices convertible debentures",
+        "Acme grants new shares to shareholders",
+        "Acme grants additional shares to holders",
+        "Acme issues new shares to shareholders",
+    ])
+    def test_plural_forms_are_dilution(self, title):
+        assert classify_headlines([_h(title)])["tier"] == "dilution", title

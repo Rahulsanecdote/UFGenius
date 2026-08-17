@@ -18,6 +18,7 @@ list and never raises.
 
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -104,9 +105,16 @@ class MoverCandidate:
 
 def _num(value):
     try:
-        return float(value)
+        out = float(value)
     except (TypeError, ValueError):
         return None
+    # Reject NaN/inf at the merge boundary too, not only in the adapters: this
+    # is where candidates are born, and a NaN price defeats every downstream
+    # filter (`nan < min` and `nan > max` are both False) so it would reach the
+    # ranked list intact. Defence at the layer that actually protects the list.
+    if not math.isfinite(out):
+        return None
+    return out
 
 
 def last_source_health() -> dict:
@@ -142,11 +150,15 @@ def _fetch_source(source: str) -> list[dict]:
     Never raises; records the outcome and the serving provider in the per-run
     health so a soft failure cannot pass for an empty market.
     """
-    if source not in _ENDPOINTS:
-        log.warning(f"movers: unknown source '{source}' — skipping")
-        return []
     health = _health()
     health["attempted"].append(source)
+    if source not in _ENDPOINTS:
+        # Record it: returning [] silently would let a typo in movers.sources
+        # reach the dashboard as a quiet market rather than a config error
+        # (CodeRabbit).
+        log.warning(f"movers: unknown source '{source}' — skipping")
+        health["failed"].append(f"{source}: unknown_source")
+        return []
 
     tried: list[str] = []
     for provider in provider_chain():
