@@ -43,11 +43,12 @@ def _patched(**cfgover):
     # Enrichment OFF for the discovery tests → hermetic (no intraday fetch); the
     # enrichment path has its own dedicated tests below.
     base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_PROVIDERS=["fmp"],
                 MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
                 MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False)
     base.update(cfgover)
     patches = [patch.object(cfg, k, v) for k, v in base.items()]
-    patches.append(patch("src.scanner.movers.get_retry_session", return_value=_mock_session()))
+    patches.append(patch("src.scanner.movers_providers.get_retry_session", return_value=_mock_session()))
     return patches
 
 
@@ -118,7 +119,9 @@ def test_graceful_on_request_error():
     session = MagicMock()
     session.get.side_effect = RuntimeError("network down")
     with patch.object(cfg, "FMP_KEY", "k"), \
-         patch("src.scanner.movers.get_retry_session", return_value=session):
+         patch.object(cfg, "MOVERS_PROVIDERS", ["fmp"]), \
+         patch.object(cfg, "MOVERS_HALTS_ENABLED", False), \
+         patch("src.scanner.movers_providers.get_retry_session", return_value=session):
         assert mv.fetch_market_movers() == []   # never raises
 
 
@@ -227,6 +230,7 @@ def _run_split(verified, **cfgover):
     unavailable). Returns (candidates by ticker, tickers that were verified).
     """
     base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_PROVIDERS=["fmp"],
                 MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
                 MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
                 MOVERS_SUSPECT_CHANGE_PCT=300.0)
@@ -347,6 +351,7 @@ def test_merge_keeps_the_price_from_the_row_that_won_the_change():
         "losers": [],
     }
     base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
+                MOVERS_PROVIDERS=["fmp"],
                 MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
                 MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
                 MOVERS_SUSPECT_CHANGE_PCT=300.0)
@@ -369,11 +374,11 @@ def test_merge_keeps_the_price_from_the_row_that_won_the_change():
 # rendering both as "nothing qualified".
 
 def _run_with(session_factory, **cfgover):
-    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers"], MOVERS_ENRICH_INTRADAY=False,
-                MOVERS_HALTS_ENABLED=False)
+    base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers"], MOVERS_PROVIDERS=["fmp"],
+                MOVERS_ENRICH_INTRADAY=False, MOVERS_HALTS_ENABLED=False)
     base.update(cfgover)
     ps = [patch.object(cfg, k, v) for k, v in base.items()]
-    ps.append(patch("src.scanner.movers.get_retry_session", session_factory))
+    ps.append(patch("src.scanner.movers_providers.get_retry_session", session_factory))
     for p in ps:
         p.start()
     try:
@@ -399,7 +404,7 @@ def test_exception_is_recorded_as_a_source_failure():
         raise RuntimeError("quota exceeded")
     assert _run_with(_boom) == []
     health = mv.last_source_health()
-    assert health["failed"] == ["gainers: RuntimeError"]
+    assert health["failed"] == ["gainers: no_provider_answered"]
     assert health["succeeded"] == []
     assert health["attempted"] == ["gainers"]
 
@@ -410,13 +415,13 @@ def test_non_list_payload_is_a_failure_not_an_empty_market():
     # look like a quiet market.
     assert _run_with(_json_session({"Error Message": "Limit Reach..."})) == []
     health = mv.last_source_health()
-    assert health["failed"] == ["gainers: unexpected_payload"]
+    assert health["failed"] == ["gainers: no_provider_answered"]
     assert health["succeeded"] == []
 
 
 def test_missing_key_is_recorded_as_a_failure():
     assert _run_with(_json_session([]), FMP_KEY="") == []
-    assert mv.last_source_health()["failed"] == ["gainers: no_api_key"]
+    assert mv.last_source_health()["failed"] == ["gainers: no_provider_configured"]
 
 
 def test_healthy_empty_source_is_a_success_not_a_failure():
@@ -464,4 +469,4 @@ def test_health_is_isolated_between_concurrent_runs():
         t.join()
 
     assert results["healthy"]["failed"] == []
-    assert results["failing"]["failed"] == ["gainers: RuntimeError"]
+    assert results["failing"]["failed"] == ["gainers: no_provider_answered"]

@@ -397,6 +397,11 @@ def test_movers_returns_ranked_list(client, monkeypatch):
         return fake
 
     monkeypatch.setattr("src.scanner.movers.fetch_market_movers", _fake_fetch)
+    # fetch_market_movers is stubbed, so it never resets the thread-local run
+    # health — pin it, or this reads whatever a previous test left behind.
+    monkeypatch.setattr("src.scanner.movers.last_source_health",
+                        lambda: {"attempted": ["gainers"], "succeeded": ["gainers"],
+                                 "failed": [], "served_by": {"gainers": "fmp"}})
     r = client.get("/api/movers?enrich=true&limit=25")
     assert r.status_code == 200
     data = r.get_json()

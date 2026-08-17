@@ -3673,7 +3673,13 @@ HTML = '''
       const degraded = payload.degraded
         ? ` ⚠️ incomplete — ${escapeHtml((payload.source_errors || []).join('; '))}`
         : '';
-      status.textContent = `${movers.length} movers · ${enrichedNote}.${degraded}`;
+      // Providers compute "movers" differently (universe, price/volume floors,
+      // SIP vs IEX), so when the chain falls back the character of the list
+      // changes. Name who served it rather than swapping silently.
+      const servedBy = (payload.source_health || {}).served_by || {};
+      const providers = [...new Set(Object.values(servedBy))];
+      const via = providers.length ? ` · via ${escapeHtml(providers.join(', '))}` : '';
+      status.textContent = `${movers.length} movers · ${enrichedNote}${via}.${degraded}`;
     }
 
     async function loadMovers(enrich = false) {
@@ -5054,20 +5060,18 @@ def api_scan_breakouts():
 
 @app.route("/api/movers")
 def api_movers():
-    """Ranked market-wide movers (MOVERS discovery). Needs FMP_KEY.
+    """Ranked market-wide movers (MOVERS discovery) via the provider chain.
 
     Returns the discovery + early-momentum ranking used by `bot.py --mode movers`
     — direction (long/short), the move, and the intraday signals behind the rank.
+
+    Availability is decided by the chain's own health, NOT by any single key: an
+    FMP-only precondition here would refuse to serve an operator running on
+    Alpaca or Polygon and defeat the fallback entirely (Codex P1).
     """
     try:
         from src.scanner.movers import fetch_market_movers, last_source_health
 
-        if not config.FMP_KEY:
-            return jsonify({
-                "available": False,
-                "reason": "Market movers need an FMP API key (set FMP_KEY).",
-                "movers": [],
-            })
         # Fast discovery-only by default; ?enrich=true adds the intraday
         # early-momentum ranking (one intraday fetch per candidate — slower).
         enrich = request.args.get("enrich", "false").strip().lower() in ("1", "true", "yes")
@@ -5084,11 +5088,12 @@ def api_movers():
         health = last_source_health()
         source_errors = health["failed"]
         if source_errors and not health["succeeded"]:
+            chain = ", ".join(str(p) for p in config.MOVERS_PROVIDERS) or "none"
             return jsonify({
                 "available": False,
-                "reason": ("Movers discovery source failed — "
-                           f"{'; '.join(source_errors)}. Check the FMP key and "
-                           "its daily quota."),
+                "reason": (f"Movers discovery unavailable — {'; '.join(source_errors)}. "
+                           f"Provider chain: {chain}. Check the keys for those "
+                           "providers, and FMP's daily quota if it is in the chain."),
                 "source_errors": source_errors,
                 "source_health": health,
                 "movers": [],
