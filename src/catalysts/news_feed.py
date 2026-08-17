@@ -259,7 +259,7 @@ def _fetch_newsapi(
             q=query,
             language="en",
             sort_by="publishedAt",
-            from_param=since.strftime("%Y-%m-%d"),
+            from_param=since.strftime("%Y-%m-%dT%H:%M:%S"),
             page_size=_MAX_HEADLINES,
         )
         out: list[NewsHeadline] = []
@@ -268,8 +268,9 @@ def _fetch_newsapi(
             if not title or not _newsapi_identity_ok(title, symbol, company_name):
                 continue
             published = _parse_ts(a.get("publishedAt"))
-            # from_param is date-granular, which silently widens the window
-            # back to midnight — enforce the precise cutoff locally (Codex P2).
+            # from_param carries second precision above, but the local cutoff
+            # stays as the guarantee — server-side filtering is not trusted
+            # to be exact (Codex P2 / CodeRabbit).
             if published is not None and published < since:
                 continue
             out.append(NewsHeadline(

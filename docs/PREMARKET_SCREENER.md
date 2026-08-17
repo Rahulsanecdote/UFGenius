@@ -119,6 +119,12 @@ which stay the single source of truth:
 - ADV backstop ← `penny.min_share_volume`; PM-session floors scale down
   (150K shares / $300K by default, tunable via `premarket.penny_overrides`)
 
+The rails **fail closed**: a ticker whose market cap or ADV the provider
+can't supply surfaces as a near-miss (`market_cap_unavailable` /
+`adv_unavailable`), never as a candidate — an unverifiable rail is a failed
+rail. (The standard profile keeps missing ADV fail-soft; its floors are a
+screen, not a hard-rail contract.)
+
 What the profile deliberately does **not** change: the scoring liquidity floor,
 the `fade_risk` / `crowded_micro_float` tagging, and every disclosure. In the
 penny band, most candidates will carry `below_liquidity_floor` and many will

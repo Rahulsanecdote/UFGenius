@@ -579,11 +579,26 @@ class TestPennyProfile:
         ok, reasons = passes_gates(shell, settings)
         assert not ok and "market_cap_below_min" in reasons
 
-    def test_unknown_market_cap_is_not_rejected(self):
+    def test_unknown_market_cap_fails_an_enabled_cap_gate(self):
+        # A positive cap floor is a hard rail: an unverifiable cap fails
+        # closed rather than skipping the gate (CodeRabbit).
         settings = dict(SETTINGS, min_market_cap=50_000_000)
-        snap = _snap(market_cap=None)
-        ok, reasons = passes_gates(snap, settings)
-        assert "market_cap_below_min" not in reasons
+        ok, reasons = passes_gates(_snap(market_cap=None), settings)
+        assert not ok
+        assert "market_cap_unavailable" in reasons
+
+    def test_unknown_market_cap_passes_when_no_floor_is_set(self):
+        ok, reasons = passes_gates(_snap(market_cap=None), SETTINGS)
+        assert ok and reasons == []
+
+    def test_unknown_adv_fails_closed_only_under_the_penny_profile(self):
+        penny = dict(SETTINGS, profile="penny")
+        ok, reasons = passes_gates(_snap(adv_20d=None), penny)
+        assert not ok
+        assert "adv_unavailable" in reasons
+        # Standard profile: missing ADV is routine provider noise, not a rail.
+        ok, reasons = passes_gates(_snap(adv_20d=None), SETTINGS)
+        assert ok and reasons == []
 
     def test_cap_gate_off_by_default(self):
         ok, reasons = passes_gates(_snap(market_cap=1_400_000), SETTINGS)

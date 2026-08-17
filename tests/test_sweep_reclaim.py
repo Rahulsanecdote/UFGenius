@@ -189,7 +189,7 @@ def _bar_rows(rows):
     lows = [r[1] for r in rows]
     closes = [r[2] for r in rows]
     vols = [r[3] for r in rows]
-    highs = [max(c, l) + 0.01 for c, l in zip(closes, lows)]
+    highs = [max(c, low) + 0.01 for c, low in zip(closes, lows)]
     return pd.DataFrame(
         {"Open": closes, "High": highs, "Low": lows, "Close": closes, "Volume": vols},
         index=pd.DatetimeIndex(idx),

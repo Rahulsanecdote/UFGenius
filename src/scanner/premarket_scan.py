@@ -389,11 +389,22 @@ def passes_gates(snap: PremarketSnapshot, settings: dict) -> tuple[bool, list[st
     if snap.pm_dollar_volume < float(settings.get("min_pm_dollar_volume", 1_000_000)):
         reasons.append("pm_dollar_volume_below_min")
     adv_floor = float(settings.get("min_adv_20d", 500_000))
-    if snap.adv_20d is not None and snap.adv_20d < adv_floor:
+    if snap.adv_20d is None:
+        # The penny profile's ADV floor is a hard rail — an unverifiable value
+        # must not pass it. The standard profile stays fail-soft: provider info
+        # gaps are routine there and the floor is a screen, not a rail.
+        if settings.get("profile") == "penny":
+            reasons.append("adv_unavailable")
+    elif snap.adv_20d < adv_floor:
         reasons.append("adv_below_min")
     cap_floor = float(settings.get("min_market_cap", 0))
-    if cap_floor > 0 and snap.market_cap is not None and snap.market_cap < cap_floor:
-        reasons.append("market_cap_below_min")
+    if cap_floor > 0:
+        # A positive cap floor is an explicit hard rail (penny profile sets
+        # $50M): unknown market cap fails closed, it doesn't skip the gate.
+        if snap.market_cap is None:
+            reasons.append("market_cap_unavailable")
+        elif snap.market_cap < cap_floor:
+            reasons.append("market_cap_below_min")
     return (not reasons), reasons
 
 
