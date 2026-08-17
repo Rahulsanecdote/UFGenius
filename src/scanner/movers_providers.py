@@ -74,6 +74,24 @@ def _row(symbol, price, change_pct, name="") -> Optional[dict]:
             "changesPercentage": change_pct, "name": str(name or "")}
 
 
+def _normalise(items: list, to_row: Callable[[dict], Optional[dict]]
+               ) -> Optional[list[dict]]:
+    """Map raw rows, distinguishing "empty" from "unusable".
+
+    A payload that carried rows but yielded none we can read is a schema or
+    entitlement change, i.e. the provider could NOT answer — returning `[]`
+    there would read as a quiet market and stop the chain, so the fallback
+    would never run (Codex P2). An actually-empty payload stays `[]`.
+    """
+    rows = [row for row in (to_row(it) for it in items if isinstance(it, dict))
+            if row is not None]
+    if items and not rows:
+        log.warning("movers: provider returned %d row(s) but none were usable "
+                    "— treating as a failure so the chain falls through", len(items))
+        return None
+    return rows
+
+
 # ── FMP (the incumbent) ──────────────────────────────────────────────────────
 
 def fetch_fmp(source: str) -> Optional[list[dict]]:
@@ -96,11 +114,9 @@ def fetch_fmp(source: str) -> Optional[list[dict]]:
         log.warning(f"movers/fmp {endpoint}: non-list payload "
                     f"({type(data).__name__}) — treating as a failure")
         return None
-    rows = [_row(it.get("symbol"), it.get("price"),
-                 it.get("changesPercentage", it.get("changePercentage")),
-                 it.get("name"))
-            for it in data if isinstance(it, dict)]
-    return [r for r in rows if r is not None]
+    return _normalise(data, lambda it: _row(
+        it.get("symbol"), it.get("price"),
+        it.get("changesPercentage", it.get("changePercentage")), it.get("name")))
 
 
 # ── Alpaca screener (keys already present for the broker/stream) ─────────────
@@ -144,9 +160,8 @@ def fetch_alpaca(source: str) -> Optional[list[dict]]:
     items = data.get(key)
     if not isinstance(items, list):
         return None
-    rows = [_row(it.get("symbol"), it.get("price"), it.get("percent_change"))
-            for it in items if isinstance(it, dict)]
-    return [r for r in rows if r is not None]
+    return _normalise(items, lambda it: _row(
+        it.get("symbol"), it.get("price"), it.get("percent_change")))
 
 
 # ── Polygon snapshot ─────────────────────────────────────────────────────────
@@ -169,16 +184,14 @@ def fetch_polygon(source: str) -> Optional[list[dict]]:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("tickers"), list):
         return None
-    rows = []
-    for it in data["tickers"]:
-        if not isinstance(it, dict):
-            continue
+    def _to_row(it: dict):
         day = it.get("day") if isinstance(it.get("day"), dict) else {}
         last = it.get("lastTrade") if isinstance(it.get("lastTrade"), dict) else {}
         # Prefer the last trade; fall back to the day bar's close.
         price = last.get("p") if last.get("p") is not None else day.get("c")
-        rows.append(_row(it.get("ticker"), price, it.get("todaysChangePerc")))
-    return [r for r in rows if r is not None]
+        return _row(it.get("ticker"), price, it.get("todaysChangePerc"))
+
+    return _normalise(data["tickers"], _to_row)
 
 
 @dataclass(frozen=True)

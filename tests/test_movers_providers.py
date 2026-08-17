@@ -227,3 +227,44 @@ class TestProviderChainResolution:
     ])
     def test_declared_support(self, name, sources):
         assert set(mp.provider_chain([name])[0].supports) == sources
+
+
+class TestUnusablePayloadFallsThrough:
+    """A payload with rows but none usable is a schema/entitlement change.
+
+    Returning [] there would read as a quiet market and STOP the chain, so the
+    fallback would never run (Codex P2). Partial damage still yields the good
+    rows — only a total loss counts as "could not answer".
+    """
+
+    def test_fmp_rows_all_malformed_cannot_answer(self, monkeypatch):
+        _with(monkeypatch, _session([{"sym": "AAA", "pct": 5.0}] * 3), FMP_KEY="k")
+        assert mp.fetch_fmp("gainers") is None
+
+    def test_alpaca_rows_all_malformed_cannot_answer(self, monkeypatch):
+        _with(monkeypatch, _session({"gainers": [{"symbol": "UP"}] * 3}),
+              ALPACA_API_KEY="k", ALPACA_SECRET_KEY="s")
+        assert mp.fetch_alpaca("gainers") is None
+
+    def test_polygon_rows_all_malformed_cannot_answer(self, monkeypatch):
+        _with(monkeypatch, _session({"tickers": [{"ticker": "AAA"}] * 3}),
+              POLYGON_KEY="k")
+        assert mp.fetch_polygon("gainers") is None
+
+    def test_partial_damage_keeps_the_usable_rows(self, monkeypatch):
+        _with(monkeypatch, _session([
+            {"symbol": "AAA", "price": 10.0, "changesPercentage": 5.0},
+            {"symbol": "BAD"},
+        ]), FMP_KEY="k")
+        assert [r["symbol"] for r in mp.fetch_fmp("gainers")] == ["AAA"]
+
+    def test_an_unusable_provider_falls_through_to_the_next(self, monkeypatch):
+        # End to end: Alpaca answers with rows it cannot parse, FMP serves.
+        broken = mp.MoversProvider(
+            "broken", lambda s: mp._normalise([{"junk": 1}], lambda it: None),
+            frozenset({"gainers"}), lambda: True)
+        good, good_calls = _fake("good", ["gainers"], _ROW)
+        out = _discover(monkeypatch, [broken, good])
+        assert [c.ticker for c in out] == ["AAA"]
+        assert good_calls == ["gainers"]
+        assert mv.last_source_health()["served_by"] == {"gainers": "good"}
