@@ -23,19 +23,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from src.scanner.movers_providers import provider_chain
 from src.utils import config
-from src.utils.http import get_retry_session
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-_FMP_URL = "https://financialmodelingprep.com/stable/{endpoint}"
-# Config source name -> FMP /stable endpoint.
-_ENDPOINTS = {
-    "gainers": "biggest-gainers",
-    "losers": "biggest-losers",
-    "most_actives": "most-actives",
-}
+# The valid discovery source names. Which provider serves each one is the
+# chain's business (src/scanner/movers_providers.py).
+_ENDPOINTS = frozenset({"gainers", "losers", "most_actives"})
 # Which direction a source implies before we look at the sign of the move.
 _SOURCE_DIRECTION = {"gainers": "long", "losers": "short"}
 _EASTERN = ZoneInfo("America/New_York")
@@ -51,7 +47,7 @@ _health_state = threading.local()
 def _health() -> dict:
     health = getattr(_health_state, "health", None)
     if health is None:
-        health = {"attempted": [], "succeeded": [], "failed": []}
+        health = {"attempted": [], "succeeded": [], "failed": [], "served_by": {}}
         _health_state.health = health
     return health
 
@@ -122,7 +118,10 @@ def last_source_health() -> dict:
     and, because successes are tracked too, to tell "everything failed" from
     "one source answered and legitimately had nothing".
     """
-    return {key: list(value) for key, value in _health().items()}
+    # Copy per type: `served_by` is a mapping, and list()-ing it would silently
+    # reduce it to its keys.
+    return {key: (dict(value) if isinstance(value, dict) else list(value))
+            for key, value in _health().items()}
 
 
 def last_source_errors() -> list[str]:
@@ -131,45 +130,54 @@ def last_source_errors() -> list[str]:
 
 
 def _fetch_source(source: str) -> list[dict]:
-    """Fetch one FMP mover list. Returns [] on no key / any error (never raises).
+    """Fetch one mover list, walking the configured provider chain.
 
-    Records its outcome in the per-run health so a soft failure cannot pass for
-    an empty market.
+    The first provider that actually answers wins. An **empty** answer is a
+    real answer — a quiet market — and stops the chain; only a provider that
+    *cannot* answer (no key, HTTP error, undocumented payload) falls through.
+    That distinction is why the adapters return None-vs-list rather than just a
+    list: FMP replies to an exhausted quota with HTTP 200 and a JSON object, so
+    "looks successful but isn't" has to be detectable.
+
+    Never raises; records the outcome and the serving provider in the per-run
+    health so a soft failure cannot pass for an empty market.
     """
-    endpoint = _ENDPOINTS.get(source)
-    if endpoint is None:
+    if source not in _ENDPOINTS:
         log.warning(f"movers: unknown source '{source}' — skipping")
         return []
     health = _health()
     health["attempted"].append(source)
-    key = config.FMP_KEY
-    if not key:
-        log.debug("movers: FMP_KEY not set — discovery unavailable")
-        health["failed"].append(f"{source}: no_api_key")
-        return []
-    try:
-        resp = get_retry_session().get(
-            _FMP_URL.format(endpoint=endpoint),
-            params={"apikey": key},
-            timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:  # network / JSON / HTTP — discovery must never break
-        log.warning(f"movers: FMP {endpoint} failed ({type(exc).__name__})")
-        health["failed"].append(f"{source}: {type(exc).__name__}")
-        return []
-    if not isinstance(data, list):
-        # THE quota case: FMP answers HTTP 200 with a JSON *object* such as
-        # {"Error Message": "Limit Reach..."}, so raise_for_status passes and
-        # nothing throws. Treating that as an empty list is what made an
-        # exhausted quota look like a quiet market (CodeRabbit).
-        log.warning(f"movers: FMP {endpoint} returned a non-list payload "
-                    f"({type(data).__name__}) — treating as a source failure")
-        health["failed"].append(f"{source}: unexpected_payload")
-        return []
-    health["succeeded"].append(source)
-    return data
+
+    tried: list[str] = []
+    for provider in provider_chain():
+        if source not in provider.supports:
+            continue          # not a failure — this provider never serves it
+        try:
+            if not provider.configured():
+                continue      # no credentials — skipped, not failed
+        except Exception:
+            continue
+        tried.append(provider.name)
+        try:
+            rows = provider.fetch(source)
+        except Exception as exc:  # an adapter bug must not break discovery
+            log.warning(f"movers: provider {provider.name} raised on {source} "
+                        f"({type(exc).__name__})")
+            rows = None
+        if rows is None:
+            continue          # could not answer — try the next provider
+        health["succeeded"].append(source)
+        health["served_by"][source] = provider.name
+        if len(tried) > 1:
+            log.info(f"movers: {source} served by fallback provider "
+                     f"'{provider.name}' after {', '.join(tried[:-1])} could not")
+        return rows
+
+    reason = "no_provider_answered" if tried else "no_provider_configured"
+    log.warning(f"movers: {source} unavailable — {reason} "
+                f"(tried: {', '.join(tried) or 'none'})")
+    health["failed"].append(f"{source}: {reason}")
+    return []
 
 
 def _verified_change_pct(ticker: str, price: float) -> float | None:
@@ -351,7 +359,8 @@ def fetch_market_movers(
     enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else enrich
 
     # Fresh health for this run, on this thread only.
-    _health_state.health = {"attempted": [], "succeeded": [], "failed": []}
+    _health_state.health = {"attempted": [], "succeeded": [], "failed": [],
+                            "served_by": {}}
     merged: dict[str, MoverCandidate] = {}
     for source in sources:
         for row in _fetch_source(source):

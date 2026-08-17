@@ -74,10 +74,28 @@ class NewsHeadline:
 # strong catalyst degrades to a lower tier, which only understates a
 # candidate; a false "strong" would overstate one.
 
+# Dilution is the one tier where the conservative direction INVERTS. Missing a
+# strong catalyst merely understates a candidate; missing a dilution event
+# removes a warning, so these patterns are deliberately broader. They cover the
+# instrument regardless of how the press release frames it — AiRWA/OSRH on
+# 2026-08-17 announced a "Shareholder Loyalty CVR Program" granting up to five
+# additional shares per share (a ~6x share count) and the original patterns read
+# it as `none`, i.e. no catalyst and no warning, because none of the words
+# "offering", "warrant" or "dilution" appear anywhere in it.
 _DILUTION_RE = re.compile(
-    r"\b(offering|registered direct|at-the-market|atm program|dilut\w*|"
-    r"warrants?|reverse (stock )?split|shelf registration|prices? .{0,30}"
-    r"(public|direct) offering)\b",
+    r"(\b(offering|registered direct|at-the-market|atm program|dilut\w*|"
+    r"warrants?|reverse (stock )?split|shelf registration|"
+    r"private placement|equity (line|purchase agreement|distribution agreement)|"
+    r"convertible (note|debenture|bond|preferred|security)s?|"
+    r"contingent value rights?|share issuance|registration statement|"
+    r"prices? .{0,30}(public|direct) offering|"
+    r"issu\w+ .{0,25}(additional|new) shares|"
+    r"(additional|new) shares .{0,25}(per|to) (share|cvr|holder)|"
+    r"private investment in public equity|"
+    # "CVR" needs a qualifier: bare \bCVR\b would flag CVR Energy's earnings
+    # as a dilution event. Deliberately NOT matching the bare acronym.
+    r"cvr (program|rights?|holders?|record date|tier)|"
+    r"pipe (financing|deal|transaction|offering))\b)",
     re.IGNORECASE,
 )
 # Negated/adverse forms: a headline matching this can NEVER classify as

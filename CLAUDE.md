@@ -325,6 +325,24 @@ pytest --cov=src       # coverage
   Explicitly **not prediction** — it reports that a catalyst was published
   sooner than a price-derived scanner can notice the consequence; the alert text
   says so. Discovery/alerting only; fail-soft everywhere.
+- **Movers provider chain** (`src/scanner/movers_providers.py`, config
+  `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
+  FMP-only, so an exhausted daily quota took the intraday path down entirely.
+  Each source now walks the chain and the **first provider that answers wins**.
+  The adapters return `list`-vs-`None` on purpose: an **empty list is a real
+  answer** (a quiet market) and stops the chain, while `None` means "could not
+  answer" (no key, HTTP error, or a payload the API doesn't document — FMP
+  replies to an exhausted quota with HTTP 200 and a JSON *object*, so
+  "successful-looking but broken" has to be detectable). Providers declare the
+  sources they support — Alpaca's screener has no price on most-actives rows,
+  Polygon's snapshot has no most-actives endpoint, so both serve gainers/losers
+  only and FMP alone covers `most_actives` — and an unsupported or unconfigured
+  provider is *skipped*, never counted as a failure, which is why the health
+  reason distinguishes `no_provider_configured` from `no_provider_answered`.
+  Because providers compute "movers" differently (universe, floors, SIP vs
+  IEX), the serving provider is recorded per source in `served_by` and named in
+  the dashboard — a fallback changes the character of the list, so it is
+  disclosed rather than swapped silently.
 - **Discovery-source health** (`movers.last_source_errors()`): every fetcher
   fails soft to `[]`, so a dead FMP key or an exhausted quota used to render
   identically to a quiet market ("no movers cleared the filters"). Failures are

@@ -3673,7 +3673,13 @@ HTML = '''
       const degraded = payload.degraded
         ? ` ⚠️ incomplete — ${escapeHtml((payload.source_errors || []).join('; '))}`
         : '';
-      status.textContent = `${movers.length} movers · ${enrichedNote}.${degraded}`;
+      // Providers compute "movers" differently (universe, price/volume floors,
+      // SIP vs IEX), so when the chain falls back the character of the list
+      // changes. Name who served it rather than swapping silently.
+      const servedBy = (payload.source_health || {}).served_by || {};
+      const providers = [...new Set(Object.values(servedBy))];
+      const via = providers.length ? ` · via ${escapeHtml(providers.join(', '))}` : '';
+      status.textContent = `${movers.length} movers · ${enrichedNote}${via}.${degraded}`;
     }
 
     async function loadMovers(enrich = false) {

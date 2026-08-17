@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from src.catalysts import news_feed
 from src.catalysts.news_feed import (
     NewsHeadline,
@@ -235,3 +237,52 @@ class TestYfinanceShapes:
         ])
         items = news_feed._fetch_yfinance("ACME", now - timedelta(hours=36))
         assert items == []
+
+
+# ── dilution: share-issuance programs beyond plain offerings ─────────────────
+#
+# Dilution is the one tier where the conservative direction inverts: missing a
+# strong catalyst understates a candidate, but missing a dilution event removes
+# a WARNING. OSRH announced a "Shareholder Loyalty CVR Program" granting up to
+# five additional shares per share — a ~6x share count — and the original
+# patterns read it as `none`, because "offering"/"warrant"/"dilution" appear
+# nowhere in it.
+
+class TestDilutionInstruments:
+    @pytest.mark.parametrize("title", [
+        "OSR Health announces Shareholder Loyalty CVR Program",
+        "Acme grants up to five additional shares per CVR",
+        "Acme announces contingent value rights distribution",
+        "CVR record date set for August 14",
+        "Acme enters private placement with institutional investors",
+        "Acme prices $20M convertible notes offering",
+        "Acme announces convertible preferred financing",
+        "Acme closes PIPE financing",
+        "Acme files registration statement for resale",
+        "Acme issues additional shares to fund operations",
+        "Acme announces share issuance to settle debt",
+    ])
+    def test_share_issuance_programs_are_dilution(self, title):
+        assert classify_headlines([_h(title)])["tier"] == "dilution", title
+
+    @pytest.mark.parametrize("title", [
+        # A company whose NAME starts with CVR must not be flagged: a bare
+        # \bCVR\b pattern would call CVR Energy's earnings a dilution event.
+        "CVR Energy reports fourth quarter results",
+        "CVR Partners declares distribution",
+        # "PIPE" is a real word in the energy/industrial world.
+        "Acme completes pipeline expansion",
+        "Acme awarded pipe fabrication contract",
+        # A cash dividend returns capital; it does not issue shares.
+        "Acme declares quarterly cash dividend",
+    ])
+    def test_lookalikes_are_not_flagged_as_dilution(self, title):
+        assert classify_headlines([_h(title)])["tier"] != "dilution", title
+
+    def test_dilution_still_outranks_a_strong_catalyst(self):
+        # The share-issuance news IS the story, however good the other headline.
+        result = classify_headlines([
+            _h("FDA approves Acme's lead drug"),
+            _h("Acme announces Shareholder Loyalty CVR Program"),
+        ])
+        assert result["tier"] == "dilution"
