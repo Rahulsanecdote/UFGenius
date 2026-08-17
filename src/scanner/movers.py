@@ -39,6 +39,9 @@ _ENDPOINTS = {
 _SOURCE_DIRECTION = {"gainers": "long", "losers": "short"}
 _EASTERN = ZoneInfo("America/New_York")
 
+# Sources that errored during the current discovery run — see last_source_errors.
+_last_source_errors: list[str] = []
+
 
 @dataclass
 class MoverCandidate:
@@ -97,6 +100,16 @@ def _num(value):
         return None
 
 
+def last_source_errors() -> list[str]:
+    """Sources that failed during the most recent discovery run.
+
+    Without this an upstream failure is indistinguishable from a quiet market:
+    every fetcher fails soft to [], so a dead key or an exhausted quota renders
+    as "no movers cleared the filters". Callers use this to say which it was.
+    """
+    return list(_last_source_errors)
+
+
 def _fetch_source(source: str) -> list[dict]:
     """Fetch one FMP mover list. Returns [] on no key / any error (never raises)."""
     endpoint = _ENDPOINTS.get(source)
@@ -118,6 +131,7 @@ def _fetch_source(source: str) -> list[dict]:
         return data if isinstance(data, list) else []
     except Exception as exc:  # network / JSON / HTTP — discovery must never break
         log.warning(f"movers: FMP {endpoint} failed ({type(exc).__name__})")
+        _last_source_errors.append(f"{source}: {type(exc).__name__}")
         return []
 
 
@@ -299,6 +313,7 @@ def fetch_market_movers(
     include_short = config.MOVERS_INCLUDE_SHORT if include_short_setups is None else include_short_setups
     enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else enrich
 
+    _last_source_errors.clear()
     merged: dict[str, MoverCandidate] = {}
     for source in sources:
         for row in _fetch_source(source):

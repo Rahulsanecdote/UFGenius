@@ -20,6 +20,7 @@ from __future__ import annotations
 import time
 
 from src.alerts.telegram_alert import send_text_alert
+from src.catalysts.catalyst_alerts import CatalystAlerter
 from src.scanner.intraday_scan import is_scan_window
 from src.scanner.movers import fetch_market_movers
 from src.scanner.movers_alerts import MoversAlerter
@@ -44,6 +45,7 @@ def run_worker(
     discover=None,
     alerter: MoversAlerter | None = None,
     monitor: MoversMonitor | None = None,
+    catalyst_alerter=_USE_DEFAULT,
     scan_window=None,
     send=None,
     state: MoversWorkerState | None = None,
@@ -68,6 +70,8 @@ def run_worker(
     discover = discover or fetch_market_movers
     alerter = alerter or MoversAlerter()
     monitor = monitor or MoversMonitor()
+    if catalyst_alerter is _USE_DEFAULT:
+        catalyst_alerter = CatalystAlerter() if config.CATALYST_ALERTS_ENABLED else None
     scan_window = scan_window if scan_window is not None else is_scan_window
     send = send or send_text_alert
     state = state if state is not None else MoversWorkerState.load_default()
@@ -82,7 +86,8 @@ def run_worker(
     hours_only = bool(config.MOVERS_WORKER_MARKET_HOURS_ONLY)
     min_score = float(config.MOVERS_ALERTS_MIN_SCORE)
 
-    stats = {"cycles": 0, "discoveries": 0, "alerts": 0, "invalidations": 0}
+    stats = {"cycles": 0, "discoveries": 0, "alerts": 0, "invalidations": 0,
+             "catalyst_alerts": 0}
     cycle = 0
     last_movers: list | None = None
     try:
@@ -93,6 +98,13 @@ def run_worker(
             try:
                 window_open = (not hours_only) or bool(scan_window())
                 if window_open:
+                    # The wire runs EVERY cycle, not on the rediscovery cadence:
+                    # it is one request for the whole watchlist, and its whole
+                    # point is to beat the price-derived path to the news.
+                    if catalyst_alerter is not None:
+                        news_fired = catalyst_alerter.poll(send=True)
+                        stats["catalyst_alerts"] += len(news_fired)
+                        state.record_alerts(news_fired)
                     # Re-discover on a slower cadence (it is the expensive step);
                     # monitor every cycle so invalidations are timely.
                     if (cycle - 1) % rediscover_every == 0:

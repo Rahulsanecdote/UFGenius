@@ -438,3 +438,44 @@ def test_movers_worker_reports_published_state(client, monkeypatch, tmp_path):
     assert data["available"] is True and data["live"] is True
     assert data["cycle"] == 7 and data["watching_count"] == 1
     assert data["watching"][0]["ticker"] == "NBIS"
+
+
+def test_movers_reports_a_failed_discovery_source(client, monkeypatch):
+    # A dead key / exhausted quota must not render as "no movers qualified".
+    monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
+    monkeypatch.setattr("src.scanner.movers.fetch_market_movers",
+                        lambda **kwargs: [])
+    monkeypatch.setattr("src.scanner.movers.last_source_errors",
+                        lambda: ["gainers: HTTPError"])
+    payload = client.get("/api/movers").get_json()
+    assert payload["available"] is False
+    assert "gainers: HTTPError" in payload["reason"]
+    assert "quota" in payload["reason"].lower()
+
+
+def test_movers_flags_a_partial_source_failure_as_degraded(client, monkeypatch):
+    # Some rows came back, but the list is incomplete — say so rather than
+    # presenting it as the whole market.
+    class _M:
+        def as_dict(self):
+            return {"ticker": "AAA", "price": 1.0, "change_pct": 5.0,
+                    "direction": "long", "score": 50}
+        enriched = False
+    monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
+    monkeypatch.setattr("src.scanner.movers.fetch_market_movers",
+                        lambda **kwargs: [_M()])
+    monkeypatch.setattr("src.scanner.movers.last_source_errors",
+                        lambda: ["losers: Timeout"])
+    payload = client.get("/api/movers").get_json()
+    assert payload["available"] is True
+    assert payload["degraded"] is True
+    assert payload["source_errors"] == ["losers: Timeout"]
+
+
+def test_movers_is_not_degraded_when_all_sources_are_healthy(client, monkeypatch):
+    monkeypatch.setattr(dashboard.config, "FMP_KEY", "k")
+    monkeypatch.setattr("src.scanner.movers.fetch_market_movers", lambda **kwargs: [])
+    monkeypatch.setattr("src.scanner.movers.last_source_errors", lambda: [])
+    payload = client.get("/api/movers").get_json()
+    assert payload["available"] is True
+    assert payload["degraded"] is False

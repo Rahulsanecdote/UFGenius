@@ -115,6 +115,16 @@ MOVERS_SUSPECT_CHANGE_PCT: float = (
 )
 MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
 
+_CATALYST_ALERTS: dict = _MOVERS.get("catalyst_alerts", {}) if isinstance(_MOVERS, dict) else {}
+CATALYST_ALERTS_ENABLED: bool = env_bool(
+    "CATALYST_ALERTS_ENABLED", bool(_CATALYST_ALERTS.get("enabled", False)))
+CATALYST_ALERTS_UNIVERSE: str = str(_CATALYST_ALERTS.get("universe", "watchlist"))
+CATALYST_ALERTS_TIERS: list = list(_CATALYST_ALERTS.get("tiers", ["strong"]))
+CATALYST_ALERTS_LOOKBACK_SEC: float = _as_float(_CATALYST_ALERTS.get("lookback_sec", 300), 300.0)
+CATALYST_ALERTS_DEDUP_TTL_SEC: float = _as_float(_CATALYST_ALERTS.get("dedup_ttl_sec", 3600), 3600.0)
+CATALYST_ALERTS_MAX_PER_RUN: int = _as_int(_CATALYST_ALERTS.get("max_per_run", 5), 5)
+CATALYST_ALERTS_SUPPRESS_HALTED: bool = bool(_CATALYST_ALERTS.get("suppress_halted", True))
+
 _MOVERS_HALTS: dict = _MOVERS.get("halts", {}) if isinstance(_MOVERS, dict) else {}
 MOVERS_HALTS_ENABLED: bool = env_bool("MOVERS_HALTS_ENABLED", bool(_MOVERS_HALTS.get("enabled", True)))
 MOVERS_HALT_SUPPRESS_ALERTS: bool = bool(_MOVERS_HALTS.get("suppress_alerts", True))
