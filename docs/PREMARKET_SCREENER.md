@@ -27,7 +27,7 @@ backtest, **[C]** practitioner convention (folklore until measured).
 | Gap size (banded) | 0.20 | **[B] Non-monotonic.** Small gaps fill (70–93%); moderate catalyst-backed gaps persist; extreme gaps buy *variance*, not mean (100–150% small-cap gappers average −32% high-to-close while being 3× likelier to squeeze). Score peaks over a moderate band and decays beyond it. | [QuantifiedStrategies gap-fill backtests](https://www.quantifiedstrategies.com/gap-fill-trading-strategies/); [SmallCapLab research](https://www.smallcaplab.com/research) (n≈2,350); Bulkowski gap studies |
 | Pre-market dollar volume | 0.15 | **[C]** Mechanically sound. The honest liquidity measure — normalizes across price; a $2 stock on 100K shares is $200K of liquidity. Floors are consensus practice. | Trade-Ideas DV filter docs; scanner-vendor guides |
 | Float rotation (PM vol ÷ float) | 0.15 | **[C] Supply-normalized demand.** Rotation ≥1.0 = holder base turned over; 0.25–0.5× pre-market on a small float is treated as exceptional. Finviz encodes it as a first-class filter (`sh_curvol_o100sf`). Mechanism sound; band edges unmeasured. | CenterPoint/Lightspeed float-rotation guides; Dux methodology writeups |
-| Catalyst (earnings) | 0.15 | **[A] The cleanest divider in the literature** — news-backed shocks drift (PEAD ≈ +6%/60d top-vs-bottom quintile), no-news shocks revert (~9.6% of the shock given back), strongest in small caps. We can only *observe* earnings offline, so catalyst is known/unknown — unknown is neutral, never scored as "no news". | Savor JFE 2012; Pritamani & Singal 2001; Chan JFE 2003; PEAD literature ([Quantpedia](https://quantpedia.com/strategies/post-earnings-announcement-effect)) |
+| Catalyst (earnings + news feed) | 0.15 | **[A] The cleanest divider in the literature** — news-backed shocks drift (PEAD ≈ +6%/60d top-vs-bottom quintile), no-news shocks revert (~9.6% of the shock given back), strongest in small caps. Coverage: the earnings calendar plus a keyword-classified headline feed (`src/catalysts/news_feed.py`, Alpaca News → yfinance → NewsAPI) tiered strong / moderate / weak / dilution; the tier score map is `catalyst_scores` in config. Unknown stays neutral — never scored as "no news". | Savor JFE 2012; Pritamani & Singal 2001; Chan JFE 2003; PEAD literature ([Quantpedia](https://quantpedia.com/strategies/post-earnings-announcement-effect)) |
 
 ### The liquidity floor: RVOL's sign is conditional
 
@@ -103,6 +103,40 @@ common home-scanner bug. Two clamps keep the ratio honest:
   from the configured providers — not that nothing is happening. Per-row
   `data_notes` carry the degradations that applied.
 
+## Penny profile (`--penny`, or automatic with penny mode on)
+
+For low-priced intraday trading the standard gates are calibrated against you —
+the $10 liquidity floor and $1M PM dollar-volume bar exclude the whole penny
+band. `--mode premarket-scan --penny` (implied when `penny.enabled` /
+`ALLOW_PENNY_STOCKS` is on) swaps the **gates** for the `penny:` hard rails,
+which stay the single source of truth:
+
+- price band ← `penny.min_price`–`penny.max_price` ($0.50–$10 default)
+- **market-cap floor ← `penny.min_market_cap` ($50M)** — the sub-$50M
+  pump-and-dump zone stays cut, exactly as penny mode intends. A shell at a
+  $1.4M cap topping the gainers list fails this rail no matter how loud the
+  move is.
+- ADV backstop ← `penny.min_share_volume`; PM-session floors scale down
+  (150K shares / $300K by default, tunable via `premarket.penny_overrides`)
+
+The rails **fail closed**: a ticker whose market cap or ADV the provider
+can't supply surfaces as a near-miss (`market_cap_unavailable` /
+`adv_unavailable`), never as a candidate — an unverifiable rail is a failed
+rail. (The standard profile keeps missing ADV fail-soft; its floors are a
+screen, not a hard-rail contract.)
+
+What the profile deliberately does **not** change: the scoring liquidity floor,
+the `fade_risk` / `crowded_micro_float` tagging, and every disclosure. In the
+penny band, most candidates will carry `below_liquidity_floor` and many will
+tag `fade_risk` — that is the measured base rate for this cohort, and the
+labels are the information: they tell you which side of the 71.5%-fade
+statistic each name sits on. Discovery is broad; the labels stay strict.
+
+```bash
+python bot.py --mode premarket-scan --penny --universe CUSTOM
+GET /api/scan-premarket?penny=true
+```
+
 ## Timing
 
 One static early scan is structurally weak: most catalysts drop 6:00–8:00 ET,
@@ -127,16 +161,35 @@ floor, gap-band knots, composite `weights`, saturation scales, and the profile
 thresholds. Defaults encode the consensus/evidence values above; none of them
 are validated alpha, and the weights exist to be re-examined — not believed.
 
-## Known limits / future work
+## The news catalyst feed
 
-- **Catalyst coverage is earnings-only** (P1.4 calendar). No news/FDA/M&A feed
-  → `catalyst: unknown` dominates; a news-API integration would upgrade the
-  strongest factor in the stack.
+`premarket.news` (default on, fail-soft) fetches recent headlines — Alpaca News
+API (existing keys, real-time) → yfinance (keyless) → NewsAPI — and classifies
+them with a **deterministic keyword taxonomy**:
+
+| Tier | Examples | Effect |
+|---|---|---|
+| `strong` | earnings beat / raised guidance, FDA approval / met endpoint, M&A, contract award, analyst upgrade | Full catalyst weight; counts toward `continuation` |
+| `moderate` | earnings mention, investor day, coverage initiation, conference | Half weight (default) |
+| `weak` | "why is X soaring" churn, unusual-volume listicles, watchlist pieces | No weight — the no-news-pump profile that reverts |
+| `dilution` | offering / registered direct / warrants / reverse split | **Not a catalyst**: sets the `dilution_news` flag (outranks every other tier — the offering IS the story) |
+
+The earnings-calendar hit always takes precedence (it is the verified event);
+the winning headline is exported per row (`catalyst_headline`) as the receipt a
+human can check. Three honesty notes: the classifier is a **heuristic, not
+verification** — patterns are deliberately conservative, so a missed strong
+catalyst degrades a candidate rather than inflating one; provider coverage is
+best-effort, so `unknown` still never means "no news"; and headline text is
+untrusted input used for classification only, never executed or displayed
+unescaped.
+
+## Known limits / future work
 - **No spread gate** — needs quote (bid/ask) data; the one open-source scanner
   with a spread filter gates at ≤0.30% of midpoint, and pre-market spreads are
   exactly where that matters. Add when a quotes source lands.
-- **No dilution/overhang flag** — an active S-3/ATM shelf is a measured
-  bearish overhang for small-cap gappers; needs an EDGAR integration.
+- **Dilution detection is headline-grade only** — the `dilution_news` flag
+  catches announced offerings in the wire; an active-but-quiet S-3/ATM shelf
+  still needs an EDGAR integration to see.
 - **No halt/LULD awareness.**
 - **Validation pathway:** the ranking's actual predictive value is an empirical
   question. The honest test is an event study through `--mode

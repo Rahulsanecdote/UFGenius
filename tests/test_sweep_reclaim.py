@@ -172,3 +172,153 @@ def test_producer_no_sweep_candidate_when_disabled(monkeypatch):
         ["AAA"], now=_FRAME_LAST, fetch=lambda t, interval=None: f
     )
     assert "sweep" not in {c.kind for c in cands}
+
+
+# ── level-anchored variant + entry window (opt-in; defaults byte-preserving) ──
+#
+# Fixtures here are ET-aware: naive-UTC index, June dates ⇒ ET = UTC−4, so
+# 13:30 UTC = 09:30 ET. Compact detector params are monkeypatched so multi-day
+# frames stay small.
+
+from src.signals.sweep_reclaim import _anchored_levels
+
+
+def _bar_rows(rows):
+    """Frame from (naive-UTC 'YYYY-MM-DD HH:MM', low, close, volume) rows."""
+    idx = [pd.Timestamp(t) for t, *_ in rows]
+    lows = [r[1] for r in rows]
+    closes = [r[2] for r in rows]
+    vols = [r[3] for r in rows]
+    highs = [max(c, low) + 0.01 for c, low in zip(closes, lows)]
+    return pd.DataFrame(
+        {"Open": closes, "High": highs, "Low": lows, "Close": closes, "Volume": vols},
+        index=pd.DatetimeIndex(idx),
+    )
+
+
+def _compact(monkeypatch, *, anchors=None, win=("", "")):
+    monkeypatch.setattr(config, "SWEEP_LOOKBACK_BARS", 4)
+    monkeypatch.setattr(config, "SWEEP_RECLAIM_WINDOW_BARS", 2)
+    monkeypatch.setattr(config, "SWEEP_MIN_SESSION_BARS", 6)
+    monkeypatch.setattr(config, "SWEEP_LEVEL_ANCHORS", anchors or [])
+    monkeypatch.setattr(config, "SWEEP_ENTRY_WINDOW_START", win[0])
+    monkeypatch.setattr(config, "SWEEP_ENTRY_WINDOW_END", win[1])
+
+
+def _pdl_frame():
+    """Prior-day RTH low 9.50; today swing ref lows 9.80; wick 9.45; close 9.55.
+
+    Close reclaims the PDL (9.50) but NOT the swing low (9.80) — so the swing
+    path reads breakdown while the PDL anchor reads a valid sweep-reclaim.
+    """
+    rows = [
+        # previous session (RTH, 2023-05-31): establishes PDL = 9.50
+        ("2023-05-31 13:30", 9.55, 9.90, 500_000),
+        ("2023-05-31 15:00", 9.50, 9.85, 500_000),
+        ("2023-05-31 19:55", 9.60, 9.80, 500_000),
+        # today: 4 ref bars (lookback), lows at 9.80
+        ("2023-06-01 13:30", 9.80, 10.00, 500_000),
+        ("2023-06-01 13:35", 9.82, 10.00, 500_000),
+        ("2023-06-01 13:40", 9.80, 10.00, 500_000),
+        ("2023-06-01 13:45", 9.81, 10.00, 500_000),
+        # recent window (2 bars): sweep to 9.45, reclaim close 9.55
+        ("2023-06-01 13:50", 9.45, 9.47, 500_000),
+        ("2023-06-01 13:55", 9.46, 9.55, 1_500_000),
+    ]
+    return _bar_rows(rows)
+
+
+class TestLevelAnchors:
+    def test_defaults_report_swing_source(self):
+        d = evaluate_sweep_reclaim(_sweep_reclaim_frame())
+        assert d["sweep"]["level_source"] == "swing"
+
+    def test_pdl_only_reclaim_holds_without_anchors(self, monkeypatch):
+        _compact(monkeypatch)
+        d = evaluate_sweep_reclaim(_pdl_frame())
+        assert d["signal"] == "HOLD"
+        assert any("not reclaimed" in r for r in d["reasons"])
+
+    def test_pdl_anchor_fires_and_discloses_source(self, monkeypatch):
+        _compact(monkeypatch, anchors=["pdl"])
+        d = evaluate_sweep_reclaim(_pdl_frame())
+        assert d["enter"]
+        assert d["sweep"]["level_source"] == "pdl"
+        assert d["sweep"]["swing_low"] == pytest.approx(9.50)  # holds the PDL value
+        assert any("PDL level" in r for r in d["reasons"])
+
+    def test_pml_anchor_from_todays_premarket(self, monkeypatch):
+        _compact(monkeypatch, anchors=["pml"])
+        rows = [
+            # today's pre-market (08:00–09:25 ET = 12:00–13:25 UTC): PML = 9.40
+            ("2023-06-01 12:00", 9.42, 9.60, 100_000),
+            ("2023-06-01 12:30", 9.40, 9.58, 100_000),
+            # RTH ref bars, lows 9.80
+            ("2023-06-01 13:30", 9.80, 10.00, 500_000),
+            ("2023-06-01 13:35", 9.82, 10.00, 500_000),
+            ("2023-06-01 13:40", 9.80, 10.00, 500_000),
+            ("2023-06-01 13:45", 9.81, 10.00, 500_000),
+            # recent window: sweep to 9.35, reclaim close 9.45 (> PML, < swing)
+            ("2023-06-01 13:50", 9.35, 9.38, 500_000),
+            ("2023-06-01 13:55", 9.37, 9.45, 1_500_000),
+        ]
+        d = evaluate_sweep_reclaim(_bar_rows(rows))
+        assert d["enter"]
+        assert d["sweep"]["level_source"] == "pml"
+        assert d["sweep"]["swing_low"] == pytest.approx(9.40)
+
+    def test_highest_qualifying_level_wins(self, monkeypatch):
+        # Wick 9.45 sweeps BOTH the PDL (9.50) and the swing (9.80); close 9.85
+        # reclaims both. The higher level (swing) is the stricter reclaim and
+        # must be chosen.
+        _compact(monkeypatch, anchors=["pdl"])
+        frame = _pdl_frame().copy()
+        frame.iloc[-1, frame.columns.get_loc("Close")] = 9.85
+        d = evaluate_sweep_reclaim(frame)
+        assert d["enter"]
+        assert d["sweep"]["level_source"] == "swing"
+        assert d["sweep"]["swing_low"] == pytest.approx(9.80)
+
+    def test_level_established_before_the_recent_window(self, monkeypatch):
+        # A pre-market low printed INSIDE the recent window must not define the
+        # PML it then "sweeps" — the level would be self-referential.
+        monkeypatch.setattr(config, "SWEEP_LEVEL_ANCHORS", ["pml"])
+        rows = [
+            ("2023-06-01 12:00", 9.60, 9.62, 100_000),   # PM, before window
+            ("2023-06-01 13:00", 9.35, 9.38, 100_000),   # PM, inside recent window
+            ("2023-06-01 13:05", 9.37, 9.45, 100_000),   # PM, inside recent window
+        ]
+        levels = _anchored_levels(_bar_rows(rows), window=2)
+        assert levels["pml"] == pytest.approx(9.60)      # not 9.35
+
+    def test_prefilter_is_a_superset_with_anchors(self, monkeypatch):
+        _compact(monkeypatch, anchors=["pdl"])
+        assert sweep_reclaim_present(_pdl_frame()) is True
+        _compact(monkeypatch, anchors=[])
+        assert sweep_reclaim_present(_pdl_frame()) is False
+
+
+class TestEntryWindow:
+    def test_outside_window_holds_with_reason(self, monkeypatch):
+        # Standard fixture's last bar is 15:25 UTC = 11:25 ET — outside 09:30-10:30.
+        _compact(monkeypatch, win=("09:30", "10:30"))
+        d = evaluate_sweep_reclaim(_sweep_reclaim_frame())
+        assert d["signal"] == "HOLD"
+        assert any("outside entry window" in r for r in d["reasons"])
+
+    def test_inside_window_is_unchanged(self, monkeypatch):
+        # Same fixture, window that contains 11:25 ET → decision as with no window.
+        _compact(monkeypatch, win=("11:00", "12:00"))
+        monkeypatch.setattr(config, "SWEEP_LOOKBACK_BARS", 15)
+        monkeypatch.setattr(config, "SWEEP_RECLAIM_WINDOW_BARS", 2)
+        monkeypatch.setattr(config, "SWEEP_MIN_SESSION_BARS", 20)
+        d = evaluate_sweep_reclaim(_sweep_reclaim_frame())
+        assert d["signal"] == "STRONG_BUY"
+
+    def test_malformed_window_is_ignored_not_fatal(self, monkeypatch):
+        _compact(monkeypatch, win=("9:3x", "10:30"))
+        monkeypatch.setattr(config, "SWEEP_LOOKBACK_BARS", 15)
+        monkeypatch.setattr(config, "SWEEP_RECLAIM_WINDOW_BARS", 2)
+        monkeypatch.setattr(config, "SWEEP_MIN_SESSION_BARS", 20)
+        d = evaluate_sweep_reclaim(_sweep_reclaim_frame())
+        assert d["signal"] == "STRONG_BUY"  # window off, entry unaffected

@@ -742,10 +742,14 @@ def cmd_premarket_scan(args) -> None:
     from src.scanner.premarket_scan import scan_premarket
 
     tickers = _resolve_tickers(args, what="Pre-market screen")
-    result = scan_premarket(tickers)
+    penny = True if getattr(args, "penny", False) else None  # None → follow penny master switch
+    result = scan_premarket(tickers, penny=penny)
 
     print(f"\n{'='*76}")
     print(f"  PRE-MARKET GAP SCREENER — as of {result['as_of_et']}")
+    if result.get("profile_gates") == "penny":
+        print("  PENNY PROFILE: gates from the penny: hard rails "
+              "(price band, $50M cap floor kept) — labels stay strict.")
     print(f"{'='*76}")
     rows = result["candidates"]
     if not rows:
@@ -1157,6 +1161,10 @@ Examples:
                               "Default is the FULL universe. Takes the alphabetical head, so "
                               "a capped run is a subsample — use it for quick checks, not for "
                               "a result you intend to report as the whole index."))
+    parser.add_argument("--penny", action="store_true", dest="penny",
+                        help=("premarket-scan: use the penny profile — gates come from the "
+                              "penny: hard rails (price band, market-cap floor). Also "
+                              "implied when penny.enabled/ALLOW_PENNY_STOCKS is on."))
     parser.add_argument("--save-baseline", action="store_true", dest="save_baseline",
                         help=("validate: persist this run's out-of-sample metrics as the "
                               "reference the live paper-vs-backtest tolerance gate compares "

@@ -88,7 +88,7 @@ python bot.py --mode portfolio                  # read-only Alpaca portfolio
 python bot.py --mode intraday-scan              # continuous intraday candidate scan → queue (P1.2)
 python bot.py --mode earnings-calendar          # build/refresh the earnings calendar (P1.4)
 python bot.py --mode movers-worker              # always-on movers worker (MOVERS Phase 5)
-python bot.py --mode premarket-scan             # pre-market gap screener → ranked research watchlist
+python bot.py --mode premarket-scan             # pre-market gap screener → ranked research watchlist (--penny: gates from the penny rails)
 python bot.py --mode stream                     # live Alpaca trade-stream diagnostic (MOVERS Phase 8)
 ```
 
@@ -177,7 +177,9 @@ pytest --cov=src       # coverage
   config `premarket:`) ranks extended-hours gappers by evidence-backed factors
   (time-of-day RVOL — rewarded only above a liquidity floor, its sign is
   conditional; banded gap score that penalises extremes; PM dollar volume;
-  float rotation; earnings-calendar catalyst) and tags candidates
+  float rotation; catalyst = earnings calendar + a keyword-classified news
+  feed (`src/catalysts/news_feed.py`: Alpaca News → yfinance → NewsAPI, tiers
+  strong/moderate/weak/dilution, fail-soft)) and tags candidates
   continuation/fade_risk/neutral. **Screener only** — firewalled from the
   money path, no filter loosened; `fetch_ohlcv/fetch_intraday(prepost=True)`
   supplies the 4:00–9:30 ET bars (yfinance flag; Alpaca/Polygon already span
@@ -204,7 +206,11 @@ pytest --cov=src       # coverage
   config `sweep_reclaim:`, **default off**) is the counterpart to the breakout:
   it detects a sweep of a recent swing low (`lookback_bars`=15) + a reclaim close
   on volume (`reclaim_window_bars`=2), stops just below the swept wick, and builds
-  the plan through the same `generate_trade_plan` money-path. When
+  the plan through the same `generate_trade_plan` money-path. Opt-in extensions
+  (both default off): `level_anchors: [pdl, pml]` treats the previous-day /
+  pre-market low as additional sweepable levels (highest swept-and-reclaimed
+  level wins, `level_source` disclosed), and `entry_window_start/_end` restricts
+  entries to an ET wall-clock window — A/B them via `--mode intraday-backtest`. When
   `SWEEP_RECLAIM_ENABLED`, the producer enqueues a structural `sweep` candidate
   (`sweep_reclaim_present`, a superset of graded entries) and the consumer runs
   the full grading only when the breakout doesn't fire; both are behind the flag,

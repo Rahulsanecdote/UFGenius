@@ -153,12 +153,21 @@ class PremarketSnapshot:
     prev_close: Optional[float] = None
     pm_volume: float = 0.0
     pm_dollar_volume: float = 0.0
+    pm_high: Optional[float] = None
+    pm_low: Optional[float] = None
+    prev_day_high: Optional[float] = None
+    prev_day_low: Optional[float] = None
     rvol: Optional[float] = None
     rvol_basis: str = "unavailable"
     float_shares: Optional[float] = None
     float_rotation: Optional[float] = None
+    market_cap: Optional[float] = None
     adv_20d: Optional[float] = None
-    catalyst: str = "unknown"          # "earnings" | "unknown"
+    # "earnings" | "news_strong" | "news_moderate" | "news_weak" | "unknown"
+    catalyst: str = "unknown"
+    catalyst_headline: Optional[str] = None
+    catalyst_provider: Optional[str] = None
+    dilution_news: bool = False
     days_to_earnings: Optional[int] = None
     flags: list[str] = field(default_factory=list)
     data_notes: list[str] = field(default_factory=list)
@@ -183,6 +192,30 @@ def _prev_regular_close(daily: pd.DataFrame, session_date) -> Optional[float]:
     return float(val) if np.isfinite(val) else None
 
 
+def _prev_day_levels(daily: pd.DataFrame, session_date) -> dict[str, Optional[float]]:
+    """Previous session's high/low (PDH/PDL) from the daily frame, when present.
+
+    Daily provider bars are regular-session only, so these are the exact levels
+    the practitioner canon marks. Exported as research aids (and inputs to the
+    opt-in level-anchored sweep-reclaim variant); None when the daily frame
+    lacks High/Low columns or has no prior row.
+    """
+    out: dict[str, Optional[float]] = {"high": None, "low": None}
+    if daily is None or daily.empty:
+        return out
+    idx = pd.DatetimeIndex(daily.index)
+    if idx.tz is not None:
+        idx = idx.tz_convert(_EASTERN)
+    prior = idx.date < session_date
+    if not prior.any():
+        return out
+    for key, col in (("high", "High"), ("low", "Low")):
+        if col in daily.columns:
+            val = daily[col].to_numpy()[prior][-1]
+            out[key] = float(val) if np.isfinite(val) else None
+    return out
+
+
 def build_snapshot(
     ticker: str,
     *,
@@ -192,6 +225,7 @@ def build_snapshot(
     daily: Optional[pd.DataFrame] = None,
     info: Optional[dict] = None,
     days_to_earnings: Optional[Callable[[str], Optional[int]]] = None,
+    news_fn: Optional[Callable[[str], dict]] = None,
 ) -> Optional[PremarketSnapshot]:
     """Compute one ticker's pre-market aggregates. None when no usable data.
 
@@ -237,6 +271,15 @@ def build_snapshot(
     closes = pm["Close"].to_numpy(dtype=float)
     vols = pm["Volume"].to_numpy(dtype=float)
     snap.pm_dollar_volume = float(np.nansum(closes * vols))
+    if "High" in pm.columns:
+        hi = float(pm["High"].max())
+        snap.pm_high = hi if np.isfinite(hi) else None
+    if "Low" in pm.columns:
+        lo = float(pm["Low"].min())
+        snap.pm_low = lo if np.isfinite(lo) else None
+    pd_levels = _prev_day_levels(daily, session_date)
+    snap.prev_day_high = pd_levels["high"]
+    snap.prev_day_low = pd_levels["low"]
 
     snap.rvol, snap.rvol_basis = time_of_day_rvol(
         intraday, session_date, cutoff,
@@ -260,6 +303,11 @@ def build_snapshot(
 
     if info is None:
         info = fetch_ticker_info_yfinance(symbol) or {}
+    try:
+        mc = info.get("marketCap")
+        snap.market_cap = float(mc) if mc else None
+    except (TypeError, ValueError):
+        snap.market_cap = None
     raw_float = info.get("floatShares")
     used_fallback = not raw_float  # 0 is as unusable as absent — fall back, but SAY so
     flt = raw_float or info.get("sharesOutstanding")
@@ -284,6 +332,41 @@ def build_snapshot(
     window = int(settings.get("catalyst_earnings_window_days", 1))
     if snap.days_to_earnings is not None and abs(snap.days_to_earnings) <= window:
         snap.catalyst = "earnings"
+
+    # News catalyst feed (config `premarket.news`, absent/disabled → skipped so
+    # offline runs and tests never touch the network). The earnings-calendar
+    # hit takes precedence — it is the verified event; headlines refine the
+    # rest. A dilution headline is NOT a catalyst: it sets a warning flag and
+    # leaves the tier to the remaining classification.
+    news_cfg = settings.get("news") or {}
+    if news_fn is None and bool(news_cfg.get("enabled", False)):
+        # Company name lets the NewsAPI fallback validate article identity —
+        # short symbols ("AI", "ON") are ordinary English in full-text search.
+        company = str(info.get("shortName") or info.get("longName") or "")
+
+        def news_fn(sym: str) -> dict:
+            from src.catalysts.news_feed import catalyst_news_for
+            return catalyst_news_for(
+                sym,
+                max_age_hours=float(news_cfg.get("max_age_hours", 36)),
+                company_name=company,
+            )
+    if news_fn is not None:
+        try:
+            news = news_fn(symbol) or {}
+        except Exception as exc:
+            log.debug(f"{symbol}: news catalyst lookup failed ({exc})")
+            news = {}
+        tier = str(news.get("tier") or "none")
+        if tier == "dilution":
+            snap.dilution_news = True
+            snap.catalyst_headline = news.get("headline")
+            snap.catalyst_provider = news.get("provider")
+        elif tier in ("strong", "moderate", "weak"):
+            if snap.catalyst != "earnings":
+                snap.catalyst = f"news_{tier}"
+            snap.catalyst_headline = news.get("headline")
+            snap.catalyst_provider = news.get("provider")
     return snap
 
 
@@ -306,8 +389,22 @@ def passes_gates(snap: PremarketSnapshot, settings: dict) -> tuple[bool, list[st
     if snap.pm_dollar_volume < float(settings.get("min_pm_dollar_volume", 1_000_000)):
         reasons.append("pm_dollar_volume_below_min")
     adv_floor = float(settings.get("min_adv_20d", 500_000))
-    if snap.adv_20d is not None and snap.adv_20d < adv_floor:
+    if snap.adv_20d is None:
+        # The penny profile's ADV floor is a hard rail — an unverifiable value
+        # must not pass it. The standard profile stays fail-soft: provider info
+        # gaps are routine there and the floor is a screen, not a rail.
+        if settings.get("profile") == "penny":
+            reasons.append("adv_unavailable")
+    elif snap.adv_20d < adv_floor:
         reasons.append("adv_below_min")
+    cap_floor = float(settings.get("min_market_cap", 0))
+    if cap_floor > 0:
+        # A positive cap floor is an explicit hard rail (penny profile sets
+        # $50M): unknown market cap fails closed, it doesn't skip the gate.
+        if snap.market_cap is None:
+            reasons.append("market_cap_unavailable")
+        elif snap.market_cap < cap_floor:
+            reasons.append("market_cap_below_min")
     return (not reasons), reasons
 
 
@@ -385,7 +482,13 @@ def score_snapshot(snap: PremarketSnapshot, settings: dict) -> float:
         if snap.float_rotation is not None
         else 0.0
     )
-    cat_score = 1.0 if snap.catalyst == "earnings" else 0.0
+    cat_scores = settings.get("catalyst_scores") or {}
+    cat_defaults = {
+        "earnings": 1.0, "news_strong": 1.0, "news_moderate": 0.5,
+        "news_weak": 0.0, "unknown": 0.0,
+    }
+    cat_score = float(cat_scores.get(snap.catalyst, cat_defaults.get(snap.catalyst, 0.0)))
+    cat_score = max(0.0, min(1.0, cat_score))
 
     raw = (
         w_rvol * rvol_score
@@ -409,11 +512,14 @@ def classify_profile(snap: PremarketSnapshot, settings: dict) -> str:
     gap_abs = abs(snap.gap_pct or 0.0)
     liquid = liquidity_floor_passed(snap, settings)
     extreme = gap_abs >= float(settings.get("fade_extreme_gap_pct", 20.0))
-    if not liquid and extreme and snap.catalyst != "earnings":
+    strong_catalysts = set(
+        settings.get("continuation_catalysts") or ["earnings", "news_strong"]
+    )
+    if not liquid and extreme and snap.catalyst not in strong_catalysts:
         return "fade_risk"
     if (
         liquid
-        and snap.catalyst == "earnings"
+        and snap.catalyst in strong_catalysts
         and snap.rvol is not None
         and snap.rvol >= float(settings.get("continuation_min_rvol", 2.0))
         and gap_abs <= float(settings.get("gap_score_extreme", 30.0))
@@ -439,6 +545,38 @@ def annotate_flags(snap: PremarketSnapshot, settings: dict) -> None:
         snap.flags.append("crowded_micro_float")
     if snap.rvol is None:
         snap.flags.append("rvol_unavailable")
+    if snap.dilution_news:
+        # Offerings/warrants/reverse splits: a measured bearish overhang for
+        # gappers — surfaced loudly, still never a gate (screener-only scope).
+        snap.flags.append("dilution_news")
+
+
+def apply_penny_profile(settings: dict) -> dict:
+    """Swap the screener's GATES for the penny hard rails — labels stay honest.
+
+    Reads the ``penny:`` block (via config accessors) as the single source of
+    truth: price band, market-cap floor (the sub-$50M pump zone stays cut), and
+    the share-volume floor as the ADV backstop. Pre-market-specific floors are
+    scaled-down defaults (a PM session is a fraction of a day), tunable via
+    ``premarket.penny_overrides``. Deliberately NOT touched: the scoring
+    liquidity floor, the fade_risk/crowded_micro_float tagging, and every
+    disclosure — the profile changes what qualifies, never what the evidence
+    says about it. Discovery is broad; the labels stay strict.
+    """
+    out = dict(settings)
+    out["min_price"] = float(config.PENNY_MIN_PRICE)
+    out["max_price"] = float(config.PENNY_MAX_PRICE)
+    out["min_market_cap"] = float(config.PENNY_MIN_MARKET_CAP)
+    out["min_adv_20d"] = float(config.PENNY_MIN_SHARE_VOLUME)
+    # PM-session floors: defaults keep a real liquidity bar without demanding a
+    # full day's dollar volume before 09:30.
+    out["min_pm_volume"] = 150_000
+    out["min_pm_dollar_volume"] = 300_000
+    overrides = settings.get("penny_overrides") or {}
+    for key, val in overrides.items():
+        out[key] = val
+    out["profile"] = "penny"
+    return out
 
 
 # ── orchestration ─────────────────────────────────────────────────────────────
@@ -449,6 +587,7 @@ def scan_premarket(
     now: Optional[datetime] = None,
     settings: Optional[dict] = None,
     snapshot_fn: Optional[Callable[..., Optional[PremarketSnapshot]]] = None,
+    penny: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Run the pre-market screen over ``tickers`` and return the ranked result.
 
@@ -457,6 +596,12 @@ def scan_premarket(
     counts, and ``disclosures`` restating what this is and is not.
     """
     settings = dict(settings or config.PREMARKET_SETTINGS)
+    # Penny profile: explicit flag wins; otherwise follows the penny master
+    # switch so a penny-mode operator gets penny-band discovery by default.
+    if penny is None:
+        penny = bool(config.ALLOW_PENNY_STOCKS)
+    if penny:
+        settings = apply_penny_profile(settings)
     # Cap the universe with DISCLOSURE, never silently: each snapshot costs up
     # to four provider calls, so an uncapped SP500 pass is thousands of network
     # round-trips — past the open for a CLI run, past the WSGI timeout for the
@@ -513,14 +658,21 @@ def scan_premarket(
             "prev_close": snap.prev_close,
             "pm_volume": int(snap.pm_volume),
             "pm_dollar_volume": round(snap.pm_dollar_volume, 0),
+            "pm_high": snap.pm_high,
+            "pm_low": snap.pm_low,
+            "prev_day_high": snap.prev_day_high,
+            "prev_day_low": snap.prev_day_low,
             "rvol": None if snap.rvol is None else round(snap.rvol, 2),
             "rvol_basis": snap.rvol_basis,
             "float_shares": snap.float_shares,
             "float_rotation": (
                 None if snap.float_rotation is None else round(snap.float_rotation, 4)
             ),
+            "market_cap": snap.market_cap,
             "adv_20d": snap.adv_20d,
             "catalyst": snap.catalyst,
+            "catalyst_headline": snap.catalyst_headline,
+            "catalyst_provider": snap.catalyst_provider,
             "days_to_earnings": snap.days_to_earnings,
             "profile": classify_profile(snap, settings),
             "score": score_snapshot(snap, settings),
@@ -538,6 +690,7 @@ def scan_premarket(
     cap = int(settings.get("max_results", 20))
     return {
         "as_of_et": now_et.isoformat(),
+        "profile_gates": "penny" if penny else "standard",
         "universe_truncated_from": truncated_from,
         "scanned_with_premarket_data": scanned,
         "candidates": candidates[:cap],
@@ -550,8 +703,10 @@ def scan_premarket(
             "expectancy in the academic record; profile=continuation marks the "
             "only factor combination the measured evidence supports, and "
             "profile=fade_risk marks the measured fade cohort.",
-            "Catalyst detection covers the earnings calendar only; "
-            "catalyst=unknown does NOT mean no news exists.",
+            "Catalyst detection covers the earnings calendar plus, when "
+            "premarket.news is enabled, a keyword-classified headline feed "
+            "(a deterministic heuristic, not verification); catalyst=unknown "
+            "still does NOT mean no news exists.",
             "Free-tier data caveats apply pre-market (sparse IEX prints, "
             "delayed yfinance extended bars); see per-row data_notes.",
         ],

@@ -328,6 +328,27 @@ SWEEP_MAX_RECLAIM_EXTENSION_PCT: float = env_float(
 SWEEP_MIN_SESSION_BARS: int = env_int(
     "SWEEP_MIN_SESSION_BARS", _as_int(_SWEEP.get("min_session_bars", 20), 20)
 )
+# Level-anchored variant (default OFF — []): pre-marked session levels treated
+# as sweepable liquidity levels alongside the rolling swing low. Valid entries:
+# "pdl" (previous session's regular-hours low), "pml" (today's pre-market low).
+# Env override is comma-separated (SWEEP_LEVEL_ANCHORS=pdl,pml).
+_SWEEP_ANCHORS_ENV = env("SWEEP_LEVEL_ANCHORS", "")
+SWEEP_LEVEL_ANCHORS: list = [
+    a.strip().lower()
+    for a in (
+        _SWEEP_ANCHORS_ENV.split(",") if _SWEEP_ANCHORS_ENV
+        else (_SWEEP.get("level_anchors") or [])
+    )
+    if str(a).strip()
+]
+# Opening-window filter (default OFF — both empty): entries eligible only when
+# the last bar's ET time is inside [start, end). ET HH:MM strings.
+SWEEP_ENTRY_WINDOW_START: str = env(
+    "SWEEP_ENTRY_WINDOW_START", str(_SWEEP.get("entry_window_start", "") or "")
+).strip()
+SWEEP_ENTRY_WINDOW_END: str = env(
+    "SWEEP_ENTRY_WINDOW_END", str(_SWEEP.get("entry_window_end", "") or "")
+).strip()
 
 # Intraday backtest harness (--mode intraday-backtest).
 _INTRADAY_BT: dict = get("intraday_backtest", {})

@@ -173,6 +173,19 @@ sweep_reclaim:
   stop_buffer_pct: 0.001       # stop placed this fraction below the swept wick low
   max_reclaim_extension_pct: 0.05  # reject if close is already >5% above the swept level (chasing)
   min_session_bars: 20         # minimum current-session bars before it can fire
+  # Level-anchored variant (default OFF — []). Adds pre-marked session levels as
+  # sweepable liquidity levels alongside the rolling swing low: "pdl" = previous
+  # session's regular-hours low, "pml" = today's pre-market low (needs
+  # extended-hours bars; silently absent otherwise). The chosen level is the
+  # HIGHEST one both swept and reclaimed. Provenance: the discretionary
+  # "opening reversal at pre-marked levels" playbook — practitioner convention
+  # (Tier C), unvalidated; A/B it with --mode intraday-backtest before believing it.
+  level_anchors: []            # e.g. [pdl, pml]
+  # Opening-window filter (default OFF — both empty): entries only when the last
+  # bar's ET time is in [start, end). The opening half-hour is where overnight
+  # imbalances resolve; any EXACT minute choice is unvalidated precision.
+  entry_window_start: ""       # ET HH:MM, e.g. "09:30"
+  entry_window_end: ""         # ET HH:MM, e.g. "10:30"
 
 # Intraday backtest harness (--mode intraday-backtest). Replays the deterministic
 # intraday ENTRIES (breakout / sweep-reclaim) bar-by-bar on historical intraday
@@ -418,6 +431,27 @@ premarket:
   fade_pm_volume_shares: 5000000  # SmallCapLab: 5M+ PM shares → 71.5% fade (micro floats)
   continuation_min_rvol: 2.0      # "in play" threshold
   catalyst_earnings_window_days: 1
+  # News catalyst feed (src/catalysts/news_feed.py). Headlines fetched via
+  # Alpaca News API (existing keys) → yfinance → NewsAPI, keyword-classified
+  # into tiers: strong (beat/guidance-raise/FDA/M&A/contract/upgrade),
+  # moderate (earnings mention, investor day, initiation), weak
+  # ("why is X soaring" churn), dilution (offering/warrants/reverse split →
+  # dilution_news flag, never a catalyst). Deterministic heuristic, not
+  # verification; fail-soft (no source ⇒ catalyst stays unknown).
+  news:
+    enabled: true
+    max_age_hours: 36
+  # Catalyst score per tier (0-1, clamped). Provenance: post-news drift is
+  # measured for hard events (PEAD/Savor); moderate news gets half weight;
+  # attention-churn gets none.
+  catalyst_scores:
+    earnings: 1.0
+    news_strong: 1.0
+    news_moderate: 0.5
+    news_weak: 0.0
+    unknown: 0.0
+  # Which catalyst tiers count toward the `continuation` profile.
+  continuation_catalysts: [earnings, news_strong]
 
 # Signal classification thresholds (score out of 100)
 signal_thresholds:

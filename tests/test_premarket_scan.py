@@ -18,6 +18,7 @@ import pytest
 
 from src.scanner.premarket_scan import (
     PremarketSnapshot,
+    apply_penny_profile,
     build_snapshot,
     classify_profile,
     cumulative_volume_through,
@@ -177,6 +178,7 @@ def _standard_inputs(
     pm_volume: float = 400_000,
     float_shares: float | None = 40_000_000,
     days_to_earnings: int | None = None,
+    news: dict | None = None,
 ):
     intraday = make_frame([
         (datetime(2026, 7, 13, 8, 0), prev_close, 120_000),
@@ -194,6 +196,7 @@ def _standard_inputs(
         daily=daily,
         info=info,
         days_to_earnings=lambda _t: days_to_earnings,
+        news_fn=lambda _t: dict(news) if news else {"tier": "none"},
     )
 
 
@@ -236,11 +239,68 @@ class TestBuildSnapshot:
         assert snap.rvol_basis == "insufficient_history"
         assert "rvol:insufficient_history" in snap.data_notes
 
+    def test_session_levels_are_exported(self):
+        # PM high/low from the clamped PM frame; PDH/PDL from the prior daily
+        # row when High/Low columns exist (research aids + inputs to the
+        # level-anchored sweep-reclaim variant).
+        inputs = _standard_inputs()
+        daily = inputs["daily"].copy()
+        daily["High"] = daily["Close"] * 1.02
+        daily["Low"] = daily["Close"] * 0.97
+        inputs["daily"] = daily
+        snap = build_snapshot("LVLS", **inputs)
+        assert snap.pm_high == pytest.approx(10.8 + 0.0, abs=0.2)  # single PM bar
+        assert snap.pm_low is not None and snap.pm_low <= snap.pm_high
+        assert snap.prev_day_high == pytest.approx(10.0 * 1.02)
+        assert snap.prev_day_low == pytest.approx(10.0 * 0.97)
+
+    def test_missing_daily_hl_columns_yield_none_levels(self):
+        snap = build_snapshot("NOHL", **_standard_inputs())  # make_daily has no High/Low
+        assert snap.prev_day_high is None and snap.prev_day_low is None
+        assert snap.pm_low is not None  # PM frame always carries OHLC
+
     def test_earnings_within_window_tags_catalyst(self):
         snap = build_snapshot("GAPR", **_standard_inputs(days_to_earnings=0))
         assert snap.catalyst == "earnings"
         far = build_snapshot("GAPR", **_standard_inputs(days_to_earnings=10))
         assert far.catalyst == "unknown"
+
+    def test_strong_news_sets_catalyst_and_headline(self):
+        snap = build_snapshot("NEWS", **_standard_inputs(
+            news={"tier": "strong", "headline": "FDA approves widget", "provider": "alpaca"},
+        ))
+        assert snap.catalyst == "news_strong"
+        assert snap.catalyst_headline == "FDA approves widget"
+        assert snap.catalyst_provider == "alpaca"
+
+    def test_earnings_calendar_takes_precedence_over_news(self):
+        snap = build_snapshot("BOTH", **_standard_inputs(
+            days_to_earnings=0,
+            news={"tier": "moderate", "headline": "hosts investor day"},
+        ))
+        assert snap.catalyst == "earnings"          # verified event wins
+        assert snap.catalyst_headline == "hosts investor day"  # receipt still kept
+
+    def test_dilution_news_flags_without_becoming_a_catalyst(self):
+        snap = build_snapshot("DILU", **_standard_inputs(
+            news={"tier": "dilution", "headline": "prices public offering"},
+        ))
+        assert snap.catalyst == "unknown"
+        assert snap.dilution_news is True
+
+    def test_news_disabled_and_absent_stays_unknown(self):
+        inputs = _standard_inputs()
+        inputs["news_fn"] = None            # no injection AND settings lack news.enabled
+        snap = build_snapshot("NONF", **inputs)
+        assert snap.catalyst == "unknown"
+
+    def test_news_fn_errors_are_isolated(self):
+        inputs = _standard_inputs()
+        def boom(_t):
+            raise RuntimeError("feed exploded")
+        inputs["news_fn"] = boom
+        snap = build_snapshot("BOOM", **inputs)
+        assert snap is not None and snap.catalyst == "unknown"
 
     def test_no_premarket_bars_returns_none(self):
         inputs = _standard_inputs()
@@ -344,6 +404,16 @@ class TestScoringShape:
         with_cat = _snap(catalyst="earnings")
         assert score_snapshot(with_cat, SETTINGS) > score_snapshot(without, SETTINGS)
 
+    def test_strong_news_scores_like_earnings_and_moderate_half(self):
+        earnings = _snap(catalyst="earnings")
+        strong = _snap(catalyst="news_strong")
+        moderate = _snap(catalyst="news_moderate")
+        weak = _snap(catalyst="news_weak")
+        assert score_snapshot(strong, SETTINGS) == score_snapshot(earnings, SETTINGS)
+        assert score_snapshot(moderate, SETTINGS) < score_snapshot(strong, SETTINGS)
+        assert score_snapshot(moderate, SETTINGS) > score_snapshot(weak, SETTINGS)
+        assert score_snapshot(weak, SETTINGS) == score_snapshot(_snap(), SETTINGS)
+
     def test_zero_weights_do_not_crash(self):
         settings = dict(SETTINGS, weights={"rvol": 0, "gap_band": 0, "dollar_volume": 0,
                                            "float_rotation": 0, "catalyst": 0})
@@ -358,6 +428,15 @@ class TestProfiles:
     def test_fade_risk_is_the_measured_cohort(self):
         snap = _snap(last_price=4.0, adv_20d=300_000, gap_pct=45.0,
                      float_shares=5_000_000, catalyst="unknown")
+        assert classify_profile(snap, SETTINGS) == "fade_risk"
+
+    def test_strong_news_supports_continuation(self):
+        snap = _snap(last_price=15.0, adv_20d=2_000_000, rvol=3.0, catalyst="news_strong")
+        assert classify_profile(snap, SETTINGS) == "continuation"
+
+    def test_weak_news_does_not_rescue_the_fade_cohort(self):
+        snap = _snap(last_price=4.0, adv_20d=300_000, gap_pct=45.0,
+                     float_shares=5_000_000, catalyst="news_weak")
         assert classify_profile(snap, SETTINGS) == "fade_risk"
 
     def test_everything_else_is_neutral(self):
@@ -461,6 +540,86 @@ class TestScanPremarket:
         assert row["failed_gate"] == "adv_below_min"
         assert "crowded_micro_float" in row["flags"]
         assert row["profile"] == "fade_risk"
+
+
+# ── penny profile ────────────────────────────────────────────────────────────
+
+class TestPennyProfile:
+    def test_gates_come_from_the_penny_rails(self, monkeypatch):
+        from src.utils import config as cfg
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        out = apply_penny_profile(dict(SETTINGS))
+        assert out["min_price"] == 0.50 and out["max_price"] == 10.0
+        assert out["min_market_cap"] == 50_000_000.0
+        assert out["min_adv_20d"] == 100_000
+        assert out["profile"] == "penny"
+        # Scoring calibration is deliberately untouched — labels stay strict.
+        assert out["liquidity_floor_price"] == SETTINGS["liquidity_floor_price"]
+        assert out["micro_float_shares"] == SETTINGS["micro_float_shares"]
+
+    def test_penny_overrides_win(self, monkeypatch):
+        from src.utils import config as cfg
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        settings = dict(SETTINGS, penny_overrides={"min_pm_dollar_volume": 500_000})
+        out = apply_penny_profile(settings)
+        assert out["min_pm_dollar_volume"] == 500_000
+
+    def test_market_cap_gate_cuts_the_pump_zone(self):
+        # The sub-$50M shell that tops gainers lists (IPST-style) fails the
+        # penny profile's own market-cap rail.
+        settings = dict(SETTINGS, min_market_cap=50_000_000,
+                        min_price=0.50, max_price=10.0)
+        shell = _snap(last_price=3.9, market_cap=1_400_000)
+        ok, reasons = passes_gates(shell, settings)
+        assert not ok and "market_cap_below_min" in reasons
+
+    def test_unknown_market_cap_fails_an_enabled_cap_gate(self):
+        # A positive cap floor is a hard rail: an unverifiable cap fails
+        # closed rather than skipping the gate (CodeRabbit).
+        settings = dict(SETTINGS, min_market_cap=50_000_000)
+        ok, reasons = passes_gates(_snap(market_cap=None), settings)
+        assert not ok
+        assert "market_cap_unavailable" in reasons
+
+    def test_unknown_market_cap_passes_when_no_floor_is_set(self):
+        ok, reasons = passes_gates(_snap(market_cap=None), SETTINGS)
+        assert ok and reasons == []
+
+    def test_unknown_adv_fails_closed_only_under_the_penny_profile(self):
+        penny = dict(SETTINGS, profile="penny")
+        ok, reasons = passes_gates(_snap(adv_20d=None), penny)
+        assert not ok
+        assert "adv_unavailable" in reasons
+        # Standard profile: missing ADV is routine provider noise, not a rail.
+        ok, reasons = passes_gates(_snap(adv_20d=None), SETTINGS)
+        assert ok and reasons == []
+
+    def test_cap_gate_off_by_default(self):
+        ok, reasons = passes_gates(_snap(market_cap=1_400_000), SETTINGS)
+        assert "market_cap_below_min" not in reasons
+
+    def test_scan_reports_the_active_profile(self, monkeypatch):
+        from src.utils import config as cfg
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        out = scan_premarket(
+            [], now=datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc),
+            settings=dict(SETTINGS), snapshot_fn=lambda t, **k: None, penny=True,
+        )
+        assert out["profile_gates"] == "penny"
+        std = scan_premarket(
+            [], now=datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc),
+            settings=dict(SETTINGS), snapshot_fn=lambda t, **k: None, penny=False,
+        )
+        assert std["profile_gates"] == "standard"
 
 
 # ── config plumbing ──────────────────────────────────────────────────────────
