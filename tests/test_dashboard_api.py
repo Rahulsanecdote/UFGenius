@@ -264,6 +264,18 @@ def test_ai_narrative_panel_present():
     assert "loadAiNarrative" in dashboard.HTML
 
 
+def test_premarket_panel_present():
+    # The pre-market screener panel, its penny toggle, and its loader are
+    # wired (manual run only — no auto-refresh timer may reference it).
+    assert 'id="premarketPanel"' in dashboard.HTML
+    for element_id in ("pmRunButton", "pmPennyButton", "pmUniverse",
+                       "pmTable", "pmBody", "pmStatus", "pmNearMisses"):
+        assert f'id="{element_id}"' in dashboard.HTML, element_id
+    assert "runPremarketScan" in dashboard.HTML
+    assert "setPmPenny" in dashboard.HTML
+    assert "/api/scan-premarket?universe=" in dashboard.HTML
+
+
 @pytest.mark.parametrize("path", ["/api/metrics", "/api/attribution"])
 def test_new_endpoints_require_api_key_when_remote(client, monkeypatch, path):
     # The global /api/ guard authenticates both new P2.3 routes in remote mode.
