@@ -103,6 +103,34 @@ common home-scanner bug. Two clamps keep the ratio honest:
   from the configured providers — not that nothing is happening. Per-row
   `data_notes` carry the degradations that applied.
 
+## Penny profile (`--penny`, or automatic with penny mode on)
+
+For low-priced intraday trading the standard gates are calibrated against you —
+the $10 liquidity floor and $1M PM dollar-volume bar exclude the whole penny
+band. `--mode premarket-scan --penny` (implied when `penny.enabled` /
+`ALLOW_PENNY_STOCKS` is on) swaps the **gates** for the `penny:` hard rails,
+which stay the single source of truth:
+
+- price band ← `penny.min_price`–`penny.max_price` ($0.50–$10 default)
+- **market-cap floor ← `penny.min_market_cap` ($50M)** — the sub-$50M
+  pump-and-dump zone stays cut, exactly as penny mode intends. A shell at a
+  $1.4M cap topping the gainers list fails this rail no matter how loud the
+  move is.
+- ADV backstop ← `penny.min_share_volume`; PM-session floors scale down
+  (150K shares / $300K by default, tunable via `premarket.penny_overrides`)
+
+What the profile deliberately does **not** change: the scoring liquidity floor,
+the `fade_risk` / `crowded_micro_float` tagging, and every disclosure. In the
+penny band, most candidates will carry `below_liquidity_floor` and many will
+tag `fade_risk` — that is the measured base rate for this cohort, and the
+labels are the information: they tell you which side of the 71.5%-fade
+statistic each name sits on. Discovery is broad; the labels stay strict.
+
+```bash
+python bot.py --mode premarket-scan --penny --universe CUSTOM
+GET /api/scan-premarket?penny=true
+```
+
 ## Timing
 
 One static early scan is structurally weak: most catalysts drop 6:00–8:00 ET,

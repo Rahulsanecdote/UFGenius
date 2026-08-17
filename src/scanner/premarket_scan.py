@@ -161,6 +161,7 @@ class PremarketSnapshot:
     rvol_basis: str = "unavailable"
     float_shares: Optional[float] = None
     float_rotation: Optional[float] = None
+    market_cap: Optional[float] = None
     adv_20d: Optional[float] = None
     # "earnings" | "news_strong" | "news_moderate" | "news_weak" | "unknown"
     catalyst: str = "unknown"
@@ -302,6 +303,11 @@ def build_snapshot(
 
     if info is None:
         info = fetch_ticker_info_yfinance(symbol) or {}
+    try:
+        mc = info.get("marketCap")
+        snap.market_cap = float(mc) if mc else None
+    except (TypeError, ValueError):
+        snap.market_cap = None
     raw_float = info.get("floatShares")
     used_fallback = not raw_float  # 0 is as unusable as absent — fall back, but SAY so
     flt = raw_float or info.get("sharesOutstanding")
@@ -380,6 +386,9 @@ def passes_gates(snap: PremarketSnapshot, settings: dict) -> tuple[bool, list[st
     adv_floor = float(settings.get("min_adv_20d", 500_000))
     if snap.adv_20d is not None and snap.adv_20d < adv_floor:
         reasons.append("adv_below_min")
+    cap_floor = float(settings.get("min_market_cap", 0))
+    if cap_floor > 0 and snap.market_cap is not None and snap.market_cap < cap_floor:
+        reasons.append("market_cap_below_min")
     return (not reasons), reasons
 
 
@@ -526,6 +535,34 @@ def annotate_flags(snap: PremarketSnapshot, settings: dict) -> None:
         snap.flags.append("dilution_news")
 
 
+def apply_penny_profile(settings: dict) -> dict:
+    """Swap the screener's GATES for the penny hard rails — labels stay honest.
+
+    Reads the ``penny:`` block (via config accessors) as the single source of
+    truth: price band, market-cap floor (the sub-$50M pump zone stays cut), and
+    the share-volume floor as the ADV backstop. Pre-market-specific floors are
+    scaled-down defaults (a PM session is a fraction of a day), tunable via
+    ``premarket.penny_overrides``. Deliberately NOT touched: the scoring
+    liquidity floor, the fade_risk/crowded_micro_float tagging, and every
+    disclosure — the profile changes what qualifies, never what the evidence
+    says about it. Discovery is broad; the labels stay strict.
+    """
+    out = dict(settings)
+    out["min_price"] = float(config.PENNY_MIN_PRICE)
+    out["max_price"] = float(config.PENNY_MAX_PRICE)
+    out["min_market_cap"] = float(config.PENNY_MIN_MARKET_CAP)
+    out["min_adv_20d"] = float(config.PENNY_MIN_SHARE_VOLUME)
+    # PM-session floors: defaults keep a real liquidity bar without demanding a
+    # full day's dollar volume before 09:30.
+    out["min_pm_volume"] = 150_000
+    out["min_pm_dollar_volume"] = 300_000
+    overrides = settings.get("penny_overrides") or {}
+    for key, val in overrides.items():
+        out[key] = val
+    out["profile"] = "penny"
+    return out
+
+
 # ── orchestration ─────────────────────────────────────────────────────────────
 
 def scan_premarket(
@@ -534,6 +571,7 @@ def scan_premarket(
     now: Optional[datetime] = None,
     settings: Optional[dict] = None,
     snapshot_fn: Optional[Callable[..., Optional[PremarketSnapshot]]] = None,
+    penny: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Run the pre-market screen over ``tickers`` and return the ranked result.
 
@@ -542,6 +580,12 @@ def scan_premarket(
     counts, and ``disclosures`` restating what this is and is not.
     """
     settings = dict(settings or config.PREMARKET_SETTINGS)
+    # Penny profile: explicit flag wins; otherwise follows the penny master
+    # switch so a penny-mode operator gets penny-band discovery by default.
+    if penny is None:
+        penny = bool(config.ALLOW_PENNY_STOCKS)
+    if penny:
+        settings = apply_penny_profile(settings)
     # Cap the universe with DISCLOSURE, never silently: each snapshot costs up
     # to four provider calls, so an uncapped SP500 pass is thousands of network
     # round-trips — past the open for a CLI run, past the WSGI timeout for the
@@ -608,6 +652,7 @@ def scan_premarket(
             "float_rotation": (
                 None if snap.float_rotation is None else round(snap.float_rotation, 4)
             ),
+            "market_cap": snap.market_cap,
             "adv_20d": snap.adv_20d,
             "catalyst": snap.catalyst,
             "catalyst_headline": snap.catalyst_headline,
@@ -629,6 +674,7 @@ def scan_premarket(
     cap = int(settings.get("max_results", 20))
     return {
         "as_of_et": now_et.isoformat(),
+        "profile_gates": "penny" if penny else "standard",
         "universe_truncated_from": truncated_from,
         "scanned_with_premarket_data": scanned,
         "candidates": candidates[:cap],

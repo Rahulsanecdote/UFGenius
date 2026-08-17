@@ -18,6 +18,7 @@ import pytest
 
 from src.scanner.premarket_scan import (
     PremarketSnapshot,
+    apply_penny_profile,
     build_snapshot,
     classify_profile,
     cumulative_volume_through,
@@ -539,6 +540,71 @@ class TestScanPremarket:
         assert row["failed_gate"] == "adv_below_min"
         assert "crowded_micro_float" in row["flags"]
         assert row["profile"] == "fade_risk"
+
+
+# ── penny profile ────────────────────────────────────────────────────────────
+
+class TestPennyProfile:
+    def test_gates_come_from_the_penny_rails(self, monkeypatch):
+        from src.utils import config as cfg
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        out = apply_penny_profile(dict(SETTINGS))
+        assert out["min_price"] == 0.50 and out["max_price"] == 10.0
+        assert out["min_market_cap"] == 50_000_000.0
+        assert out["min_adv_20d"] == 100_000
+        assert out["profile"] == "penny"
+        # Scoring calibration is deliberately untouched — labels stay strict.
+        assert out["liquidity_floor_price"] == SETTINGS["liquidity_floor_price"]
+        assert out["micro_float_shares"] == SETTINGS["micro_float_shares"]
+
+    def test_penny_overrides_win(self, monkeypatch):
+        from src.utils import config as cfg
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        settings = dict(SETTINGS, penny_overrides={"min_pm_dollar_volume": 500_000})
+        out = apply_penny_profile(settings)
+        assert out["min_pm_dollar_volume"] == 500_000
+
+    def test_market_cap_gate_cuts_the_pump_zone(self):
+        # The sub-$50M shell that tops gainers lists (IPST-style) fails the
+        # penny profile's own market-cap rail.
+        settings = dict(SETTINGS, min_market_cap=50_000_000,
+                        min_price=0.50, max_price=10.0)
+        shell = _snap(last_price=3.9, market_cap=1_400_000)
+        ok, reasons = passes_gates(shell, settings)
+        assert not ok and "market_cap_below_min" in reasons
+
+    def test_unknown_market_cap_is_not_rejected(self):
+        settings = dict(SETTINGS, min_market_cap=50_000_000)
+        snap = _snap(market_cap=None)
+        ok, reasons = passes_gates(snap, settings)
+        assert "market_cap_below_min" not in reasons
+
+    def test_cap_gate_off_by_default(self):
+        ok, reasons = passes_gates(_snap(market_cap=1_400_000), SETTINGS)
+        assert "market_cap_below_min" not in reasons
+
+    def test_scan_reports_the_active_profile(self, monkeypatch):
+        from src.utils import config as cfg
+        monkeypatch.setattr(cfg, "PENNY_MIN_PRICE", 0.50)
+        monkeypatch.setattr(cfg, "PENNY_MAX_PRICE", 10.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_MARKET_CAP", 50_000_000.0)
+        monkeypatch.setattr(cfg, "PENNY_MIN_SHARE_VOLUME", 100_000)
+        out = scan_premarket(
+            [], now=datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc),
+            settings=dict(SETTINGS), snapshot_fn=lambda t, **k: None, penny=True,
+        )
+        assert out["profile_gates"] == "penny"
+        std = scan_premarket(
+            [], now=datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc),
+            settings=dict(SETTINGS), snapshot_fn=lambda t, **k: None, penny=False,
+        )
+        assert std["profile_gates"] == "standard"
 
 
 # ── config plumbing ──────────────────────────────────────────────────────────

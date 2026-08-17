@@ -4810,7 +4810,9 @@ def api_scan_premarket():
                 "error": "No tickers configured. Set CUSTOM_WATCHLIST env var.",
                 "candidates": [],
             })
-        return jsonify(scan_premarket(tickers))
+        penny_arg = request.args.get("penny", "").strip().lower()
+        penny = True if penny_arg in ("1", "true", "yes") else None
+        return jsonify(scan_premarket(tickers, penny=penny))
     except Exception:
         log.exception("Pre-market scan error")
         return _error_response("Internal server error", 500)
