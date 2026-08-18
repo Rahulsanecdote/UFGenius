@@ -80,3 +80,16 @@ def _disable_halt_feed(monkeypatch):
     """
     monkeypatch.setattr(cfg, "MOVERS_HALTS_ENABLED", False)
     monkeypatch.setattr(cfg, "MOVERS_HALT_SKIP_INVALIDATION", False)
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_alert_outcomes(monkeypatch, tmp_path):
+    """Keep the alert-outcome ledger out of the repo's data/ for the suite.
+
+    ``observability.alert_outcomes`` ships ON, so a worker test that doesn't
+    inject a ledger would otherwise write data/alert_outcomes.json in the
+    working tree. Tests that exercise the ledger re-enable it against their own
+    tmp path (tests/test_alert_outcomes.py — its fixture runs after this one).
+    """
+    monkeypatch.setattr(cfg, "ALERT_OUTCOMES_ENABLED", False)
+    monkeypatch.setattr(cfg, "ALERT_OUTCOMES_PATH", str(tmp_path / "alert_outcomes.json"))

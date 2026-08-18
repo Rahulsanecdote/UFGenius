@@ -50,6 +50,7 @@ def run_worker(
     send=None,
     state: MoversWorkerState | None = None,
     stream=_USE_DEFAULT,
+    outcome_ledger=_USE_DEFAULT,
 ) -> dict:
     """Run the continuous discover → alert → monitor loop.
 
@@ -75,6 +76,12 @@ def run_worker(
     scan_window = scan_window if scan_window is not None else is_scan_window
     send = send or send_text_alert
     state = state if state is not None else MoversWorkerState.load_default()
+    if outcome_ledger is _USE_DEFAULT:
+        if config.ALERT_OUTCOMES_ENABLED:
+            from src.observability.alert_outcomes import default_ledger
+            outcome_ledger = default_ledger()
+        else:
+            outcome_ledger = None
     if stream is _USE_DEFAULT:
         stream = PriceStream() if config.MOVERS_STREAM_ENABLED else None
     # Try to open the stream up front; on any failure fall back to REST polling.
@@ -105,6 +112,8 @@ def run_worker(
                         news_fired = catalyst_alerter.poll(send=True)
                         stats["catalyst_alerts"] += len(news_fired)
                         state.record_alerts(news_fired)
+                        if outcome_ledger is not None:
+                            outcome_ledger.record(news_fired, source="catalyst")
                     # Re-discover on a slower cadence (it is the expensive step);
                     # monitor every cycle so invalidations are timely.
                     if (cycle - 1) % rediscover_every == 0:
@@ -114,6 +123,8 @@ def run_worker(
                         fired = alerter.process(movers, send=True)
                         stats["alerts"] += len(fired)
                         state.record_alerts(fired)
+                        if outcome_ledger is not None:
+                            outcome_ledger.record(fired, source="movers")
                         watched = [m for m in movers if m.score >= min_score]
                         added = monitor.watch(watched)
                         log.info(f"worker cycle {cycle}: {len(movers)} movers, "
@@ -126,6 +137,12 @@ def run_worker(
                         stream.set_symbols([s.candidate.ticker for s in monitor.active()])
                 else:
                     log.debug(f"worker cycle {cycle}: outside scan window — idle")
+                # Outcome resolution runs even outside the scan window: alerts
+                # fired near the close have horizons landing after 16:00, and
+                # the expiry sweep that retires unmeasurable ones costs nothing.
+                # Internally fail-soft and fetch-capped per cycle.
+                if outcome_ledger is not None:
+                    outcome_ledger.resolve()
             except Exception as exc:  # a bad cycle must not kill the worker
                 log.warning(f"worker cycle {cycle} failed ({type(exc).__name__}: {exc})")
 

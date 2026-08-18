@@ -561,3 +561,30 @@ def test_scan_status_without_a_job_id_reports_idle(client):
 
     scan_jobs.reset()
     assert client.get("/api/scan-status").get_json()["status"] == "idle"
+
+
+def test_alert_outcomes_endpoint(client, monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+    import pandas as pd
+    from src.observability import alert_outcomes as ao
+
+    monkeypatch.setattr(dashboard.config, "ALERT_OUTCOMES_ENABLED", True)
+    monkeypatch.setattr(dashboard.config, "ALERT_OUTCOMES_PATH",
+                        str(tmp_path / "ao.json"))
+    monkeypatch.setattr(dashboard.config, "ALERT_OUTCOMES_HORIZONS_MIN", [30])
+    monkeypatch.setattr(ao, "_default", None)   # fresh singleton on the new path
+
+    t0 = datetime(2026, 8, 18, 14, 0)
+    led = ao.default_ledger()
+    led.record([{"ticker": "AAA", "direction": "long", "score": 80.0}],
+               source="movers", now=t0)
+    idx = pd.DatetimeIndex([t0 + timedelta(minutes=i) for i in range(35)])
+    frame = pd.DataFrame({"Open": 100.0, "High": 100.0, "Low": 100.0,
+                          "Close": [100.0 + i for i in range(35)],
+                          "Volume": 1000}, index=idx)
+    led.resolve(now=t0 + timedelta(minutes=31), fetch=lambda t: frame)
+
+    body = client.get("/api/alert-outcomes").get_json()
+    assert body["sources"]["movers"]["by_horizon"]["30"]["n"] == 1
+    assert body["recent"][0]["ticker"] == "AAA"
+    monkeypatch.setattr(ao, "_default", None)

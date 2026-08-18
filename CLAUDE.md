@@ -283,6 +283,21 @@ pytest --cov=src       # coverage
   best-effort, never raises. `run_daily_scan` records each scan (best-effort);
   the executor alerts only on the broker-breaker false→true trip transition.
   Surfaced via `/api/metrics`, `/api/attribution`, and dashboard panels.
+  **Alert outcome ledger** (`alert_outcomes.py`, config
+  `observability.alert_outcomes`, **default on** — telemetry like the metrics
+  ledger): every fired alert (movers setups, catalyst wire) is recorded and a
+  resolver later measures the move from the alert instant to each configured
+  horizon (default +30m/+2h) **in the direction the alert implied**, from 1m
+  bars. Honesty rules: the baseline is the first 1m bar at/after the alert
+  (never a stale list price), unmeasurable alerts are counted as `unresolved`
+  rather than dropped from the denominator, the resolver is fetch-capped per
+  worker cycle (`max_resolve_fetches_per_cycle`), and stale pendings are
+  expired by a free sweep. The worker records after both alert paths and
+  resolves every cycle — **including outside the scan window**, since alerts
+  near the close have horizons landing after 16:00. Surfaced via
+  `/api/alert-outcomes` and a per-source hit-rate/avg-move line in the
+  dashboard worker strip. This is the evidence base for "are the alerts any
+  good" — the automated version of hand-checking prices after the fact.
 - **Explainability (P3.1):** `src/explain/narrative.py` is an *optional* LLM
   layer that turns the **verified quant snapshot** into a plain-English bull/bear
   read for the dashboard/alerts. It is **advisory only** — no import of the
@@ -439,6 +454,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
 | GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |
 | GET | `/api/attribution` | Per-signal realized outcome (win rate / avg return / P&L) from the trade ledger (P2.3) |
+| GET | `/api/alert-outcomes` | Measured forward outcomes of fired alerts (movers/catalyst): per source+horizon hit rate, avg/median in-direction move, pending/unresolved counts |
 | GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
 | GET | `/api/portfolio-risk` | Advisory portfolio-level risk snapshot: gross leverage / heat / per-name weights vs limits (roadmap Phase 4; `available:false` when disabled) |
 | GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `available:false` without an FMP key |
