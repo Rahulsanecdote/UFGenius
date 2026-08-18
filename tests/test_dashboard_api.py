@@ -505,3 +505,59 @@ def test_movers_stays_available_when_one_source_answered_empty(client, monkeypat
     assert payload["available"] is True
     assert payload["degraded"] is True
     assert payload["count"] == 0
+
+
+# ── background full scan (the scan no longer runs inside the request) ────────
+
+def test_scan_endpoint_returns_a_job_not_a_result(client, monkeypatch):
+    """/api/scan must hand back a job handle immediately.
+
+    Inline, this endpoint fanned out ~500 tickers inside one request against
+    `gunicorn --timeout 120` and the worker was killed mid-scan.
+    """
+    from src.scanner import scan_jobs
+
+    scan_jobs.reset()
+    monkeypatch.setattr(dashboard, "run_daily_scan",
+                        lambda **_kwargs: {"total_scanned": 503})
+    response = client.get("/api/scan?account_size=10000")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "running"
+    assert body["job_id"]
+    assert "result" not in body        # the result arrives via the poll, not here
+    scan_jobs.reset()
+
+
+def test_scan_status_returns_the_result_when_done(client, monkeypatch):
+    from src.scanner import scan_jobs
+    import time
+
+    scan_jobs.reset()
+    monkeypatch.setattr(dashboard, "run_daily_scan",
+                        lambda **_kwargs: {"total_scanned": 503, "strong_buys": []})
+    job_id = client.get("/api/scan?account_size=10000").get_json()["job_id"]
+
+    deadline = time.time() + 5
+    body = {}
+    while time.time() < deadline:
+        body = client.get(f"/api/scan-status?job={job_id}").get_json()
+        if body["status"] in ("done", "error"):
+            break
+        time.sleep(0.01)
+    assert body["status"] == "done", body
+    assert body["result"]["total_scanned"] == 503
+    scan_jobs.reset()
+
+
+def test_scan_status_unknown_job_explains_itself(client):
+    body = client.get("/api/scan-status?job=nope").get_json()
+    assert body["status"] == "unknown"
+    assert "--workers 1" in body["error"]
+
+
+def test_scan_status_without_a_job_id_reports_idle(client):
+    from src.scanner import scan_jobs
+
+    scan_jobs.reset()
+    assert client.get("/api/scan-status").get_json()["status"] == "idle"

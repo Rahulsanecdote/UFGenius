@@ -2626,6 +2626,17 @@ HTML = '''
       }, 700);
     }
 
+    // Pin a real progress label, cancelling the canned rotating steps. Once the
+    // backend reports actual stages there is no reason to keep showing invented
+    // ones — and two writers fighting over the same element looks like a bug.
+    function setProgressLabel(message) {
+      if (state.progressTimer) {
+        window.clearInterval(state.progressTimer);
+        state.progressTimer = null;
+      }
+      $('progressLabel').textContent = message;
+    }
+
     function stopProgress(message = null) {
       if (state.progressTimer) {
         window.clearInterval(state.progressTimer);
@@ -4019,6 +4030,41 @@ HTML = '''
       }
     }
 
+    const SCAN_POLL_MS = 3000;
+    const SCAN_MAX_WAIT_MS = 15 * 60 * 1000;   // a scan this long is stuck, not slow
+
+    const SCAN_STAGE_TEXT = {
+      starting: 'Starting scan...',
+      regime: 'Detecting market regime...',
+      universe: 'Loading the universe...',
+      fetching: 'Fetching price history...',
+      prefilter: 'Pre-filtering',
+      analyzing: 'Analysing candidates',
+      done: 'Finishing up...',
+    };
+
+    async function pollScanJob(jobId) {
+      const deadline = Date.now() + SCAN_MAX_WAIT_MS;
+      let first = true;
+      while (Date.now() < deadline) {
+        // Poll straight away the first time: waiting a full interval would leave
+        // the placeholder steps on screen while real stage info was available.
+        if (!first) await new Promise(r => window.setTimeout(r, SCAN_POLL_MS));
+        first = false;
+        const job = await apiFetchJson(`/api/scan-status?job=${encodeURIComponent(jobId)}`);
+        if (job.status === 'done') return job.result || {};
+        if (job.status === 'error') throw new Error(job.error || 'Scan failed.');
+        if (job.status === 'unknown') throw new Error(job.error || 'Scan job not found.');
+        const base = SCAN_STAGE_TEXT[job.stage] || 'Scanning...';
+        // Counts only where the backend actually has them — the batch fetch is
+        // one blocking call, so it stays a named stage rather than a fake bar.
+        const counted = job.total ? `${base} ${job.done}/${job.total}` : base;
+        setProgressLabel(`${counted} · ${Math.round(job.elapsed_sec || 0)}s`);
+      }
+      throw new Error('Scan is taking longer than 15 minutes — giving up on the poll. '
+                    + 'It may still finish; check /api/scan-status.');
+    }
+
     async function runFullMarketScan() {
       const { account } = updateFormState();
       if (account.error) {
@@ -4028,7 +4074,14 @@ HTML = '''
 
       startProgress('scan');
       try {
-        const payload = await apiFetchJson(`/api/scan?account_size=${encodeURIComponent(account.value)}`);
+        // The scan runs off the request path: it fans out over ~500 tickers and
+        // cannot complete inside the WSGI timeout, so the request only starts it
+        // and we poll. Nothing about the scan is shortened — the wait moved.
+        const job = await apiFetchJson(`/api/scan?account_size=${encodeURIComponent(account.value)}`);
+        if (job.joined_existing) {
+          showToast('A scan was already running — following that one.', 'info');
+        }
+        const payload = await pollScanJob(job.job_id);
         updateTopSync(new Date());
         renderScanResults(payload);
         stopProgress('Full market scan complete.');
@@ -4993,15 +5046,45 @@ def api_explain():
 
 @app.route("/api/scan")
 def api_scan():
+    """Start a full-universe scan in the background and return a job handle.
+
+    The scan fans out over the whole configured universe (~500 tickers for
+    SP500) and cannot finish inside `gunicorn --timeout 120` on a small
+    instance — inline, the worker was killed mid-scan and the browser saw a
+    dropped connection. It now runs off the request path; poll
+    `/api/scan-status?job=<id>` for progress and the result.
+    """
     account_size, account_err = _parse_account_size(request.args.get("account_size"))
     if account_err:
         return _error_response(account_err, 400)
 
     try:
-        result = run_daily_scan(account_size=float(account_size))
-        return jsonify(_clean(result))
+        from src.scanner import scan_jobs
+
+        # Pass this module's bound `run_daily_scan` rather than letting the job
+        # registry resolve its own: the endpoint stays the thing that decides
+        # what a scan is, and patching it here keeps working.
+        return jsonify(scan_jobs.start_scan(
+            scan=run_daily_scan, account_size=float(account_size)))
     except Exception:
         log.exception("Full scan endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/scan-status")
+def api_scan_status():
+    """Poll a background scan job (or, with no `job`, the one currently running)."""
+    try:
+        from src.scanner import scan_jobs
+
+        job_id = request.args.get("job", "").strip()
+        job = scan_jobs.get_job(job_id) if job_id else (
+            scan_jobs.latest_job() or {"status": "idle"})
+        if job.get("result") is not None:
+            job["result"] = _clean(job["result"])
+        return jsonify(job)
+    except Exception:
+        log.exception("Scan status endpoint error")
         return _error_response("Internal server error", 500)
 
 
