@@ -92,6 +92,21 @@ def env_bool(key: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
+def env_list(key: str, default: list) -> list:
+    """Comma-separated env override for a YAML list.
+
+    An unset **or blank** value keeps the YAML default. A hosting dashboard's
+    text field cleared to "" is far more likely to be an accident than a
+    deliberate "empty list", and for the lists this guards (alert tiers,
+    provider chains) an empty list means "do nothing silently" — the failure
+    mode worth refusing. Turn a feature off with its own enable flag instead.
+    """
+    raw = env(key, "").strip()
+    if not raw:
+        return list(default)
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 # Convenience accessors
 ACCOUNT_SIZE: float = float(get("account_size", 10_000))
 RISK_PER_TRADE: float = float(get("risk_per_trade", 0.01))
@@ -119,14 +134,24 @@ MOVERS_SUSPECT_CHANGE_PCT: float = (
 MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
 
 _CATALYST_ALERTS: dict = _MOVERS.get("catalyst_alerts", {}) if isinstance(_MOVERS, dict) else {}
+# Every key here takes an env override. These are the knobs an operator actually
+# reaches for while the wire is live (which tiers alert, how wide the universe
+# is, how loud it may get), and on a managed host a yaml-only knob costs a
+# commit + a manual deploy to turn. The env name is the accessor name.
 CATALYST_ALERTS_ENABLED: bool = env_bool(
     "CATALYST_ALERTS_ENABLED", bool(_CATALYST_ALERTS.get("enabled", False)))
-CATALYST_ALERTS_UNIVERSE: str = str(_CATALYST_ALERTS.get("universe", "watchlist"))
-CATALYST_ALERTS_TIERS: list = list(_CATALYST_ALERTS.get("tiers", ["strong"]))
-CATALYST_ALERTS_LOOKBACK_SEC: float = _as_float(_CATALYST_ALERTS.get("lookback_sec", 300), 300.0)
-CATALYST_ALERTS_DEDUP_TTL_SEC: float = _as_float(_CATALYST_ALERTS.get("dedup_ttl_sec", 3600), 3600.0)
-CATALYST_ALERTS_MAX_PER_RUN: int = _as_int(_CATALYST_ALERTS.get("max_per_run", 5), 5)
-CATALYST_ALERTS_SUPPRESS_HALTED: bool = bool(_CATALYST_ALERTS.get("suppress_halted", True))
+CATALYST_ALERTS_UNIVERSE: str = env(
+    "CATALYST_ALERTS_UNIVERSE", str(_CATALYST_ALERTS.get("universe", "watchlist"))).strip()
+CATALYST_ALERTS_TIERS: list = env_list(
+    "CATALYST_ALERTS_TIERS", list(_CATALYST_ALERTS.get("tiers", ["strong"])))
+CATALYST_ALERTS_LOOKBACK_SEC: float = env_float(
+    "CATALYST_ALERTS_LOOKBACK_SEC", _as_float(_CATALYST_ALERTS.get("lookback_sec", 300), 300.0))
+CATALYST_ALERTS_DEDUP_TTL_SEC: float = env_float(
+    "CATALYST_ALERTS_DEDUP_TTL_SEC", _as_float(_CATALYST_ALERTS.get("dedup_ttl_sec", 3600), 3600.0))
+CATALYST_ALERTS_MAX_PER_RUN: int = env_int(
+    "CATALYST_ALERTS_MAX_PER_RUN", _as_int(_CATALYST_ALERTS.get("max_per_run", 5), 5))
+CATALYST_ALERTS_SUPPRESS_HALTED: bool = env_bool(
+    "CATALYST_ALERTS_SUPPRESS_HALTED", bool(_CATALYST_ALERTS.get("suppress_halted", True)))
 
 _MOVERS_HALTS: dict = _MOVERS.get("halts", {}) if isinstance(_MOVERS, dict) else {}
 MOVERS_HALTS_ENABLED: bool = env_bool("MOVERS_HALTS_ENABLED", bool(_MOVERS_HALTS.get("enabled", True)))

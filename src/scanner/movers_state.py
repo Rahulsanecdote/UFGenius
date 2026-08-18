@@ -170,17 +170,30 @@ class MoversWorkerState:
     # ── write path (worker) ──────────────────────────────────────────────────
 
     def record_alerts(self, fired: list[dict], now: Optional[datetime] = None) -> None:
-        """Append fired alerts to the bounded recent ring (worker-side)."""
+        """Append fired alerts to the bounded recent ring (worker-side).
+
+        Catalyst alerts arrive through the same ring as price-derived ones but
+        carry a news ``tier`` and ``headline``; both are kept when present (and
+        only then, so a movers alert's row is unchanged) because without the
+        headline a catalyst alert is indistinguishable from a mover in the UI.
+        """
         now = now or _utcnow()
         stamp = now.isoformat()
         for f in fired or []:
-            self._recent_alerts.append({
+            row = {
                 "ticker": f.get("ticker"),
                 "direction": f.get("direction"),
                 "score": f.get("score"),
                 "sent": bool(f.get("sent")),
                 "at": stamp,
-            })
+            }
+            if f.get("tier"):
+                row["tier"] = str(f.get("tier"))
+            if f.get("headline"):
+                # Bounded: this snapshot is rewritten every cycle, and a wire
+                # headline is arbitrary-length text from outside.
+                row["headline"] = str(f.get("headline"))[:200]
+            self._recent_alerts.append(row)
         self._recent_alerts = self._recent_alerts[-self._max_recent():]
 
     def record_invalidations(self, transitions: list[dict],
@@ -204,6 +217,7 @@ class MoversWorkerState:
         movers: Optional[list] = None,
         stream_status: Optional[dict] = None,
         stream_prices: Optional[dict] = None,
+        features: Optional[dict] = None,
         now: Optional[datetime] = None,
     ) -> None:
         """Write a full snapshot of the worker's current state (atomic, flocked).
@@ -212,8 +226,13 @@ class MoversWorkerState:
         is the last discovered candidate list — both are reduced to compact,
         JSON-safe views here. ``stream_status`` / ``stream_prices`` (Phase 8,
         optional) carry the live-stream status and per-symbol last prices so the
-        dashboard can show a real-time tape. Best-effort: any failure is logged,
-        never raised.
+        dashboard can show a real-time tape.
+
+        ``features`` records which opt-in subsystems this worker actually has
+        running. A counter alone cannot distinguish "enabled and the wire was
+        quiet" from "never switched on" — the same zero — so the flag is what
+        makes the counter readable. Best-effort: any failure is logged, never
+        raised.
         """
         now = now or _utcnow()
         try:
@@ -226,6 +245,7 @@ class MoversWorkerState:
                 "watching_count": len(watching or []),
                 "recent_alerts": list(self._recent_alerts),
                 "recent_invalidations": list(self._recent_invalidations),
+                "features": {k: bool(v) for k, v in (features or {}).items()},
             }
             if stream_status is not None:
                 payload["streaming"] = dict(stream_status)

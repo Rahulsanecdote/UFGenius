@@ -312,3 +312,19 @@ def test_catalyst_alerts_are_skipped_outside_the_scan_window():
         for p in ctx:
             p.stop()
     assert news.calls == 0
+
+
+def test_published_features_reflect_whether_catalyst_alerts_run():
+    # The dashboard reads this flag to tell "enabled and the wire was quiet"
+    # from "never switched on" — both publish catalyst_alerts: 0.
+    ctx = _cfg()
+    for p in ctx:
+        p.start()
+    try:
+        _, _, on = _run(max_cycles=1, catalyst_alerter=_CatalystAlerter())
+        _, _, off = _run(max_cycles=1, catalyst_alerter=None)
+    finally:
+        for p in ctx:
+            p.stop()
+    assert on["state"].publishes[-1]["features"] == {"catalyst_alerts": True}
+    assert off["state"].publishes[-1]["features"] == {"catalyst_alerts": False}

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from src.catalysts import catalyst_alerts
 from src.catalysts.catalyst_alerts import CatalystAlerter, format_catalyst_alert
 from src.catalysts.news_feed import NewsHeadline
 from src.utils import config as cfg
@@ -33,6 +34,9 @@ def _enabled(monkeypatch):
     monkeypatch.setattr(cfg, "CATALYST_ALERTS_MAX_PER_RUN", 5)
     monkeypatch.setattr(cfg, "CATALYST_ALERTS_SUPPRESS_HALTED", True)
     monkeypatch.setattr("src.data.halts.active_halts", lambda *a, **k: {})
+    # Misconfiguration warnings fire once per process, so a test that expects
+    # one would otherwise depend on no earlier test having triggered it first.
+    catalyst_alerts._warned.clear()
 
 
 def _poll(alerter, items, **kw):
@@ -206,3 +210,64 @@ class TestDedupPruning:
         assert alerter.poll(now=_NOW + timedelta(seconds=60), send=False,
                             fetch=lambda *a, **k: items) == []
         assert len(alerter._recent) == 1
+
+
+class TestMisconfiguration:
+    """A typo'd tier or universe must be loud, not silently inert.
+
+    Every knob is now env-settable from a hosting dashboard, where a typo is
+    cheap to make and expensive to notice: an unrecognised value matches
+    nothing, which looks exactly like "the wire was quiet". These tests pin the
+    behaviour that makes the difference visible in the logs.
+    """
+
+    def test_unknown_tier_is_dropped_with_a_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_TIERS", ["strong", "fda"])
+        with caplog.at_level("WARNING"):
+            out = _poll(CatalystAlerter(), [_news("FDA approves ACME drug", ["ACME"])])
+        # The valid half still works — one bad entry does not disable the rest.
+        assert [f["ticker"] for f in out] == ["ACME"]
+        assert "unknown tier" in caplog.text
+        assert "'fda'" in caplog.text or "fda" in caplog.text
+
+    def test_all_tiers_unknown_stops_and_says_why(self, monkeypatch, caplog):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_TIERS", ["catalyst"])
+        with caplog.at_level("WARNING"):
+            assert _poll(CatalystAlerter(), [_news("FDA approves ACME drug", ["ACME"])]) == []
+        assert "no valid tiers configured" in caplog.text
+
+    def test_tier_names_are_case_and_space_insensitive(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_TIERS", [" Strong "])
+        out = _poll(CatalystAlerter(), [_news("FDA approves ACME drug", ["ACME"])])
+        assert [f["ticker"] for f in out] == ["ACME"]
+
+    def test_unknown_universe_falls_back_to_watchlist(self, monkeypatch, caplog):
+        # Falling back to the *narrow* option is the safe direction: a typo must
+        # not silently promote the feed to the market-wide firehose.
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_UNIVERSE", "everything")
+        monkeypatch.setattr("src.data.universe.get_custom_watchlist", lambda: ["ACME"])
+        with caplog.at_level("WARNING"):
+            out = _poll(CatalystAlerter(), [
+                _news("FDA approves ACME drug", ["ACME"]),
+                _news("FDA approves OTHER drug", ["OTHER"]),
+            ])
+        assert [f["ticker"] for f in out] == ["ACME"]
+        assert "unknown universe" in caplog.text
+
+    def test_empty_watchlist_warns_with_the_fix(self, monkeypatch, caplog):
+        # The default shape of the feature on a host where CUSTOM_WATCHLIST was
+        # never set. Identical symptom to "no news today", so it has to say so.
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_UNIVERSE", "watchlist")
+        monkeypatch.setattr("src.data.universe.get_custom_watchlist", lambda: [])
+        with caplog.at_level("WARNING"):
+            assert _poll(CatalystAlerter(), [_news("FDA approves ACME", ["ACME"])]) == []
+        assert "CUSTOM_WATCHLIST" in caplog.text
+
+    def test_warnings_do_not_repeat_every_poll(self, monkeypatch, caplog):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_UNIVERSE", "everything")
+        monkeypatch.setattr("src.data.universe.get_custom_watchlist", lambda: ["ACME"])
+        alerter = CatalystAlerter()
+        with caplog.at_level("WARNING"):
+            for _ in range(4):
+                _poll(alerter, [])
+        assert caplog.text.count("unknown universe") == 1

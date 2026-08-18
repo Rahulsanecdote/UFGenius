@@ -51,6 +51,10 @@ movers:
   # watchlist, so this runs every cycle instead of every fifth.
   # NOT prediction — it reports that a catalyst was published, sooner than a
   # price-derived scanner can notice the consequence. Needs ALPACA keys.
+  # Every key below is overridable from the environment as CATALYST_ALERTS_<KEY>
+  # (e.g. CATALYST_ALERTS_UNIVERSE=all) so a managed host can retune the wire
+  # without a commit + redeploy. Unknown tiers / universes are logged and
+  # ignored rather than silently matching nothing.
   catalyst_alerts:
     enabled: false            # master switch (default OFF — opt in deliberately)
     universe: watchlist       # watchlist (CUSTOM_WATCHLIST) | all (market-wide firehose)

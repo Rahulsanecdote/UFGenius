@@ -141,6 +141,9 @@ def run_worker(
                     movers=last_movers,
                     stream_status=stream.status() if stream is not None else None,
                     stream_prices=stream.snapshot() if stream is not None else None,
+                    # So the dashboard can tell "catalyst alerts are on and the
+                    # wire is quiet" from "never enabled" — both read as 0.
+                    features={"catalyst_alerts": catalyst_alerter is not None},
                 )
             except Exception:  # publishing is best-effort — never break the loop
                 pass

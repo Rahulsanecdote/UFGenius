@@ -117,3 +117,51 @@ def test_publish_never_raises_on_bad_input(tmp_path):
     s.publish(cycle=1, stats={}, watching=[object()], scan_window_open=True)
     # nothing was written because the view build failed → still unavailable
     assert _state(tmp_path).load().snapshot()["available"] is False
+
+
+def test_catalyst_alert_fields_survive_the_ring(tmp_path):
+    """A catalyst alert must stay distinguishable from a price-derived one.
+
+    Both go through the same ring; only the catalyst alert carries a news tier
+    and headline, and without them the dashboard cannot tell the two apart or
+    show the receipt the alert is based on.
+    """
+    s = _state(tmp_path)
+    s.record_alerts([
+        {"ticker": "ACME", "direction": "long", "score": None, "sent": False,
+         "tier": "strong", "headline": "FDA approves ACME's lead drug"},
+        {"ticker": "BCME", "direction": "long", "score": 88.0, "sent": True},
+    ])
+    s.publish(cycle=1, stats={}, watching=[], scan_window_open=True)
+    alerts = _state(tmp_path).load().snapshot()["recent_alerts"]
+
+    catalyst, mover = alerts
+    assert catalyst["tier"] == "strong"
+    assert catalyst["headline"] == "FDA approves ACME's lead drug"
+    assert catalyst["sent"] is False
+    # A movers alert's row is unchanged — the new keys are absent, not null,
+    # so `filter(a => a.tier)` cleanly separates the two kinds.
+    assert "tier" not in mover and "headline" not in mover
+
+
+def test_headline_is_bounded(tmp_path):
+    # Wire headlines are arbitrary-length text from outside, and this snapshot
+    # is rewritten every cycle.
+    s = _state(tmp_path)
+    s.record_alerts([{"ticker": "ACME", "tier": "strong", "headline": "x" * 5000}])
+    s.publish(cycle=1, stats={}, watching=[], scan_window_open=True)
+    assert len(_state(tmp_path).load().snapshot()["recent_alerts"][0]["headline"]) == 200
+
+
+def test_features_flag_distinguishes_off_from_quiet(tmp_path):
+    """`0 catalyst alerts` is ambiguous without a flag saying the layer is on."""
+    s = _state(tmp_path)
+    s.publish(cycle=1, stats={"catalyst_alerts": 0}, watching=[],
+              scan_window_open=True, features={"catalyst_alerts": True})
+    assert _state(tmp_path).load().snapshot()["features"] == {"catalyst_alerts": True}
+
+
+def test_features_default_to_empty(tmp_path):
+    s = _state(tmp_path)
+    s.publish(cycle=1, stats={}, watching=[], scan_window_open=True)
+    assert _state(tmp_path).load().snapshot()["features"] == {}

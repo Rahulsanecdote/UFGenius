@@ -526,6 +526,12 @@ HTML = '''
     .mw-events { margin-top: 8px; font-size: 12px; color: var(--text-muted, #8b97a8);
       display: flex; flex-direction: column; gap: 3px; }
     .mw-events .mw-inval { color: #d9a441; }
+    .mw-events .mw-cat { color: #41c07e; }
+    .mw-events .mw-cat.mw-cat-dilution { color: #e0607a; }
+    .mw-events .mw-cat .mw-cat-hl { color: var(--text-muted, #8b97a8); }
+    /* Fired but not delivered — the free web service deliberately carries no
+       Telegram creds, so this is the normal state there, not a bug. */
+    .mw-events .mw-undelivered { color: var(--text-muted, #8b97a8); font-style: italic; }
     .movers-table-wrap { overflow-x: auto; padding: 0 12px 4px; }
     .movers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .movers-table th, .movers-table td {
@@ -1827,7 +1833,7 @@ HTML = '''
             <tbody id="moversBody"></tbody>
           </table>
         </div>
-        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs an FMP key. <b>Deep scan</b> re-ranks by early-momentum quality. A <b>†</b> marks a change the feed reported unadjusted for a corporate action (e.g. a reverse split), recomputed here from split-adjusted bars.</p>
+        <p class="movers-note panel-note">Discovery only — risk filters still apply before any trade. Needs a key for at least one provider in the discovery chain (Alpaca, Polygon, or FMP). <b>Deep scan</b> re-ranks by early-momentum quality. A <b>†</b> marks a change the feed reported unadjusted for a corporate action (e.g. a reverse split), recomputed here from split-adjusted bars.</p>
       </section>
 
       <section class="panel" id="premarketPanel" aria-labelledby="premarketTitle">
@@ -3726,9 +3732,15 @@ HTML = '''
         : (s.age_seconds < 90 ? `${Math.round(s.age_seconds)}s ago`
                               : `${Math.round(s.age_seconds / 60)}m ago`);
       const win = s.scan_window_open ? 'market open' : 'off-hours';
+      // Catalyst alerts are opt-in, so the counter is only meaningful next to
+      // the flag that says the subsystem is running — without it, "0 catalyst"
+      // and "not enabled" look the same. Hidden entirely when off.
+      const feats = s.features || {};
+      const cat = feats.catalyst_alerts ? ` · ${st.catalyst_alerts || 0} catalyst` : '';
       $('mwMeta').textContent =
         `cycle ${s.cycle || 0} · ${age ? 'updated ' + age + ' · ' : ''}${win} · `
-        + `${st.discoveries || 0} scans · ${st.alerts || 0} alerts · ${st.invalidations || 0} invalidated`;
+        + `${st.discoveries || 0} scans · ${st.alerts || 0} alerts · ${st.invalidations || 0} invalidated`
+        + cat;
 
       const watching = Array.isArray(s.watching) ? s.watching : [];
       $('mwWatching').innerHTML = watching.length
@@ -3744,10 +3756,28 @@ HTML = '''
           }).join('')
         : '<span class="mw-meta">Nothing on the watch set right now.</span>';
 
+      // Catalyst alerts share the alert ring with the price-derived ones and are
+      // identified by carrying a news tier. They are shown with the headline —
+      // the receipt you can check — and marked when they fired but were not
+      // delivered (the web service has no Telegram creds by design), so an
+      // undelivered alert reads as a deployment fact, not a silent failure.
+      const cats = (Array.isArray(s.recent_alerts) ? s.recent_alerts : [])
+        .filter(a => a && a.tier).slice(-3).reverse();
+      const catRows = cats.map(a => {
+        const icon = a.tier === 'dilution' ? '🔴' : (a.tier === 'moderate' ? '🟡' : '🟢');
+        const cls = a.tier === 'dilution' ? 'mw-cat mw-cat-dilution' : 'mw-cat';
+        const undelivered = a.sent ? ''
+          : ' <span class="mw-undelivered">(not delivered)</span>';
+        const hl = a.headline
+          ? ` <span class="mw-cat-hl">${escapeHtml(a.headline)}</span>` : '';
+        return `<span class="${cls}">${icon} ${escapeHtml(a.ticker || '?')} `
+             + `${escapeHtml(String(a.tier).toUpperCase())} on the wire${hl}${undelivered}</span>`;
+      });
+
       const inval = (Array.isArray(s.recent_invalidations) ? s.recent_invalidations : []).slice(-4).reverse();
-      $('mwEvents').innerHTML = inval.map(t =>
-        `<span class="mw-inval">⚠️ ${t.ticker} ${t.direction === 'short' ? 'SHORT' : 'LONG'} invalidated — ${t.reason || 'setup broke down'}</span>`
-      ).join('');
+      $('mwEvents').innerHTML = catRows.concat(inval.map(t =>
+        `<span class="mw-inval">⚠️ ${escapeHtml(t.ticker || '?')} ${t.direction === 'short' ? 'SHORT' : 'LONG'} invalidated — ${escapeHtml(t.reason || 'setup broke down')}</span>`
+      )).join('');
     }
     async function loadMoversWorker() {
       try {
