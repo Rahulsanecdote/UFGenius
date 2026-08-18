@@ -325,6 +325,18 @@ pytest --cov=src       # coverage
   Explicitly **not prediction** — it reports that a catalyst was published
   sooner than a price-derived scanner can notice the consequence; the alert text
   says so. Discovery/alerting only; fail-soft everywhere.
+  Every knob takes an env override (`CATALYST_ALERTS_ENABLED`, `_UNIVERSE`,
+  `_TIERS`, `_LOOKBACK_SEC`, `_DEDUP_TTL_SEC`, `_MAX_PER_RUN`,
+  `_SUPPRESS_HALTED`) so a managed host can retune the wire without a commit +
+  redeploy. Because every misconfiguration here presents as "the wire was
+  quiet", the ones that *cannot* match anything are **loud**: an unknown tier or
+  universe, and the default `universe: watchlist` with no `CUSTOM_WATCHLIST`,
+  each log a warning once. Firing is visible on the dashboard worker strip —
+  a `N catalyst` counter shown only when the layer is actually running (`features.catalyst_alerts`
+  in the worker snapshot, since a bare `0` cannot distinguish "quiet" from "off")
+  plus recent alerts with their headline, marked `(not delivered)` when Telegram
+  creds are absent. That is the normal state on the Render *web* service, which
+  deliberately carries no creds so the worker service alerts exactly once.
 - **Movers provider chain** (`src/scanner/movers_providers.py`, config
   `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
   FMP-only, so an exhausted daily quota took the intraday path down entirely.
@@ -395,7 +407,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
 | GET | `/api/portfolio-risk` | Advisory portfolio-level risk snapshot: gross leverage / heat / per-name weights vs limits (roadmap Phase 4; `available:false` when disabled) |
 | GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `available:false` without an FMP key |
-| GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations (Phase 7 shared state; `available:false` when the worker isn't running) |
+| GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations, and `features` (which opt-in layers are running) (Phase 7 shared state; `available:false` when the worker isn't running) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/clear-cache` | Clear the market-data cache |

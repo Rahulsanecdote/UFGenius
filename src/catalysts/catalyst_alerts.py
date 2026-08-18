@@ -48,6 +48,21 @@ _TIER_TAG = {
     "dilution": ("🔴 DILUTION", "short"),
 }
 
+_UNIVERSES = {"watchlist", "all"}
+
+# Config typos are the whole failure mode this module has to defend against:
+# every knob is now env-settable from a hosting dashboard, and an unrecognised
+# tier or universe simply matches nothing — indistinguishable from "the wire was
+# quiet". Warn, once per distinct bad value, so it shows up in the logs without
+# a line per poll.
+_warned: set = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    if key not in _warned:
+        _warned.add(key)
+        log.warning(message)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -82,7 +97,13 @@ class CatalystAlerter:
 
     def _universe(self) -> Optional[list[str]]:
         """Symbols to filter to, or None for the market-wide firehose."""
-        mode = str(config.CATALYST_ALERTS_UNIVERSE or "watchlist").lower()
+        mode = str(config.CATALYST_ALERTS_UNIVERSE or "watchlist").strip().lower()
+        if mode not in _UNIVERSES:
+            _warn_once(
+                f"universe:{mode}",
+                f"catalyst-alerts: unknown universe '{mode}' — expected one of "
+                f"{sorted(_UNIVERSES)}; falling back to 'watchlist'")
+            mode = "watchlist"
         if mode == "all":
             return None
         try:
@@ -92,6 +113,32 @@ class CatalystAlerter:
         except Exception as exc:
             log.debug(f"catalyst-alerts: watchlist lookup failed ({type(exc).__name__})")
             return []
+
+    @staticmethod
+    def _tiers() -> set:
+        """Configured tiers, restricted to ones the classifier can actually emit.
+
+        A tier the taxonomy has no name for can never match, so leaving it in
+        would just mean "alerts never fire" with nothing in the logs to say why.
+        Unknown names are dropped with a warning; if that empties the set the
+        caller stops, because alerting on nothing is a misconfiguration, not a
+        setting.
+        """
+        raw = [str(t).strip().lower() for t in (config.CATALYST_ALERTS_TIERS or [])]
+        tiers = {t for t in raw if t in _TIER_TAG}
+        unknown = sorted({t for t in raw if t and t not in _TIER_TAG})
+        if unknown:
+            _warn_once(
+                f"tiers:{','.join(unknown)}",
+                f"catalyst-alerts: unknown tier(s) {unknown} ignored — expected "
+                f"any of {sorted(_TIER_TAG)}")
+        if not tiers:
+            _warn_once(
+                "tiers:empty",
+                "catalyst-alerts: no valid tiers configured "
+                "(catalyst_alerts.tiers / CATALYST_ALERTS_TIERS) — nothing can "
+                "alert; set at least one of " + ", ".join(sorted(_TIER_TAG)))
+        return tiers
 
     def _halted(self) -> set:
         if not config.CATALYST_ALERTS_SUPPRESS_HALTED:
@@ -121,14 +168,24 @@ class CatalystAlerter:
             return []
         now = now or _utcnow()
         fetch = fetch or fetch_news_batch
-        tiers = {str(t).lower() for t in (config.CATALYST_ALERTS_TIERS or ["strong"])}
+        tiers = self._tiers()
+        if not tiers:
+            return []
         cap = max(0, int(config.CATALYST_ALERTS_MAX_PER_RUN))
         ttl = float(config.CATALYST_ALERTS_DEDUP_TTL_SEC)
         lookback = max(30.0, float(config.CATALYST_ALERTS_LOOKBACK_SEC))
 
         universe = self._universe()
         if universe is not None and not universe:
-            log.debug("catalyst-alerts: empty watchlist — nothing to watch")
+            # Enabled but watching nothing. This is the default shape of the
+            # feature (`universe: watchlist`) on a host where CUSTOM_WATCHLIST
+            # was never set, so it deserves a warning, not a debug line — the
+            # symptom is otherwise identical to "no news today".
+            _warn_once(
+                "empty-watchlist",
+                "catalyst-alerts: enabled but the watchlist is empty — set "
+                "CUSTOM_WATCHLIST, or use universe 'all' "
+                "(CATALYST_ALERTS_UNIVERSE=all) for the market-wide wire")
             return []
         try:
             headlines = fetch(universe, since=now - timedelta(seconds=lookback))

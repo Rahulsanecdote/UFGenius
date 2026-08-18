@@ -47,6 +47,12 @@ services:
         value: "true"
       # Needs FMP_KEY (discovery) and ALPACA_API_KEY/SECRET (intraday + stream),
       # set as Secrets below. Without them the loop still runs but populates less.
+      #
+      #   Catalyst alerts (CATALYST_ALERTS_ENABLED) can be switched on here, but
+      #   read the consequence first: with no Telegram creds on this service,
+      #   they fire and appear in the dashboard worker strip marked "(not
+      #   delivered)" — never on your phone. Put them on the worker service
+      #   below for delivery. The full key list is documented there.
 
       # ── Optional: set these in the Render dashboard (mark as Secret) ──────
       # Key names must match exactly what the code reads (src/utils/config.py).
@@ -140,6 +146,28 @@ services:
         sync: false
       - key: ALPACA_SECRET_KEY
         sync: false
+      # ── Catalyst-triggered alerts (opt-in, default OFF) ───────────────────
+      #   Fires on the NEWS WIRE rather than on price, so a catalyst is seen
+      #   at publication instead of after the move shows up on a gainers list.
+      #   Discovery/alerting only — it never sizes, gates, or places anything.
+      #   Belongs on THIS service, not the web one: it delivers via Telegram.
+      #   Needs ALPACA_API_KEY/SECRET (the batch news wire is Alpaca-only).
+      # - key: CATALYST_ALERTS_ENABLED       # master switch
+      #   value: "true"
+      # - key: CATALYST_ALERTS_UNIVERSE      # watchlist | all (market-wide wire)
+      #   value: "watchlist"                 # 'watchlist' needs CUSTOM_WATCHLIST set
+      # - key: CUSTOM_WATCHLIST              # e.g. "AAPL,NVDA,TSLA" — required for
+      #   sync: false                        # universe=watchlist, else nothing fires
+      # - key: CATALYST_ALERTS_TIERS         # strong | moderate | weak | dilution
+      #   value: "strong"                    # comma-separated; blank keeps the default
+      # - key: CATALYST_ALERTS_LOOKBACK_SEC  # how far back each poll looks
+      #   value: "300"
+      # - key: CATALYST_ALERTS_DEDUP_TTL_SEC # don't re-alert the same story
+      #   value: "3600"
+      # - key: CATALYST_ALERTS_MAX_PER_RUN   # spam guard per cycle
+      #   value: "5"
+      # - key: CATALYST_ALERTS_SUPPRESS_HALTED  # never alert a halted name
+      #   value: "true"
 
   # ── Optional: persistent disk for market-data cache (paid plans only) ───
   #   Without this, the data/ cache is wiped on every deploy/restart.
