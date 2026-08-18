@@ -1845,7 +1845,8 @@ HTML = '''
           <div class="movers-actions">
             <select id="pmUniverse" class="field-select" aria-label="Screener universe">
               <option value="WATCHLIST" selected>Watchlist</option>
-              <option value="MOVERS">Movers</option>
+              <option value="PREMARKET">Pre-market movers</option>
+              <option value="MOVERS">Movers (prior session)</option>
               <option value="SP500">S&amp;P 500 (first 50)</option>
             </select>
             <button id="pmPennyButton" class="summary-action" type="button" aria-pressed="false" title="Gate from the penny hard rails: $0.50–$10 band, $50M market-cap floor, share-volume backstop">Penny: Auto</button>
@@ -1866,7 +1867,7 @@ HTML = '''
           </table>
         </div>
         <div id="pmNearMisses" class="movers-status" hidden></div>
-        <p class="movers-note panel-note">Screener only — firewalled from the money path; no protection filter is loosened. <b>Penny: On</b> swaps the gates for the <b>penny hard rails</b>; scoring and labels stay strict. Watchlist universe needs <b>CUSTOM_WATCHLIST</b> set.</p>
+        <p class="movers-note panel-note">Screener only — firewalled from the money path; no protection filter is loosened. <b>Penny: On</b> swaps the gates for the <b>penny hard rails</b>; scoring and labels stay strict. Watchlist universe needs <b>CUSTOM_WATCHLIST</b> set. Use <b>Pre-market movers</b> for the live extended-hours tape — <b>Movers (prior session)</b> reports the PREVIOUS regular session before 09:30, so most of its names aren't quoting yet.</p>
       </section>
 
       <section class="panel" aria-labelledby="workspaceTitle">
@@ -3807,10 +3808,24 @@ HTML = '''
       const status = $('pmStatus');
       const table = $('pmTable');
       const nearBox = $('pmNearMisses');
+      // Where the universe came from. A bounded pool cannot contain a stock
+      // that was quiet yesterday no matter how it is ranked, so that limit is
+      // stated on screen rather than left for the operator to infer.
+      const disc = payload && payload.universe_discovery;
+      let covNote = '';
+      if (disc && disc.served_by) {
+        covNote = disc.coverage === 'market_wide'
+          ? ` · universe: ${disc.served_by} (market-wide)`
+          : ` · universe: ${disc.served_by} (BOUNDED POOL — a stock that was quiet`
+            + ` in the prior session cannot appear)`;
+      } else if (disc && disc.reason) {
+        covNote = ` · universe: ${String(disc.reason).replace(/_/g, ' ')}`;
+      }
       if (!payload || payload.error) {
         table.hidden = true;
         nearBox.hidden = true;
-        status.textContent = (payload && payload.error) || 'Pre-market screener unavailable.';
+        status.textContent = ((payload && payload.error)
+          || 'Pre-market screener unavailable.') + covNote;
         return;
       }
       const rows = Array.isArray(payload.candidates) ? payload.candidates : [];
@@ -3822,7 +3837,7 @@ HTML = '''
       if (!rows.length) {
         table.hidden = true;
         status.textContent = `No candidates passed the ${payload.profile_gates || 'standard'} gates — `
-          + `${payload.scanned_with_premarket_data || 0} tickers had pre-market data${truncNote}${asOfNote}. `
+          + `${payload.scanned_with_premarket_data || 0} tickers had pre-market data${truncNote}${asOfNote}${covNote}. `
           + 'Outside the 4:00–9:30 ET session an empty result is expected.';
       } else {
         $('pmBody').innerHTML = rows.map((r, i) => {
@@ -3851,7 +3866,7 @@ HTML = '''
         table.hidden = false;
         status.textContent = `${rows.length} candidate${rows.length === 1 ? '' : 's'} · `
           + `${payload.profile_gates || 'standard'} gates · `
-          + `${payload.scanned_with_premarket_data || 0} scanned${truncNote}${asOfNote}. `
+          + `${payload.scanned_with_premarket_data || 0} scanned${truncNote}${asOfNote}${covNote}. `
           + 'Tap a catalyst for its headline. Research watchlist only.';
       }
       if (near.length) {
@@ -5015,14 +5030,38 @@ def api_scan_premarket():
         else:
             tickers = get_universe(source)[:limit]
 
+        # Where the universe came from matters as much as what is in it: the
+        # PREMARKET chain's providers differ in whether they can see a fresh
+        # gapper at all, so the coverage class travels with the result rather
+        # than being assumed by whoever reads it.
+        discovery = None
+        if source == "PREMARKET":
+            from src.scanner.premarket_movers import last_discovery_info
+
+            discovery = last_discovery_info()
+
         if not tickers:
+            if source == "PREMARKET":
+                return jsonify({
+                    "error": "No stocks are moving in the current extended-hours "
+                             "session (or no pre-market provider answered).",
+                    "candidates": [], "universe_discovery": discovery,
+                })
             return jsonify({
                 "error": "No tickers configured. Set CUSTOM_WATCHLIST env var.",
                 "candidates": [],
             })
         penny_arg = request.args.get("penny", "").strip().lower()
         penny = True if penny_arg in ("1", "true", "yes") else None
-        return jsonify(scan_premarket(tickers, penny=penny))
+        result = scan_premarket(tickers, penny=penny)
+        if discovery is not None:
+            result["universe_discovery"] = discovery
+            if discovery.get("coverage") == "bounded_pool":
+                result.setdefault("disclosures", []).append(
+                    f"Universe coverage: BOUNDED POOL (via "
+                    f"{discovery.get('served_by')}). {discovery.get('reason') or ''}"
+                    .strip())
+        return jsonify(result)
     except Exception:
         log.exception("Pre-market scan error")
         return _error_response("Internal server error", 500)

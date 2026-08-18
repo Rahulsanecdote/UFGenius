@@ -846,6 +846,29 @@ SCREENER_PRESETS: dict = get("screener.presets", {}) or {}
 # dict so the module's per-key defaults apply when the block is absent; the
 # screener is read-only research surface, so no per-key env overrides needed.
 PREMARKET_SETTINGS: dict = get("premarket", {}) or {}
+
+# Pre-market movers DISCOVERY (the universe the screener above consumes). The
+# regular-session movers chain reports yesterday's session before 09:30, so this
+# is a separate chain that reads the live extended-hours tape. Env-overridable:
+# these are retuned while the pre-market session is running, when a commit +
+# redeploy is not an option.
+_PREMARKET_MOVERS: dict = get("premarket_movers", {}) or {}
+PREMARKET_MOVERS_PROVIDERS: list = env_list(
+    "PREMARKET_MOVERS_PROVIDERS",
+    list(_PREMARKET_MOVERS.get("providers", ["polygon", "yahoo"])))
+PREMARKET_MOVERS_LIMIT: int = env_int(
+    "PREMARKET_MOVERS_LIMIT", _as_int(_PREMARKET_MOVERS.get("limit", 50), 50))
+PREMARKET_MOVERS_MIN_PRICE: float = env_float(
+    "PREMARKET_MOVERS_MIN_PRICE",
+    _as_float(_PREMARKET_MOVERS.get("min_price", 1.0), 1.0))
+PREMARKET_MOVERS_MIN_CHANGE_PCT: float = env_float(
+    "PREMARKET_MOVERS_MIN_CHANGE_PCT",
+    _as_float(_PREMARKET_MOVERS.get("min_change_pct", 4.0), 4.0))
+PREMARKET_MOVERS_YAHOO_SCREENERS: list = env_list(
+    "PREMARKET_MOVERS_YAHOO_SCREENERS",
+    list(_PREMARKET_MOVERS.get("yahoo_screeners", [
+        "day_gainers", "day_losers", "most_actives",
+        "small_cap_gainers", "aggressive_small_caps"])))
 # Feature lookback periods (config-driven, not hardcoded). SMA periods drive
 # which `sma{p}` features exist, so a preset can reference any configured period.
 SCREENER_SMA_PERIODS: list = [

@@ -187,6 +187,23 @@ pytest --cov=src       # coverage
   see pre-market (Elite-only) — the finviz provider is prior-day context only.
   Thresholds/weights in `config.yaml` `premarket:` with cited provenance;
   see `docs/PREMARKET_SCREENER.md`.
+- **Pre-market movers discovery** (`src/scanner/premarket_movers.py`, config
+  `premarket_movers:`, universe `PREMARKET`): the universe the screener above
+  needs. The regular-session movers chain reports the **previous** session
+  before 09:30 (observed 2026-08-18 09:02 ET: the movers list carried the prior
+  day's closing prices and 44 of 50 names had no extended-hours print), so
+  `MOVERS` + the pre-market screener never overlap usefully — during the window
+  the screener needs, that universe is stale; when it refreshes, the window has
+  closed. Same `list`-vs-`None` contract as the movers chain. What is new here
+  is that **coverage is a disclosed property**: `polygon` is `market_wide` (full
+  snapshot — a fresh 08:00 gapper is visible), `yahoo` is `bounded_pool` (ranks
+  the prior session's lists; keyless, so it always exists, and structurally
+  blind to a name that was quiet yesterday). Falling back changes what the list
+  *could* contain, so the serving provider and its coverage class ride along in
+  `universe_discovery` (API), the dashboard status line, and the CLI header —
+  and an empty result outside 04:00–09:30 ET says the session is closed rather
+  than reading as a quiet tape. Discovery only; the screener it feeds is itself
+  firewalled from the money path.
 - **Intraday scan → entry pipeline (P1.2/P1.3):** `--mode intraday-scan` runs a
   `ContinuousScanner` (`src/scanner/intraday_scan.py`) that scores live intraday
   bars for volume/momentum/breakout/gap and pushes deduped hits into a
@@ -399,7 +416,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/scan` | Full-universe scan (slow: 60–120s) |
 | GET | `/api/scan-gaps` | Pre-market gap scan |
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
-| GET | `/api/scan-premarket` | Pre-market gap screener: ranked research watchlist from extended-hours bars with continuation/fade_risk evidence profiles — screener only, not signals |
+| GET | `/api/scan-premarket` | Pre-market gap screener: ranked research watchlist from extended-hours bars with continuation/fade_risk evidence profiles — screener only, not signals. `?universe=PREMARKET` discovers the live extended-hours tape and returns `universe_discovery` (serving provider + market_wide/bounded_pool coverage) |
 | GET | `/api/paper-scorecard` | Paper-trading scorecard: backtest-comparable metrics on realized trades (P0.4), plus the paper-vs-validated-backtest tolerance comparison |
 | GET | `/api/execution-quality` | Realized slippage / implementation shortfall from recorded fills (P2.1) |
 | GET | `/api/metrics` | Scan metrics: latency (avg/p95), signal counts, data-gap state (P2.3) |
