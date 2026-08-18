@@ -433,6 +433,23 @@ screener:
 # extended-hours bars — not trade signals, and no protection filter is loosened.
 # Threshold provenance is documented in docs/PREMARKET_SCREENER.md (consensus
 # practitioner defaults + published-evidence direction; none are validated alpha).
+# Pre-market movers DISCOVERY — the universe `premarket:` (below) consumes.
+# The regular-session movers chain reports the PREVIOUS session before 09:30, so
+# feeding it to the pre-market screener scans names that mostly aren't quoting
+# in extended hours. This chain reads the live extended-hours tape instead.
+# Coverage differs by provider and is disclosed in every result:
+#   polygon — market_wide  (full snapshot; a fresh 08:00 gapper is visible)
+#   yahoo   — bounded_pool (ranks the PRIOR session's lists; keyless fallback,
+#             structurally blind to a name that was quiet yesterday)
+# Every key takes an env override as PREMARKET_MOVERS_<KEY>.
+premarket_movers:
+  providers: [polygon, yahoo]     # first that answers wins; order = preference
+  limit: 50                       # max tickers handed to the screener
+  min_price: 1.0                  # below this the extended-hours tape is noise
+  min_change_pct: 4.0             # matches premarket.min_gap_pct — both directions
+  yahoo_screeners: [day_gainers, day_losers, most_actives,
+                    small_cap_gainers, aggressive_small_caps]
+
 premarket:
   interval: "5m"                  # extended-hours bar size for aggregates
   period: "15d"                   # lookback (must cover rvol history sessions)

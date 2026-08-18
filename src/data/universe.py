@@ -132,6 +132,7 @@ def get_universe(universe: str = "SP500") -> List[str]:
       WATCHLIST   — Custom watchlist from CUSTOM_WATCHLIST env var
       CUSTOM      — Same as WATCHLIST
       MOVERS      — Today's market-wide movers (FMP gainers/losers/most-actives)
+      PREMARKET   — Movers in the CURRENT extended-hours session (04:00–09:30 ET)
     """
     universe_upper = universe.upper()
 
@@ -146,6 +147,13 @@ def get_universe(universe: str = "SP500") -> List[str]:
         # logs the empty universe. Import here to avoid a scanner import cycle.
         from src.scanner.movers import get_movers_universe
         return get_movers_universe()
+    elif universe_upper == "PREMARKET":
+        # Extended-hours movers. NOT interchangeable with MOVERS: before 09:30
+        # that one reports the PREVIOUS regular session, so it names stocks that
+        # are mostly not quoting pre-market. Coverage varies by which provider
+        # served — read premarket_movers.last_discovery_info().
+        from src.scanner.premarket_movers import get_premarket_universe
+        return get_premarket_universe()
     else:
         log.warning(f"Unknown universe '{universe}', using SP500")
         return get_sp500_tickers()

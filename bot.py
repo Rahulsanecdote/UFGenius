@@ -747,6 +747,18 @@ def cmd_premarket_scan(args) -> None:
 
     print(f"\n{'='*76}")
     print(f"  PRE-MARKET GAP SCREENER — as of {result['as_of_et']}")
+    # Coverage is a property of the universe, not the gates: a bounded pool
+    # cannot surface a stock that was quiet in the prior session, and that has
+    # to be read alongside the results rather than assumed away.
+    if str(getattr(args, "universe", "") or "").upper() == "PREMARKET":
+        from src.scanner.premarket_movers import last_discovery_info
+
+        disc = last_discovery_info()
+        if disc.get("served_by"):
+            print(f"  UNIVERSE: {disc['served_by']} [{disc['coverage']}] — "
+                  f"{disc.get('reason') or ''}".rstrip())
+        else:
+            print(f"  UNIVERSE: {str(disc.get('reason') or 'unavailable').replace('_', ' ')}")
     if result.get("profile_gates") == "penny":
         print("  PENNY PROFILE: gates from the penny: hard rails "
               "(price band, $50M cap floor kept) — labels stay strict.")
@@ -1139,7 +1151,7 @@ Examples:
         "--account-size", type=_positive_account_size,
         help="Portfolio size in USD (positive number)",
     )
-    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST", "MOVERS"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist; MOVERS = today's FMP movers)")
+    parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST", "MOVERS", "PREMARKET"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist; MOVERS = the prior regular session's movers; PREMARKET = the CURRENT extended-hours session)")
     parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
     parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim"], help="Intraday entry to backtest (for --mode intraday-backtest)")
     parser.add_argument("--interval",     help="Intraday bar size for --mode intraday-backtest (e.g. 5m, 1m; default INTRADAY_DEFAULT_INTERVAL)")

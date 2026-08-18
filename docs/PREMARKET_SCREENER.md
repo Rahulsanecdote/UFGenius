@@ -103,6 +103,51 @@ common home-scanner bug. Two clamps keep the ratio honest:
   from the configured providers — not that nothing is happening. Per-row
   `data_notes` carry the degradations that applied.
 
+## Which universe to screen (and why `MOVERS` is the wrong one before 09:30)
+
+The screener ranks whatever ticker list you hand it, so the universe decides
+what it *can* find. There are two movers universes and they are not
+interchangeable:
+
+| `--universe` | What it contains | When it is right |
+|---|---|---|
+| `PREMARKET` | Movers in the **current** extended-hours session | 04:00–09:30 ET |
+| `MOVERS` | Movers in the **previous regular session** | after the open |
+| `WATCHLIST` | `CUSTOM_WATCHLIST` | any time, if you already know the names |
+
+Before 09:30 the regular-session movers chain (Alpaca/Polygon/FMP gainers)
+reports **yesterday**. Observed 2026-08-18 at 09:02 ET: the movers panel listed
+SIC/WETO/IPST at their 2026-08-17 closing prices, and none of those names had an
+extended-hours print that morning. Handing that list to the screener produced 6
+usable snapshots out of 50 — the screener was working; the universe described
+the wrong session. `MOVERS` and this screener never overlap usefully: during the
+window the screener needs, that universe is stale; when it refreshes, the window
+has closed.
+
+`PREMARKET` (`src/scanner/premarket_movers.py`, config `premarket_movers:`) is
+the discovery chain for the live extended-hours tape. Same `list`-vs-`None`
+contract as the regular-session chain: an empty list is a real answer (quiet
+tape) and stops the chain; `None` means the provider could not answer and the
+next one is tried.
+
+### Coverage is disclosed, because providers differ in what they can see
+
+| Provider | Coverage | Consequence |
+|---|---|---|
+| `polygon` | `market_wide` | Full snapshot — a stock gapping on an 08:00 release is visible even with no prior-session activity. Needs a plan carrying the snapshot endpoint. |
+| `yahoo` | `bounded_pool` | Ranks a candidate pool built from the **prior** session's gainers/losers/actives. Keyless, so it always exists — and **structurally blind** to a name that was quiet yesterday. |
+
+The serving provider and its coverage class travel with every result
+(`universe_discovery` in the API, a `universe:` note on the dashboard status
+line, a `UNIVERSE:` line on the CLI). A `bounded_pool` result is not a smaller
+market-wide scan — there are gappers it cannot rank at any position — so
+falling back changes the meaning of the answer and says so rather than
+swapping breadth silently.
+
+Empty results are disambiguated too: outside 04:00–09:30 ET the disclosure says
+the session is closed rather than leaving "0 movers" to read as a quiet tape or
+a dead provider.
+
 ## Penny profile (`--penny`, or automatic with penny mode on)
 
 For low-priced intraday trading the standard gates are calibrated against you —
