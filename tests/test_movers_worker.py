@@ -328,3 +328,47 @@ def test_published_features_reflect_whether_catalyst_alerts_run():
             p.stop()
     assert on["state"].publishes[-1]["features"] == {"catalyst_alerts": True}
     assert off["state"].publishes[-1]["features"] == {"catalyst_alerts": False}
+
+
+# ── alert-outcome ledger wiring: fired alerts become measured evidence ────────
+
+class _OutcomeLedger:
+    def __init__(self):
+        self.recorded = []      # (source, [tickers])
+        self.resolve_calls = 0
+    def record(self, fired, source):
+        self.recorded.append((source, [f.get("ticker") for f in fired]))
+    def resolve(self, **kw):
+        self.resolve_calls += 1
+
+
+def test_fired_alerts_are_recorded_per_source():
+    ctx = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=1)
+    for p in ctx:
+        p.start()
+    try:
+        ledger = _OutcomeLedger()
+        _run(max_cycles=1, catalyst_alerter=_CatalystAlerter(),
+             outcome_ledger=ledger)
+    finally:
+        for p in ctx:
+            p.stop()
+    sources = dict(ledger.recorded)
+    assert sources.get("catalyst") == ["NEWS"]
+    assert sources.get("movers") == ["NBIS"]
+
+
+def test_resolution_runs_even_outside_the_scan_window():
+    # Alerts fired near the close have horizons landing after 16:00; if the
+    # resolver only ran in-window those outcomes would never be measured.
+    ctx = _cfg(MOVERS_WORKER_MARKET_HOURS_ONLY=True)
+    for p in ctx:
+        p.start()
+    try:
+        ledger = _OutcomeLedger()
+        _run(max_cycles=3, scan_window=lambda: False, outcome_ledger=ledger)
+    finally:
+        for p in ctx:
+            p.stop()
+    assert ledger.resolve_calls == 3
+    assert ledger.recorded == []   # nothing fires outside the window

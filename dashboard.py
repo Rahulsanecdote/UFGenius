@@ -532,6 +532,11 @@ HTML = '''
     /* Fired but not delivered — the free web service deliberately carries no
        Telegram creds, so this is the normal state there, not a bug. */
     .mw-events .mw-undelivered { color: var(--text-muted, #8b97a8); font-style: italic; }
+    .mw-outcomes { margin-top: 8px; padding-top: 8px; font-size: 12px;
+      color: var(--text-muted, #8b97a8);
+      border-top: 1px dashed rgba(120, 140, 170, 0.25); }
+    .mw-outcomes .mw-oc-good { color: #41c07e; font-weight: 700; }
+    .mw-outcomes .mw-oc-bad { color: #e0607a; font-weight: 700; }
     .movers-table-wrap { overflow-x: auto; padding: 0 12px 4px; }
     .movers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .movers-table th, .movers-table td {
@@ -1820,6 +1825,7 @@ HTML = '''
           </div>
           <div id="mwWatching" class="mw-watching"></div>
           <div id="mwEvents" class="mw-events"></div>
+          <div id="mwOutcomes" class="mw-outcomes" hidden></div>
         </div>
         <div class="movers-table-wrap">
           <table class="movers-table" id="moversTable" hidden>
@@ -3797,6 +3803,41 @@ HTML = '''
       } catch (error) {
         if (!/Authorization/i.test(error.message || '')) $('moversWorker').hidden = true;
       }
+      loadAlertOutcomes();
+    }
+
+    // ── Alert outcomes: the measured record of what happened AFTER each alert,
+    // in the direction it implied. One line per source per horizon; hidden until
+    // there is at least one resolved measurement, because an empty scoreboard
+    // teaches nothing. Unresolved counts ride along — a hit rate that quietly
+    // dropped its unmeasurable alerts would flatter itself.
+    async function loadAlertOutcomes() {
+      const box = $('mwOutcomes');
+      if (!box) return;
+      let s;
+      try {
+        s = await apiFetchJson('/api/alert-outcomes');
+      } catch (_e) { box.hidden = true; return; }
+      const sources = s && s.sources ? Object.keys(s.sources) : [];
+      const lines = [];
+      for (const src of sources) {
+        const perH = s.sources[src].by_horizon || {};
+        const parts = [];
+        for (const h of Object.keys(perH)) {
+          const o = perH[h];
+          if (!o || o.n === 0) continue;
+          const hitPct = Math.round((o.hit_rate || 0) * 100);
+          const cls = hitPct >= 50 ? 'mw-oc-good' : 'mw-oc-bad';
+          const avg = (o.avg_in_direction_pct >= 0 ? '+' : '') + Number(o.avg_in_direction_pct).toFixed(1);
+          const unres = o.unresolved ? ` · ${o.unresolved} unmeasurable` : '';
+          parts.push(`@${h}m <span class="${cls}">${hitPct}%</span> hit, ${avg}% avg (n=${o.n}${unres})`);
+        }
+        if (parts.length) lines.push(`<b>${escapeHtml(src)}</b> alerts: ${parts.join(' · ')}`);
+      }
+      if (!lines.length) { box.hidden = true; return; }
+      box.innerHTML = '📏 ' + lines.join('<br>')
+        + '<br><span>Measured from 1m bars after each alert — evidence, not a promise.</span>';
+      box.hidden = false;
     }
 
     // ── Pre-market screener panel: manual run only — every scan is a fan-out
@@ -5262,6 +5303,27 @@ def api_movers():
         })
     except Exception:
         log.exception("Movers endpoint error")
+        return _error_response("Internal server error", 500)
+
+
+@app.route("/api/alert-outcomes")
+def api_alert_outcomes():
+    """Measured forward outcomes of fired alerts (movers setups, catalyst wire).
+
+    Per source and horizon: n, hit rate, avg/median in-direction move — plus
+    pending and unresolved counts at full weight, so the denominator never
+    quietly drops the unmeasurable alerts. This is the evidence base for "are
+    the alerts any good", accumulated automatically instead of hand-checked.
+    """
+    try:
+        from src.observability.alert_outcomes import default_ledger
+
+        ledger = default_ledger().load()
+        summary = ledger.summary()
+        summary["recent"] = ledger.recent(limit=15)
+        return jsonify(summary)
+    except Exception:
+        log.exception("Alert outcomes endpoint error")
         return _error_response("Internal server error", 500)
 
 

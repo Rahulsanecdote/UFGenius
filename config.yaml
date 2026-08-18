@@ -296,6 +296,18 @@ observability:
   data_gap_seconds: 0
   alerts:
     enabled: false                           # operational alerts (breaker trips, data gaps) — opt-in
+  # Alert outcome ledger: for every fired alert (movers setups, catalyst wire),
+  # measure the move from the alert instant to each horizon IN THE DIRECTION the
+  # alert implied, from 1m bars. The dashboard then shows hit rate / avg move
+  # per source — an evidence base that grows with every alert, instead of
+  # hand-checking prices after the fact. Telemetry only; on by default.
+  # Env overrides: ALERT_OUTCOMES_<KEY>.
+  alert_outcomes:
+    enabled: true
+    horizons_min: [30, 120]                  # measure at +30min and +2h
+    max_resolve_fetches_per_cycle: 3         # 1m-bar fetches the resolver may spend per cycle
+    max_records: 400                         # bounded ledger (oldest trimmed)
+    path: "data/alert_outcomes.json"
 
 # Explainability layer (upgrade plan P3.1). An OPTIONAL LLM narrative that reads
 # the verified quant snapshot and writes a human-readable bull/bear rationale for

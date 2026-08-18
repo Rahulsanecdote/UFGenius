@@ -493,6 +493,30 @@ OBSERVABILITY_ALERTS_ENABLED: bool = env_bool(
     bool((_OBSERVABILITY.get("alerts") or {}).get("enabled", False)),
 )
 
+# Alert outcome ledger — measures each fired alert's forward move at fixed
+# horizons, in the direction the alert implied. Telemetry (like the metrics
+# ledger, so on by default): it never gates or places anything, and the only
+# network cost is a small, capped number of 1m-bar fetches per worker cycle.
+_ALERT_OUTCOMES: dict = _OBSERVABILITY.get("alert_outcomes", {}) or {}
+ALERT_OUTCOMES_ENABLED: bool = env_bool(
+    "ALERT_OUTCOMES_ENABLED", bool(_ALERT_OUTCOMES.get("enabled", True)))
+ALERT_OUTCOMES_HORIZONS_MIN: list = [
+    _as_int(h, 0) for h in env_list(
+        "ALERT_OUTCOMES_HORIZONS_MIN",
+        list(_ALERT_OUTCOMES.get("horizons_min", [30, 120])))
+    if _as_int(h, 0) > 0
+] or [30, 120]
+ALERT_OUTCOMES_MAX_FETCHES_PER_CYCLE: int = env_int(
+    "ALERT_OUTCOMES_MAX_FETCHES_PER_CYCLE",
+    _as_int(_ALERT_OUTCOMES.get("max_resolve_fetches_per_cycle", 3), 3))
+ALERT_OUTCOMES_MAX_RECORDS: int = env_int(
+    "ALERT_OUTCOMES_MAX_RECORDS",
+    _as_int(_ALERT_OUTCOMES.get("max_records", 400), 400))
+ALERT_OUTCOMES_PATH: str = _resolve_root(env(
+    "ALERT_OUTCOMES_PATH",
+    _ALERT_OUTCOMES.get("path") or str(_ROOT / "data" / "alert_outcomes.json"),
+))
+
 # Explainability layer (upgrade plan P3.1): optional LLM bull/bear narrative.
 # Advisory only — never gates or places an order. Default OFF and cost-capped.
 _EXPLAIN: dict = get("explain", {})
