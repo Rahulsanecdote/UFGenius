@@ -89,7 +89,7 @@ def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[s
     return None
 
 
-def technical_pre_filter(tickers: list[str]) -> list[tuple[str, pd.DataFrame]]:
+def technical_pre_filter(tickers: list[str], progress=None) -> list[tuple[str, pd.DataFrame]]:
     """
     Fast parallel technical pre-filter to reduce the universe.
 
@@ -100,6 +100,11 @@ def technical_pre_filter(tickers: list[str]) -> list[tuple[str, pd.DataFrame]]:
     """
     log.info(f"Pre-filtering {len(tickers)} tickers in parallel ...")
 
+    # The batch fetch is one blocking call, so it gets a named stage rather than
+    # a fabricated percentage — an honest "no count available" beats a bar that
+    # invents one.
+    if progress:
+        progress("fetching", 0, len(tickers))
     df_cache = fetch_ohlcv_batch(tickers, period="1y", max_workers=_PREFILTER_WORKERS)
 
     passed: list[tuple[str, pd.DataFrame]] = []
@@ -108,10 +113,12 @@ def technical_pre_filter(tickers: list[str]) -> list[tuple[str, pd.DataFrame]]:
             executor.submit(_prefilter_ticker, ticker, df_cache): ticker
             for ticker in tickers
         }
-        for future in as_completed(futures):
+        for done, future in enumerate(as_completed(futures), 1):
             result = future.result()
             if result is not None:
                 passed.append(result)
+            if progress:
+                progress("prefilter", done, len(tickers))
 
     order = {ticker: idx for idx, ticker in enumerate(tickers)}
     passed.sort(key=lambda item: order.get(item[0], 999999))
@@ -153,8 +160,16 @@ def run_daily_scan(
     universe_name: Optional[str] = None,
     max_signals: int = 15,
     pre_filter: bool = True,
+    progress=None,
 ) -> dict:
-    """Run a full daily market scan."""
+    """Run a full daily market scan.
+
+    ``progress``, when given, is called as ``progress(stage, done, total)`` at
+    each stage so a caller running this off the request path (see
+    ``src/scanner/scan_jobs.py``) can report real advancement rather than an
+    indeterminate spinner. Optional and side-effect free — passing nothing keeps
+    the original behaviour exactly.
+    """
     if account_size is None:
         account_size = config.ACCOUNT_SIZE
     if universe_name is None:
@@ -167,6 +182,8 @@ def run_daily_scan(
     # (opt-in alert) before running this scan and refreshing the timestamp.
     _check_data_gap()
 
+    if progress:
+        progress("regime", 0, 0)
     regime = detect_market_regime()
     log.info(f"Market Regime: {regime['regime']} (score={regime['regime_score']})")
 
@@ -194,11 +211,18 @@ def run_daily_scan(
             "regime": regime,
         }
 
+    if progress:
+        progress("universe", 0, 0)
     universe = get_universe(universe_name)
     log.info(f"Universe: {len(universe)} tickers from {universe_name}")
 
     if pre_filter:
-        candidates = technical_pre_filter(universe)
+        # Only widen the call when a callback was actually supplied, so the
+        # no-progress path is byte-for-byte the old one — `technical_pre_filter`
+        # is a public entry point and callers that replaced it with a
+        # single-argument version must keep working.
+        candidates = (technical_pre_filter(universe, progress=progress) if progress
+                      else technical_pre_filter(universe))
     else:
         candidates = [(ticker, None) for ticker in universe]
 
@@ -211,10 +235,12 @@ def run_daily_scan(
             executor.submit(_analyze_ticker, ticker, regime, account_size, prefetched_df): ticker
             for ticker, prefetched_df in candidates
         }
-        for future in as_completed(futures):
+        for done, future in enumerate(as_completed(futures), 1):
             plan = future.result()
             if plan is not None:
                 results.append(plan)
+            if progress:
+                progress("analyzing", done, len(candidates))
 
     results.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
 

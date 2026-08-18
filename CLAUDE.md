@@ -315,6 +315,23 @@ pytest --cov=src       # coverage
   a daemon thread and the only surface the rest of the app touches is a plain,
   lock-guarded snapshot (`latest`/`snapshot`/`status`). No `async` leaks past
   that file — callers stay synchronous. See `docs/STREAMING.md`.
+- **Long HTTP work runs off the request path** (`src/scanner/scan_jobs.py`): a
+  full-universe scan fans out over ~500 tickers and cannot finish inside
+  `gunicorn --timeout 120` — `render.yaml` itself sized it at "60–120s", so the
+  documented worst case *equalled* the kill deadline, and on a 0.1-CPU instance
+  sharing four threads with the in-process worker it ran well past. gunicorn
+  killed the worker mid-scan and the browser reported a dropped connection
+  ("Failed to fetch"), which reads as a network fault rather than a timeout.
+  `/api/scan` now starts a daemon-thread job and returns a handle; the client
+  polls `/api/scan-status`. The scan is **not** shortened or capped — the wait
+  moved off the request. **Single-flight** (a second caller joins the running
+  job; two concurrent 500-ticker fan-outs thrash rather than halve the time) and
+  bounded (finished jobs expire, registry trimmed). State is per-process, so it
+  requires `--workers 1` — which `render.yaml` already mandates for the
+  in-process worker — and an unrecognised job id says so rather than 404-ing
+  blankly. `run_daily_scan(progress=…)` reports real stages; the batch fetch is
+  one blocking call, so it stays a named stage instead of a fabricated
+  percentage.
 - **MOVERS real-time system (Phases 5–8):** the intraday discovery→alert→monitor
   stack runs as an always-on worker (`src/scanner/movers_worker.py`,
   `--mode movers-worker`) that continuously re-discovers movers, alerts on new
@@ -413,7 +430,8 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/price-history` | OHLCV series for a ticker/range |
 | GET | `/api/regime` | Current market regime |
 | GET | `/api/scan-ticker?ticker=AAPL` | Single-ticker scan + trade plan |
-| GET | `/api/scan` | Full-universe scan (slow: 60–120s) |
+| GET | `/api/scan` | **Starts** a full-universe scan in the background; returns a job handle immediately (`joined_existing:true` if one was already running) |
+| GET | `/api/scan-status?job=<id>` | Poll a scan job: `running` (with `stage`/`done`/`total`) → `done` (carries `result`) / `error` / `unknown`. Omit `job` for the currently-running one |
 | GET | `/api/scan-gaps` | Pre-market gap scan |
 | GET | `/api/scan-breakouts` | Volume-breakout scan |
 | GET | `/api/scan-premarket` | Pre-market gap screener: ranked research watchlist from extended-hours bars with continuation/fade_risk evidence profiles — screener only, not signals. `?universe=PREMARKET` discovers the live extended-hours tape and returns `universe_discovery` (serving provider + market_wide/bounded_pool coverage) |

@@ -5,7 +5,10 @@ services:
     plan: free
     region: oregon
     buildCommand: pip install --upgrade pip && pip install -r requirements.lock
-    # --timeout 120: scan endpoint fetches 500+ tickers and takes 60-120s
+    # --timeout 120: request-path ceiling. The full-universe scan no longer runs
+    #                inside a request (it fetches 500+ tickers and cannot finish
+    #                here) — /api/scan starts a background job and the client
+    #                polls /api/scan-status. See src/scanner/scan_jobs.py.
     # --workers 1:   single worker prevents memory duplication on free tier
     # --threads 4:   handle concurrent API + UI requests within one worker
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 wsgi:app
@@ -35,6 +38,10 @@ services:
       #   the "Always-on worker" strip + live-streaming prices populate. (A
       #   separate Background Worker below runs in its own container, whose state
       #   file the web service can't see — that one is for 24/7 Telegram alerts.)
+      #
+      #   NOTE: --workers 1 is also required by the background scan-job registry
+      #   (src/scanner/scan_jobs.py) — job state is per-process, so a poll must
+      #   land on the process that started the scan.
       #
       #   NOTE: keep gunicorn at --workers 1 (above) so exactly one worker thread
       #   runs. On the FREE tier the web instance sleeps after ~15 min idle, so
