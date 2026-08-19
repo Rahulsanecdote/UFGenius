@@ -110,7 +110,16 @@ def diagnose_telegram(send_test: bool = True) -> dict:
     def _call(method: str, payload: Optional[dict] = None) -> dict:
         url = f"https://api.telegram.org/bot{token}/{method}"
         try:
-            resp = requests.post(url, json=payload or {}, timeout=10)
+            # Explicit (connect, read) rather than a scalar, matching
+            # utils/http: this runs inside an HTTP request, and a host that
+            # blackholes the connection instead of refusing it must not be able
+            # to hold the worker open until gunicorn kills it — a killed worker
+            # reaches the browser as "Failed to fetch", which looks like a
+            # network fault rather than an unreachable Telegram.
+            resp = requests.post(
+                url, json=payload or {},
+                timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC,
+                         config.REQUEST_TIMEOUT_SEC))
             body = resp.json() if resp.content else {}
         except Exception as exc:
             # Never interpolate the exception text: a requests error can embed
@@ -171,7 +180,9 @@ def send_telegram_message(text: str, *, context: str = "message") -> bool:
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload,
+                             timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC,
+                                      config.REQUEST_TIMEOUT_SEC))
         resp.raise_for_status()
         log.info(f"Telegram alert sent ({context})")
         return True
