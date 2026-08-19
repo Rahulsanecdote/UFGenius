@@ -32,6 +32,12 @@ def detect_market_regime() -> dict:
         <30% stocks above 200SMA: -20
         Safe haven flows:         -15
 
+    A component whose data is unavailable is **omitted**, never defaulted: the
+    score then sits on a reduced scale and the regime reads conservatively
+    (with VIX absent the +30 fear component is unreachable, so BULL_RISK_ON
+    cannot be reached). Missing inputs are listed in ``data_gaps`` and named in
+    ``flags`` — scoring a number nobody measured is the failure this avoids.
+
     Regime thresholds:
         score ≥  50 → BULL_RISK_ON
         score ≥  20 → MILD_BULL
@@ -55,10 +61,16 @@ def _compute_regime() -> dict:
     spy_price   = float(spy["Close"].iloc[-1])
     spy_sma200  = float(spy["Close"].rolling(200).mean().iloc[-1])
     spy_sma50   = float(spy["Close"].rolling(50).mean().iloc[-1])
-    current_vix = float(vix["Close"].iloc[-1]) if not vix.empty else 20.0
+    # No VIX → no VIX reading. Substituting a default (this used to be 20.0)
+    # scores a number nobody measured: 20.0 lands in the "Elevated" band, so an
+    # unavailable feed silently cost -10 AND rendered "VIX 20.0 — Elevated ⚠️"
+    # on the dashboard as though it were an observation. The 10-year yield below
+    # already handles absence correctly; this now matches it.
+    current_vix = float(vix["Close"].iloc[-1]) if not vix.empty else None
 
     regime_score = 0
     regime_flags = []
+    data_gaps: list[str] = []
 
     # ── SPY trend ──────────────────────────────────────────────────────────
     spy_vs_200 = (spy_price / spy_sma200 - 1) * 100
@@ -70,7 +82,15 @@ def _compute_regime() -> dict:
         regime_flags.append(f"SPY below 200 SMA ({spy_vs_200:.1f}%) — Bear Trend ⚠️")
 
     # ── VIX fear gauge ─────────────────────────────────────────────────────
-    if current_vix < 15:
+    # ^VIX is an INDEX: Alpaca's stock API does not serve it, Polygon is skipped
+    # for "^" symbols, and Yahoo blocks cloud IPs — so a hosted deployment can
+    # legitimately have no VIX at all. Omit the component and say so.
+    if current_vix is None:
+        data_gaps.append("vix")
+        regime_flags.append(
+            "VIX unavailable — fear component omitted (score is on a reduced "
+            "scale, so the regime reads conservatively)")
+    elif current_vix < 15:
         regime_score += 30
         regime_flags.append(f"VIX {current_vix:.1f} — Low Fear ✅")
     elif current_vix < 20:
@@ -103,7 +123,9 @@ def _compute_regime() -> dict:
 
     # ── 10-year Treasury yield (FRED, optional) ────────────────────────────
     ten_yr = _fetch_ten_year_yield()
-    if ten_yr is not None:
+    if ten_yr is None:
+        data_gaps.append("ten_yr_yield")
+    else:
         if ten_yr > 5.0:
             regime_score -= 10
             regime_flags.append(f"10-Yr Yield {ten_yr:.2f}% — High Rate Pressure ⚠️")
@@ -127,9 +149,12 @@ def _compute_regime() -> dict:
         "regime":        regime,
         "regime_score":  regime_score,
         "flags":         regime_flags,
-        "vix":           round(current_vix, 2),
+        "vix":           None if current_vix is None else round(current_vix, 2),
         "spy_vs_200":    round(spy_vs_200, 2),
         "ten_yr_yield":  ten_yr,
+        # Which inputs were missing. A consumer that treats a regime as fully
+        # informed can check this instead of inferring it from a null.
+        "data_gaps":     data_gaps,
         "strategy":      REGIME_STRATEGY[regime],
     }
 
@@ -165,5 +190,6 @@ def _fallback_regime() -> dict:
         "vix":          None,
         "spy_vs_200":   None,
         "ten_yr_yield": None,
+        "data_gaps":    ["spy", "vix", "ten_yr_yield"],
         "strategy":     REGIME_STRATEGY["NEUTRAL_CHOPPY"],
     }

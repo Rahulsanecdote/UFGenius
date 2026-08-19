@@ -526,6 +526,7 @@ HTML = '''
     .mw-events { margin-top: 8px; font-size: 12px; color: var(--text-muted, #8b97a8);
       display: flex; flex-direction: column; gap: 3px; }
     .mw-events .mw-inval { color: #d9a441; }
+    .mw-events .mw-held { color: #8b97a8; }
     .mw-events .mw-cat { color: #41c07e; }
     .mw-events .mw-cat.mw-cat-dilution { color: #e0607a; }
     .mw-events .mw-cat .mw-cat-hl { color: var(--text-muted, #8b97a8); }
@@ -3794,8 +3795,23 @@ HTML = '''
              + `${escapeHtml(String(a.tier).toUpperCase())} on the wire${hl}${undelivered}</span>`;
       });
 
+      // Qualifying candidates the alerter deliberately held back. Shown because
+      // "declined to alert on a name it could not assess" and "never saw the
+      // name" look identical from the outside — and the first is a decision the
+      // operator is entitled to see. `already_alerted` is excluded: that is not
+      // a withheld decision, it is one you already received.
+      const SUPPRESS_TEXT = {
+        no_intraday_data: 'no intraday data, quality unassessable',
+        halted: 'halted, cannot act',
+      };
+      const held = (Array.isArray(s.suppressed) ? s.suppressed : [])
+        .filter(x => x && SUPPRESS_TEXT[x.reason]).slice(0, 4);
+      const heldRows = held.map(x =>
+        `<span class="mw-held">🚫 ${escapeHtml(x.ticker)} ${Math.round(Number(x.score) || 0)}`
+        + ` not alerted — ${SUPPRESS_TEXT[x.reason]}</span>`);
+
       const inval = (Array.isArray(s.recent_invalidations) ? s.recent_invalidations : []).slice(-4).reverse();
-      $('mwEvents').innerHTML = catRows.concat(inval.map(t =>
+      $('mwEvents').innerHTML = catRows.concat(heldRows).concat(inval.map(t =>
         `<span class="mw-inval">⚠️ ${escapeHtml(t.ticker || '?')} ${t.direction === 'short' ? 'SHORT' : 'LONG'} invalidated — ${escapeHtml(t.reason || 'setup broke down')}</span>`
       )).join('');
     }

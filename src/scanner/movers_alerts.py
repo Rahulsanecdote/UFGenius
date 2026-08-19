@@ -19,6 +19,9 @@ from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
+# The held-back list rides in the worker's published snapshot, so it is bounded.
+_MAX_SUPPRESSED = 8
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -78,23 +81,48 @@ class MoversAlerter:
     def __init__(self) -> None:
         # (ticker, direction) -> last-alert epoch seconds.
         self._recent: dict[tuple[str, str], float] = {}
+        # Candidates that cleared the score floor but were held back, with the
+        # reason. See `last_suppressed`.
+        self._suppressed: list[dict] = []
 
-    def _eligible(self, c, now: datetime) -> bool:
+    def _suppression_reason(self, c, now: datetime) -> str | None:
+        """Why this candidate may not alert, or None if it may."""
         # A halted name is untradeable right now, and an alert says "act". Its
         # score is also stale by construction — the halt suppressed the very
         # prints the score was computed from.
         if config.MOVERS_HALT_SUPPRESS_ALERTS and getattr(c, "is_halted", False):
-            return False
+            return "halted"
         if c.score < float(config.MOVERS_ALERTS_MIN_SCORE):
-            return False
+            return "below_score"
+        # Without enrichment the score is the discovery score, which is
+        # magnitude alone (min(85, |change| * 2.5)) — "already moved a lot",
+        # the weakest thing we measure. Alerting on it unlabelled would mean
+        # alerting hardest on exactly the cohort that fades.
         if config.MOVERS_ALERTS_REQUIRE_ENRICHED and not c.enriched:
-            return False
+            return "no_intraday_data"
         key = (c.ticker, c.direction)
         last = self._recent.get(key)
         ttl = float(config.MOVERS_ALERTS_DEDUP_TTL_SEC)
         if last is not None and (now.timestamp() - last) < ttl:
-            return False
-        return True
+            return "already_alerted"
+        return None
+
+    def _eligible(self, c, now: datetime) -> bool:
+        return self._suppression_reason(c, now) is None
+
+    def last_suppressed(self) -> list[dict]:
+        """Qualifying candidates from the last run that did NOT alert, and why.
+
+        Without this the system's most defensible decisions are invisible:
+        declining to alert on a name it could not assess looks exactly like
+        never having seen it. Observed 2026-08-19 — ZSTK ran +370%, scored 85,
+        entered the watch set, and stayed silent because its intraday bars were
+        unavailable. The suppression was right; the silence was not.
+
+        Only candidates that cleared the score floor appear — the sub-threshold
+        majority is noise, not a withheld decision.
+        """
+        return [dict(s) for s in self._suppressed]
 
     def process(self, candidates: list, *, now: datetime | None = None,
                 send: bool = True) -> list[dict]:
@@ -107,11 +135,19 @@ class MoversAlerter:
             return []
         now = now or _utcnow()
         fired: list[dict] = []
+        suppressed: list[dict] = []
+        min_score = float(config.MOVERS_ALERTS_MIN_SCORE)
         cap = max(0, int(config.MOVERS_ALERTS_MAX_PER_RUN))
         for c in candidates:
             if len(fired) >= cap:
                 break
-            if not self._eligible(c, now):
+            reason = self._suppression_reason(c, now)
+            if reason is not None:
+                if c.score >= min_score and len(suppressed) < _MAX_SUPPRESSED:
+                    suppressed.append({
+                        "ticker": c.ticker, "direction": c.direction,
+                        "score": round(float(c.score), 1), "reason": reason,
+                    })
                 continue
             message = format_alert(c)
             sent = False
@@ -124,7 +160,12 @@ class MoversAlerter:
                 "ticker": c.ticker, "direction": c.direction,
                 "score": c.score, "message": message, "sent": sent,
             })
+        self._suppressed = suppressed
         if fired:
             log.info(f"movers alerts: {len(fired)} fired "
                      f"({sum(1 for f in fired if f['sent'])} sent)")
+        if suppressed:
+            log.info("movers alerts: %d qualifying candidate(s) held back — %s",
+                     len(suppressed),
+                     ", ".join(f"{s['ticker']}({s['reason']})" for s in suppressed))
         return fired

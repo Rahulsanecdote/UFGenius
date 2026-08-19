@@ -115,3 +115,118 @@ def test_send_failure_recorded_but_not_raised():
     with patch("src.scanner.movers_alerts.send_text_alert", return_value=False):
         fired = _run([_cand()])
     assert len(fired) == 1 and fired[0]["sent"] is False
+
+
+# ── held-back candidates are reported, not silently dropped ──────────────────
+
+class TestSuppressionVisibility:
+    """A qualifying name that does not alert must say why.
+
+    Observed 2026-08-19: ZSTK ran +370%, scored 85, entered the watch set, and
+    never alerted because its intraday bars were unavailable. The suppression
+    was correct; being unable to tell it apart from "never discovered" was not.
+    """
+
+    def test_unenriched_candidate_is_reported_with_a_reason(self):
+        ctx = _alerts_on()
+        for p in ctx:
+            p.start()
+        try:
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                fired = alerter.process([_cand("ZSTK", score=85.0, enriched=False,
+                                               rel_volume=None)])
+        finally:
+            for p in ctx:
+                p.stop()
+        assert fired == []
+        held = alerter.last_suppressed()
+        assert [(h["ticker"], h["reason"]) for h in held] == [("ZSTK", "no_intraday_data")]
+        assert held[0]["score"] == 85.0
+
+    def test_halted_candidate_is_reported(self):
+        ctx = _alerts_on(MOVERS_HALT_SUPPRESS_ALERTS=True)
+        for p in ctx:
+            p.start()
+        try:
+            c = _cand("WFF", score=80.0)
+            c.is_halted = True
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                alerter.process([c])
+        finally:
+            for p in ctx:
+                p.stop()
+        assert alerter.last_suppressed()[0]["reason"] == "halted"
+
+    def test_sub_threshold_candidates_are_not_reported(self):
+        # The below-score majority is noise, not a withheld decision — surfacing
+        # it would bury the one entry that means something.
+        ctx = _alerts_on()
+        for p in ctx:
+            p.start()
+        try:
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                alerter.process([_cand("LOW", score=12.0, enriched=False)])
+        finally:
+            for p in ctx:
+                p.stop()
+        assert alerter.last_suppressed() == []
+
+    def test_dedup_is_recorded_distinctly_from_a_data_gap(self):
+        ctx = _alerts_on()
+        for p in ctx:
+            p.start()
+        try:
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                assert len(alerter.process([_cand("AAA")])) == 1
+                alerter.process([_cand("AAA")])          # inside the TTL
+        finally:
+            for p in ctx:
+                p.stop()
+        assert alerter.last_suppressed()[0]["reason"] == "already_alerted"
+
+    def test_alerting_candidates_are_not_listed_as_held(self):
+        ctx = _alerts_on()
+        for p in ctx:
+            p.start()
+        try:
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                fired = alerter.process([_cand("GOOD"), _cand("ZSTK", score=85.0,
+                                                              enriched=False)])
+        finally:
+            for p in ctx:
+                p.stop()
+        assert [f["ticker"] for f in fired] == ["GOOD"]
+        assert [h["ticker"] for h in alerter.last_suppressed()] == ["ZSTK"]
+
+    def test_held_list_is_bounded(self):
+        ctx = _alerts_on()
+        for p in ctx:
+            p.start()
+        try:
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                alerter.process([_cand(f"T{i}", score=80.0, enriched=False)
+                                 for i in range(40)])
+        finally:
+            for p in ctx:
+                p.stop()
+        assert len(alerter.last_suppressed()) == ma._MAX_SUPPRESSED
+
+    def test_each_run_replaces_the_previous_list(self):
+        ctx = _alerts_on()
+        for p in ctx:
+            p.start()
+        try:
+            alerter = ma.MoversAlerter()
+            with patch.object(ma, "send_text_alert", return_value=True):
+                alerter.process([_cand("ZSTK", score=85.0, enriched=False)])
+                alerter.process([_cand("OTHER", score=85.0, enriched=False)])
+        finally:
+            for p in ctx:
+                p.stop()
+        assert [h["ticker"] for h in alerter.last_suppressed()] == ["OTHER"]
