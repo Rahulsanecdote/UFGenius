@@ -90,6 +90,7 @@ python bot.py --mode earnings-calendar          # build/refresh the earnings cal
 python bot.py --mode movers-worker              # always-on movers worker (MOVERS Phase 5)
 python bot.py --mode premarket-scan             # pre-market gap screener → ranked research watchlist (--penny: gates from the penny rails)
 python bot.py --mode stream                     # live Alpaca trade-stream diagnostic (MOVERS Phase 8)
+python bot.py --mode alert-test                 # verify Telegram delivery with THIS process's credentials
 ```
 
 Execution safety: `--execute` targets the **paper** account and refuses to run
@@ -461,6 +462,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations, and `features` (which opt-in layers are running) (Phase 7 shared state; `available:false` when the worker isn't running) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
+| POST | `/api/alert-test` | Send a test Telegram message using the deployment's own credentials; reports Telegram's error description (credentials described by shape only, never returned) |
 | POST | `/api/clear-cache` | Clear the market-data cache |
 
 All `/api/*` routes are rate-limited, and authenticated when the app is
