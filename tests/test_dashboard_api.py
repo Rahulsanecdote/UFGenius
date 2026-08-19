@@ -588,3 +588,34 @@ def test_alert_outcomes_endpoint(client, monkeypatch, tmp_path):
     assert body["sources"]["movers"]["by_horizon"]["30"]["n"] == 1
     assert body["recent"][0]["ticker"] == "AAA"
     monkeypatch.setattr(ao, "_default", None)
+
+
+def test_alert_test_endpoint_reports_and_never_leaks(client, monkeypatch):
+    """The self-test must diagnose precisely without echoing the credentials."""
+    import json as _json
+    from src.alerts import telegram_alert as tg
+
+    token = "123456789:AAsecretValueMustNotAppear"
+    monkeypatch.setattr(tg.config, "env",
+                        lambda key, default="": {"TELEGRAM_BOT_TOKEN": token,
+                                                 "TELEGRAM_CHAT_ID": "42"}.get(key, default))
+
+    class _R:
+        def __init__(self, payload, status=200):
+            self._p, self.status_code = payload, status
+            self.content = _json.dumps(payload).encode()
+        def json(self):
+            return self._p
+
+    calls = []
+    def _post(url, json=None, timeout=None):
+        calls.append(url)
+        if "getMe" in url:
+            return _R({"ok": True, "result": {"username": "UFGeniusBot"}})
+        return _R({"ok": False, "description": "Bad Request: chat not found"}, 400)
+
+    monkeypatch.setattr(tg.requests, "post", _post)
+    body = client.post("/api/alert-test").get_json()
+    assert body["status"] == "bad_chat_id"
+    assert "chat not found" in body["detail"]
+    assert token not in _json.dumps(body)

@@ -729,6 +729,37 @@ def cmd_intraday_scan(args) -> None:
         print("\n  Scanner stopped.\n")
 
 
+def cmd_alert_test(args) -> None:
+    """Check Telegram delivery using the credentials THIS process holds.
+
+    The point is that it tests the deployment's own configuration rather than a
+    URL typed by hand — a truncated paste or a trailing newline in a hosting
+    dashboard is invisible to the second and fatal to the first.
+    """
+    from src.alerts.telegram_alert import diagnose_telegram
+
+    result = diagnose_telegram(send_test=True)
+    print(f"\n{'='*68}")
+    print("  TELEGRAM ALERT DELIVERY TEST")
+    print(f"{'='*68}")
+    for label, key in (("Bot token", "token"), ("Chat ID", "chat_id")):
+        shape = result[key]
+        bits = [f"{'set' if shape['present'] else 'MISSING'}",
+                f"{shape['length']} chars"]
+        if shape.get("has_surrounding_whitespace"):
+            bits.append("⚠️ has leading/trailing whitespace")
+        if key == "token" and shape["present"] and not shape.get("looks_well_formed"):
+            bits.append("⚠️ not shaped like <digits>:<secret>")
+        print(f"  {label:<10} {' · '.join(bits)}")
+    if result.get("bot_username"):
+        print(f"  Bot        @{result['bot_username']}")
+    print(f"\n  Status: {result['status'].upper()}")
+    print(f"  {result.get('detail', '')}")
+    if result["status"] == "ok":
+        print("\n  Check your Telegram — the test message should be there.")
+    print()
+
+
 def cmd_premarket_scan(args) -> None:
     """Pre-market gap screener: ranked research watchlist from extended-hours bars.
 
@@ -1143,7 +1174,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream", "premarket-scan"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream", "premarket-scan", "alert-test"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -1268,6 +1299,8 @@ Examples:
         cmd_earnings_calendar(args)
     elif args.mode == "premarket-scan":
         cmd_premarket_scan(args)
+    elif args.mode == "alert-test":
+        cmd_alert_test(args)
     elif args.mode == "movers":
         cmd_movers(args)
     elif args.mode == "movers-monitor":

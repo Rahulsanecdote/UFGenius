@@ -2067,7 +2067,9 @@ HTML = '''
             <div class="health-actions" style="padding: 0 24px;">
               <button id="refreshHealthButton" class="summary-action" type="button">Retry diagnostics</button>
               <button id="clearCacheButton" class="summary-action" type="button">Clear cache</button>
+              <button id="alertTestButton" class="summary-action" type="button">Test alerts</button>
             </div>
+            <p id="alertTestResult" class="health-note" hidden></p>
             <div style="padding: 18px 24px 0;">
               <p id="healthNarrative" class="health-note">The dashboard will tell you whether missing data came from provider issues or market rules.</p>
             </div>
@@ -4146,6 +4148,34 @@ HTML = '''
       await analyzeTicker();
     }
 
+    // Telegram delivery test against THIS deployment's credentials — the thing
+    // that decides whether an alert arrives, as opposed to a URL typed by hand.
+    async function runAlertTest() {
+      const out = $('alertTestResult');
+      out.hidden = false;
+      out.textContent = 'Testing Telegram delivery...';
+      try {
+        const r = await apiFetchJson('/api/alert-test', { method: 'POST' });
+        const warnings = [];
+        for (const [label, key] of [['Token', 'token'], ['Chat ID', 'chat_id']]) {
+          const s = r[key] || {};
+          if (!s.present) warnings.push(`${label} is not set`);
+          else if (s.has_surrounding_whitespace) warnings.push(`${label} has stray whitespace`);
+          if (key === 'token' && s.present && s.looks_well_formed === false) {
+            warnings.push('Token is not shaped like <digits>:<secret>');
+          }
+        }
+        const note = warnings.length ? ` (${warnings.join('; ')})` : '';
+        out.textContent = `${String(r.status || '?').toUpperCase()} — ${r.detail || ''}${note}`;
+        showToast(r.status === 'ok' ? 'Test message sent to Telegram.'
+                                    : (r.detail || 'Alert test failed.'),
+                  r.status === 'ok' ? 'success' : 'error');
+      } catch (error) {
+        out.textContent = `Alert test failed: ${error.message}`;
+        showToast(error.message, 'error');
+      }
+    }
+
     async function clearCacheAndRefresh() {
       try {
         await apiFetchJson('/api/clear-cache', { method: 'POST' });
@@ -4474,6 +4504,7 @@ HTML = '''
     $('moversDeepButton').addEventListener('click', () => loadMovers(true));
     $('moversAutoButton').addEventListener('click', () => setMoversAuto(!state.moversAutoRefresh));
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);
+    $('alertTestButton').addEventListener('click', runAlertTest);
     $('haltButton').addEventListener('click', () => toggleBreaker('halt'));
     $('resumeButton').addEventListener('click', () => toggleBreaker('resume'));
     $('aiNarrativeButton').addEventListener('click', loadAiNarrative);
@@ -4831,6 +4862,24 @@ def api_diagnose():
     except Exception:
         log.exception("Diagnose endpoint error")
         return jsonify({"error": "Diagnosis failed"}), 500
+
+
+@app.route("/api/alert-test", methods=["POST"])
+def api_alert_test():
+    """Send a test Telegram message using THIS deployment's credentials.
+
+    Answers "why did my alert say (not delivered)" against what the service is
+    actually configured with, rather than against a URL typed into a browser.
+    Reports Telegram's own error description; the credentials themselves are
+    described only by shape and never returned.
+    """
+    try:
+        from src.alerts.telegram_alert import diagnose_telegram
+
+        return jsonify(diagnose_telegram(send_test=True))
+    except Exception:
+        log.exception("Alert test endpoint error")
+        return _error_response("Internal server error", 500)
 
 
 @app.route("/api/clear-cache", methods=["POST"])
