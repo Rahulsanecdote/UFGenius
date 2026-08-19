@@ -619,3 +619,42 @@ def test_alert_test_endpoint_reports_and_never_leaks(client, monkeypatch):
     assert body["status"] == "bad_chat_id"
     assert "chat not found" in body["detail"]
     assert token not in _json.dumps(body)
+
+
+# ── mobile layout: tabs + the flex-squeeze fix ───────────────────────────────
+
+def test_mobile_tab_bar_is_wired():
+    """Fourteen panels in one column is ~9,400px of scroll on a phone."""
+    assert 'id="tabBar"' in dashboard.HTML
+    for tab in ("live", "analyze", "scan", "system"):
+        assert f'data-tab-target="{tab}"' in dashboard.HTML, tab
+    assert "function applyTabs" in dashboard.HTML
+    assert "matchMedia('(max-width: 900px)')" in dashboard.HTML
+
+
+def test_every_panel_id_has_a_tab_assignment():
+    """A panel missing from TAB_OF still shows (JS falls through), but the map
+    should stay complete so nothing silently lands on the wrong tab."""
+    import re
+
+    tab_map = re.search(r"const TAB_OF = \{(.*?)\n    \};", dashboard.HTML, re.DOTALL)
+    assert tab_map, "TAB_OF map not found"
+    mapped = set(re.findall(r"(\w+):\s*'(?:live|analyze|scan|system)'", tab_map.group(1)))
+    for panel_id in ("moversPanel", "premarketPanel", "providerHealthPanel",
+                     "breakerPanel", "scorecardPanel", "metricsPanel",
+                     "execQualityPanel", "attributionPanel", "aiNarrativePanel"):
+        assert panel_id in mapped, panel_id
+
+
+def test_panel_heading_text_column_cannot_collapse():
+    """A flex item defaults to min-width:auto, so the heading's text column was
+    shrinking to its longest word and rendering one word per line beside the
+    action buttons."""
+    assert ".panel-heading > div:first-child { min-width: 0;" in dashboard.HTML
+
+
+def test_clamped_copy_has_no_bottom_padding():
+    """`overflow: hidden` clips at the PADDING box, so bottom padding on a
+    line-clamped block is a window onto the line that was clamped away."""
+    clamp = dashboard.HTML.split("-webkit-line-clamp: 2;")[1].split("}")[0]
+    assert "padding-bottom: 0" in clamp

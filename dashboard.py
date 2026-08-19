@@ -1642,6 +1642,98 @@ HTML = '''
       }
     }
 
+    /* ── Panel heading: the text column and the action buttons are flex
+       siblings, and a flex item's default min-width is `auto` → the text
+       column was collapsing to its LONGEST WORD, which is why headings
+       rendered one word per line next to a button row. */
+    .panel-heading > div:first-child { min-width: 0; flex: 1 1 auto; }
+
+    /* ── Bottom tab bar (mobile only; JS unhides it below the breakpoint) ── */
+    .tab-bar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      background: rgba(9, 15, 26, 0.97);
+      border-top: 1px solid rgba(120, 140, 170, 0.22);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      backdrop-filter: blur(12px);
+    }
+    .tab-btn {
+      appearance: none; background: none; border: 0; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      /* 56px keeps every target above the 44px touch minimum. */
+      min-height: 56px; padding: 8px 4px 10px;
+      font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .01em;
+      color: var(--text-muted, #8b97a8);
+    }
+    .tab-btn .tab-ico { font-size: 18px; line-height: 20px; }
+    .tab-btn[aria-selected="true"] { color: #5AA7FF; }
+    .tab-btn[aria-selected="true"] .tab-ico { transform: translateY(-1px); }
+
+    @media (max-width: 900px) {
+      /* Flatten the desktop grids so every panel is a direct flow item and can
+         be shown/hidden individually by tab, whatever its nesting. */
+      .analysis-grid, .support-grid, .support-side { display: contents; }
+    }
+
+    @media (max-width: 767px) {
+      /* Stack heading text above its actions rather than competing for width. */
+      .panel-heading {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+      }
+      .panel-heading h2, .panel-heading h3 { font-size: 20px; line-height: 26px; }
+      .movers-actions, .summary-actions { flex-wrap: wrap; }
+      /* Buttons sized for thumbs, and wide enough that their labels stop
+         breaking mid-word ("Deep / scan"). */
+      .summary-action, .icon-button, .primary-action, .ghost-action {
+        min-height: 44px; white-space: nowrap;
+      }
+
+      /* Explanatory prose is clamped to two lines and expands on tap. The
+         numbers are what you open the page for; the caveats matter but should
+         not be the first three paragraphs of every panel. */
+      .panel-heading p, .panel-note, .movers-note, .movers-status, .scan-feedback {
+        /* !important because the browser's own paragraph layout resolves these
+           to `flow-root`, which silently disables -webkit-line-clamp — the text
+           then got cropped mid-line by max-height with no ellipsis, which reads
+           as a rendering fault rather than as "there is more, tap to read".
+           Line-clamp alone crops at an exact line boundary, so no max-height. */
+        display: -webkit-box !important;
+        -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        overflow: hidden; cursor: pointer;
+        line-height: 1.45;
+        /* `overflow: hidden` clips at the PADDING box, so any bottom padding
+           becomes a window onto the clamped-away next line — a ~12px sliver of
+           line 3 was showing under the ellipsis. Move that space to margin,
+           which is outside the clip. */
+        padding-bottom: 0; margin-bottom: 10px;
+      }
+      .copy-open {
+        -webkit-line-clamp: unset !important; overflow: visible !important;
+      }
+
+      /* Action rows: compact pills that fit several across a phone instead of
+         one-per-row 44px slabs. Height still clears the touch minimum. */
+      .movers-actions, #premarketPanel .movers-actions {
+        display: flex; gap: 8px; flex-wrap: wrap;
+      }
+      .movers-actions .summary-action, #premarketPanel .summary-action {
+        flex: 0 1 auto; padding: 0 14px; min-height: 44px;
+        font-size: 13px; border-radius: 999px;
+      }
+      #pmUniverse { min-height: 44px; }
+
+      /* Broker-app number hierarchy: values large, labels small and muted. */
+      .metric-value { font-size: 24px; line-height: 30px; font-weight: 700; }
+      .movers-table { font-size: 15px; }
+      .movers-table th, .movers-table td { padding-top: 12px; padding-bottom: 12px; }
+      .movers-sym { font-weight: 700; font-size: 16px; }
+
+      /* Clear the fixed tab bar so the last panel is never trapped under it. */
+      body.has-tabs .page-shell { padding-bottom: 88px; }
+    }
+
     @media (max-width: 767px) {
       .topbar {
         padding: 16px;
@@ -1770,6 +1862,25 @@ HTML = '''
       <span id="connBannerText"></span>
       <button id="connBannerAction" class="conn-banner-action" type="button" hidden></button>
     </div>
+
+    <!-- Mobile section switcher. Fourteen panels in one column is ~9,400px of
+         scrolling on a phone, so on small screens they become four tabs and the
+         bar stays fixed at the bottom (thumb reach, as in the broker apps).
+         Inert above the breakpoint: desktop keeps the full single-page layout. -->
+    <nav id="tabBar" class="tab-bar" role="tablist" aria-label="Sections" hidden>
+      <button class="tab-btn" type="button" role="tab" data-tab-target="live" aria-selected="true">
+        <span class="tab-ico" aria-hidden="true">📈</span><span>Movers</span>
+      </button>
+      <button class="tab-btn" type="button" role="tab" data-tab-target="analyze" aria-selected="false">
+        <span class="tab-ico" aria-hidden="true">🔎</span><span>Analyze</span>
+      </button>
+      <button class="tab-btn" type="button" role="tab" data-tab-target="scan" aria-selected="false">
+        <span class="tab-ico" aria-hidden="true">🛰️</span><span>Scan</span>
+      </button>
+      <button class="tab-btn" type="button" role="tab" data-tab-target="system" aria-selected="false">
+        <span class="tab-ico" aria-hidden="true">⚙️</span><span>System</span>
+      </button>
+    </nav>
 
     <main class="page-shell" role="main">
       <section class="panel" aria-labelledby="overviewTitle">
@@ -4519,6 +4630,62 @@ HTML = '''
     $('pmPennyButton').addEventListener('click', () => setPmPenny(!state.pmPenny));
     $('moversDeepButton').addEventListener('click', () => loadMovers(true));
     $('moversAutoButton').addEventListener('click', () => setMoversAuto(!state.moversAutoRefresh));
+    // ── Mobile sections ──────────────────────────────────────────────────────
+    // Which tab each panel belongs to, keyed by id or aria-labelledby. Panels
+    // are matched at runtime rather than tagged in the markup so the mapping
+    // lives in one readable place and no panel id (which tests assert on) moves.
+    const TAB_OF = {
+      overviewTitle: 'live', moversPanel: 'live', premarketPanel: 'live',
+      workspaceTitle: 'analyze', resultTitle: 'analyze', factorTitle: 'analyze',
+      chartTitle: 'analyze', recentTitle: 'analyze',
+      scanTitle: 'scan',
+      providerHealthPanel: 'system', breakerPanel: 'system', scorecardPanel: 'system',
+      metricsPanel: 'system', execQualityPanel: 'system', attributionPanel: 'system',
+      aiNarrativePanel: 'system',
+    };
+    const tabQuery = window.matchMedia('(max-width: 900px)');
+    let activeTab = 'live';
+
+    function tabPanels() {
+      return Array.from(document.querySelectorAll('.page-shell .panel')).map(el => ({
+        el, tab: TAB_OF[el.id] || TAB_OF[el.getAttribute('aria-labelledby')] || null,
+      }));
+    }
+
+    function applyTabs() {
+      const on = tabQuery.matches;
+      document.body.classList.toggle('has-tabs', on);
+      $('tabBar').hidden = !on;
+      for (const { el, tab } of tabPanels()) {
+        // A panel with no mapping always shows — a new panel must never vanish
+        // just because nobody remembered to add it here.
+        el.style.display = (!on || !tab || tab === activeTab) ? '' : 'none';
+      }
+      for (const btn of document.querySelectorAll('.tab-btn')) {
+        btn.setAttribute('aria-selected', String(btn.dataset.tabTarget === activeTab));
+      }
+    }
+
+    function selectTab(tab) {
+      activeTab = tab;
+      applyTabs();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    for (const btn of document.querySelectorAll('.tab-btn')) {
+      btn.addEventListener('click', () => selectTab(btn.dataset.tabTarget));
+    }
+    tabQuery.addEventListener('change', applyTabs);
+    applyTabs();
+
+    // Tap any clamped explanation to read the rest of it.
+    document.addEventListener('click', (event) => {
+      if (!tabQuery.matches) return;
+      const copy = event.target.closest(
+        '.panel-heading p, .panel-note, .movers-note, .movers-status, .scan-feedback');
+      if (copy) copy.classList.toggle('copy-open');
+    });
+
     $('clearCacheButton').addEventListener('click', clearCacheAndRefresh);
     $('alertTestButton').addEventListener('click', runAlertTest);
     $('haltButton').addEventListener('click', () => toggleBreaker('halt'));
