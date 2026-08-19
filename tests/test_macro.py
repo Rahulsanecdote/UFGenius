@@ -142,3 +142,63 @@ def test_fred_yield_absent_does_not_crash():
 
     assert result["ten_yr_yield"] is None
     assert "regime" in result
+
+
+# ── missing inputs are omitted, never defaulted ──────────────────────────────
+
+def _regime_with(vix_df, ten_yr=None):
+    spy = _make_spy_df(n=250, price=520.0, trend="up")
+    empty = pd.DataFrame()
+    with patch("src.macro.regime._download") as mock_dl:
+        mock_dl.side_effect = lambda ticker, **kw: (
+            spy if ticker == "SPY" else
+            vix_df if ticker == "^VIX" else
+            empty
+        )
+        with patch("src.macro.regime._fetch_ten_year_yield", return_value=ten_yr):
+            return detect_market_regime()
+
+
+def test_missing_vix_is_reported_not_invented():
+    """An unavailable VIX must not be scored as though it were measured.
+
+    ^VIX is an index: Alpaca's stock API can't serve it, Polygon is skipped for
+    "^" symbols, and Yahoo blocks cloud IPs — so a hosted deployment genuinely
+    has no VIX. The old default of 20.0 landed in the "Elevated" band, quietly
+    costing -10 and rendering "VIX 20.0 — Elevated" as if observed.
+    """
+    result = _regime_with(pd.DataFrame())
+    assert result["vix"] is None
+    assert "vix" in result["data_gaps"]
+    flags = " ".join(result["flags"])
+    assert "VIX unavailable" in flags
+    # The fabricated reading must be gone from the user-visible text entirely.
+    assert "20.0" not in flags
+    assert "Elevated" not in flags
+
+
+def test_missing_vix_costs_no_score():
+    with_vix = _regime_with(_make_vix_df(vix_level=25.0))    # "Elevated": -10
+    without = _regime_with(pd.DataFrame())
+    # Omitting the component is not the same as scoring it as elevated.
+    assert without["regime_score"] == with_vix["regime_score"] + 10
+
+
+def test_present_vix_still_scores_normally():
+    result = _regime_with(_make_vix_df(vix_level=12.0))
+    assert result["vix"] == 12.0
+    assert "vix" not in result["data_gaps"]
+    assert any("Low Fear" in f for f in result["flags"])
+
+
+def test_missing_ten_year_yield_is_listed_as_a_gap():
+    assert "ten_yr_yield" in _regime_with(_make_vix_df(), ten_yr=None)["data_gaps"]
+    assert "ten_yr_yield" not in _regime_with(_make_vix_df(), ten_yr=4.0)["data_gaps"]
+
+
+def test_fallback_regime_declares_every_gap():
+    from src.macro.regime import _fallback_regime
+
+    out = _fallback_regime()
+    assert set(out["data_gaps"]) == {"spy", "vix", "ten_yr_yield"}
+    assert out["vix"] is None
