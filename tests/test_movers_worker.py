@@ -372,3 +372,38 @@ def test_resolution_runs_even_outside_the_scan_window():
             p.stop()
     assert ledger.resolve_calls == 3
     assert ledger.recorded == []   # nothing fires outside the window
+
+
+class _SuppressingAlerter(_Alerter):
+    def last_suppressed(self):
+        return [{"ticker": "ZSTK", "direction": "long", "score": 85.0,
+                 "reason": "no_intraday_data"}]
+
+
+def test_worker_publishes_the_held_back_list():
+    ctx = _cfg(MOVERS_WORKER_REDISCOVER_EVERY_CYCLES=5)
+    for p in ctx:
+        p.start()
+    try:
+        # 3 cycles, discovery only on cycle 1 — the held-back list must persist
+        # through the cycles in between rather than blanking.
+        _, _, d = _run(max_cycles=3, alerter=_SuppressingAlerter())
+    finally:
+        for p in ctx:
+            p.stop()
+    for publish in d["state"].publishes:
+        assert publish["suppressed"] == [
+            {"ticker": "ZSTK", "direction": "long", "score": 85.0,
+             "reason": "no_intraday_data"}]
+
+
+def test_worker_tolerates_an_alerter_without_the_hook():
+    ctx = _cfg()
+    for p in ctx:
+        p.start()
+    try:
+        _, _, d = _run(max_cycles=1, alerter=_Alerter())   # no last_suppressed
+    finally:
+        for p in ctx:
+            p.stop()
+    assert d["state"].publishes[-1]["suppressed"] is None

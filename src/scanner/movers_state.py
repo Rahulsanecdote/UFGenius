@@ -218,6 +218,7 @@ class MoversWorkerState:
         stream_status: Optional[dict] = None,
         stream_prices: Optional[dict] = None,
         features: Optional[dict] = None,
+        suppressed: Optional[list] = None,
         now: Optional[datetime] = None,
     ) -> None:
         """Write a full snapshot of the worker's current state (atomic, flocked).
@@ -227,6 +228,11 @@ class MoversWorkerState:
         JSON-safe views here. ``stream_status`` / ``stream_prices`` (Phase 8,
         optional) carry the live-stream status and per-symbol last prices so the
         dashboard can show a real-time tape.
+
+        ``suppressed`` carries qualifying candidates the alerter declined to
+        alert on, with the reason. Without it, a defensible decision (declining
+        a name whose intraday data was unavailable) is indistinguishable from
+        never having seen the name at all.
 
         ``features`` records which opt-in subsystems this worker actually has
         running. A counter alone cannot distinguish "enabled and the wire was
@@ -246,6 +252,7 @@ class MoversWorkerState:
                 "recent_alerts": list(self._recent_alerts),
                 "recent_invalidations": list(self._recent_invalidations),
                 "features": {k: bool(v) for k, v in (features or {}).items()},
+                "suppressed": [dict(s) for s in (suppressed or [])],
             }
             if stream_status is not None:
                 payload["streaming"] = dict(stream_status)

@@ -165,3 +165,20 @@ def test_features_default_to_empty(tmp_path):
     s = _state(tmp_path)
     s.publish(cycle=1, stats={}, watching=[], scan_window_open=True)
     assert _state(tmp_path).load().snapshot()["features"] == {}
+
+
+def test_suppressed_candidates_ride_in_the_snapshot(tmp_path):
+    """The dashboard needs the held-back list, not just what fired."""
+    s = _state(tmp_path)
+    s.publish(cycle=1, stats={}, watching=[], scan_window_open=True,
+              suppressed=[{"ticker": "ZSTK", "direction": "long", "score": 85.0,
+                           "reason": "no_intraday_data"}])
+    held = _state(tmp_path).load().snapshot()["suppressed"]
+    assert held == [{"ticker": "ZSTK", "direction": "long", "score": 85.0,
+                     "reason": "no_intraday_data"}]
+
+
+def test_suppressed_defaults_to_empty(tmp_path):
+    s = _state(tmp_path)
+    s.publish(cycle=1, stats={}, watching=[], scan_window_open=True)
+    assert _state(tmp_path).load().snapshot()["suppressed"] == []

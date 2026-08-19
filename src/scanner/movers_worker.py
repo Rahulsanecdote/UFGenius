@@ -158,6 +158,11 @@ def run_worker(
                     movers=last_movers,
                     stream_status=stream.status() if stream is not None else None,
                     stream_prices=stream.snapshot() if stream is not None else None,
+                    # Qualifying candidates the alerter held back, with reasons.
+                    # Held on the alerter instance, so this survives the cycles
+                    # between discoveries rather than blanking in between.
+                    suppressed=(alerter.last_suppressed()
+                                if hasattr(alerter, "last_suppressed") else None),
                     # So the dashboard can tell "catalyst alerts are on and the
                     # wire is quiet" from "never enabled" — both read as 0.
                     features={"catalyst_alerts": catalyst_alerter is not None},

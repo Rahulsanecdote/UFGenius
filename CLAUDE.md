@@ -387,6 +387,18 @@ pytest --cov=src       # coverage
   plus recent alerts with their headline, marked `(not delivered)` when Telegram
   creds are absent. That is the normal state on the Render *web* service, which
   deliberately carries no creds so the worker service alerts exactly once.
+- **Held-back alerts are disclosed** (`MoversAlerter.last_suppressed()`): a
+  candidate that clears `alerts.min_score` but is blocked by another rule is
+  recorded with its reason (`no_intraday_data` / `halted` / `already_alerted`)
+  and published in the worker snapshot. Observed 2026-08-19: ZSTK ran +370%,
+  scored 85, entered the watch set, and never alerted because
+  `alerts.require_enriched` (default **on**) refuses a candidate whose intraday
+  bars are missing — its score would then be the *discovery* score,
+  `min(85, |change| × 2.5)`, i.e. magnitude alone, the weakest thing measured.
+  The suppression is correct; being unable to tell it apart from "never
+  discovered" was not. The dashboard shows `no_intraday_data`/`halted` only
+  (`already_alerted` is not a withheld decision), and sub-threshold candidates
+  are never listed — the majority would bury the entries that mean something.
 - **Movers provider chain** (`src/scanner/movers_providers.py`, config
   `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
   FMP-only, so an exhausted daily quota took the intraday path down entirely.
@@ -459,7 +471,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
 | GET | `/api/portfolio-risk` | Advisory portfolio-level risk snapshot: gross leverage / heat / per-name weights vs limits (roadmap Phase 4; `available:false` when disabled) |
 | GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `available:false` without an FMP key |
-| GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations, and `features` (which opt-in layers are running) (Phase 7 shared state; `available:false` when the worker isn't running) |
+| GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations, `features` (which opt-in layers are running), and `suppressed` (qualifying candidates held back, with the reason) (Phase 7 shared state; `available:false` when the worker isn't running) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
 | POST | `/api/alert-test` | Send a test Telegram message using the deployment's own credentials; reports Telegram's error description (credentials described by shape only, never returned) |
