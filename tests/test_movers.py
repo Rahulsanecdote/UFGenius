@@ -223,20 +223,22 @@ _SPLIT_FAKE = {
 }
 
 
-def _run_split(verified, **cfgover):
-    """Discovery over a payload holding one reverse-split artifact.
+def _run_split(verified, payload=None, **cfgover):
+    """Discovery over a payload holding one extreme (>= suspect) move.
 
     ``verified`` is what the split-adjusted recomputation returns (None = bars
-    unavailable). Returns (candidates by ticker, tickers that were verified).
+    unavailable); ``payload`` overrides the default reverse-split fixture.
+    Returns (candidates by ticker, tickers that were verified).
     """
+    feed = _SPLIT_FAKE if payload is None else payload
     base = dict(FMP_KEY="k", MOVERS_SOURCES=["gainers", "losers", "most_actives"],
                 MOVERS_PROVIDERS=["fmp"],
                 MOVERS_MIN_PRICE=1.0, MOVERS_MAX_PRICE=0.0, MOVERS_MIN_CHANGE_PCT=3.0,
                 MOVERS_LIMIT=40, MOVERS_INCLUDE_SHORT=True, MOVERS_ENRICH_INTRADAY=False,
-                MOVERS_SUSPECT_CHANGE_PCT=300.0)
+                MOVERS_SUSPECT_CHANGE_PCT=300.0, MOVERS_SUSPECT_AGREEMENT_PCT=25.0)
     base.update(cfgover)
     patches = [patch.object(cfg, k, v) for k, v in base.items()]
-    patches.append(patch.object(mv, "_fetch_source", lambda s: _SPLIT_FAKE.get(s, [])))
+    patches.append(patch.object(mv, "_fetch_source", lambda s: feed.get(s, [])))
     calls = []
 
     def _verify(ticker, price):
@@ -271,6 +273,120 @@ def test_unverifiable_extreme_move_is_dropped():
     out, _ = _run_split(None)
     assert "SPLT" not in out
     assert "REAL" in out
+
+
+# ── the third branch: extreme AND confirmed ──────────────────────────────────
+#
+# "Implausible" is not the same as "false". The guard used to drop on
+# `abs(verified) >= suspect` even when the recomputation AGREED with the feed,
+# so a real 442% move was indistinguishable from a reverse-split artifact.
+
+_DAIC_FAKE = {
+    # CID HoldCo, 2026-08-22: $0.426 → $2.31 on ~6M shares. Genuine.
+    "gainers": [{"symbol": "DAIC", "price": 2.31, "name": "CID HoldCo",
+                 "changesPercentage": 442.25}],
+    "losers": [],
+    "most_actives": [],
+}
+
+
+def test_extreme_move_confirmed_by_our_own_bars_is_kept():
+    # Our split-adjusted bars independently reproduce the feed's number. That is
+    # corroboration — a reverse split would have separated the two by the split
+    # ratio, not matched them.
+    out, calls = _run_split(442.25, payload=_DAIC_FAKE)
+    assert calls == [("DAIC", 2.31)]
+    assert "DAIC" in out
+    assert out["DAIC"].change_pct == pytest.approx(442.25)
+    assert out["DAIC"].change_verified is True
+    assert out["DAIC"].direction == "long"
+
+
+def test_confirmation_tolerates_a_small_basis_difference():
+    # The two operands measure the same quote against different previous
+    # closes, so an ordinary session leaves a little daylight between them.
+    out, _ = _run_split(400.0, payload=_DAIC_FAKE)          # ~9.6% apart
+    assert out["DAIC"].change_pct == pytest.approx(400.0)   # ours, not the feed's
+    assert out["DAIC"].change_verified is True
+
+
+def test_extreme_move_is_dropped_when_the_bars_disagree_and_are_also_extreme():
+    # Feed says +1668%, our bars say +400%: two different implausible moves
+    # means our bars have not picked the corporate action up either, so nothing
+    # was verified and neither number can be published.
+    out, _ = _run_split(400.0)
+    assert "SPLT" not in out
+
+
+def test_zero_agreement_tolerance_demands_an_exact_match():
+    # Documented behaviour of the strictest setting: anything short of identical
+    # counts as disagreement, restoring the old drop-every-extreme-move stance.
+    out, _ = _run_split(442.0, payload=_DAIC_FAKE, MOVERS_SUSPECT_AGREEMENT_PCT=0.0)
+    assert "DAIC" not in out
+
+
+# ── withheld candidates are disclosed, not silently dropped ──────────────────
+
+def test_unverifiable_move_is_disclosed_with_the_feed_s_claim():
+    out, _ = _run_split(None, payload=_DAIC_FAKE)
+    assert "DAIC" not in out                       # still not published
+    (w,) = mv.last_withheld()                      # ...but no longer invisible
+    assert w["ticker"] == "DAIC"
+    assert w["reason"] == "unverifiable"
+    assert w["reported_change_pct"] == pytest.approx(442.25)
+    assert w["recomputed_change_pct"] is None      # there was nothing to compare
+    assert w["sources"] == ["gainers"]
+
+
+def test_conflicting_recomputation_is_disclosed_with_both_numbers():
+    out, _ = _run_split(400.0)                     # vs the fixture's +1668.4
+    assert "SPLT" not in out
+    (w,) = mv.last_withheld()
+    assert w["reason"] == "conflicting"
+    assert w["reported_change_pct"] == pytest.approx(1668.4)
+    assert w["recomputed_change_pct"] == pytest.approx(400.0)
+
+
+def test_withheld_is_per_run_and_does_not_accumulate():
+    _run_split(None, payload=_DAIC_FAKE)
+    assert mv.last_withheld()
+    _run_split(442.25, payload=_DAIC_FAKE)         # confirmed — nothing held back
+    assert mv.last_withheld() == []
+
+
+def test_withheld_disclosure_is_bounded():
+    # A run withholding more than the cap has a systemic problem the first few
+    # entries already show; the list must not grow without limit.
+    rows = [{"symbol": f"X{i}", "price": 5.0, "changesPercentage": 900.0}
+            for i in range(mv._MAX_WITHHELD + 5)]
+    _run_split(None, payload={"gainers": rows, "losers": [], "most_actives": []})
+    assert len(mv.last_withheld()) == mv._MAX_WITHHELD
+
+
+def test_withheld_entries_are_copies():
+    # last_source_health() list-copies its values; the dicts inside need copying
+    # too or a caller's edit reaches back into this thread's state.
+    _run_split(None, payload=_DAIC_FAKE)
+    mv.last_source_health()["withheld"][0]["ticker"] = "MUTATED"
+    mv.last_withheld()[0]["reason"] = "MUTATED"
+    fresh = mv.last_withheld()[0]
+    assert fresh["ticker"] == "DAIC"
+    assert fresh["reason"] == "unverifiable"
+
+
+@pytest.mark.parametrize("feed,verified,tol,expected", [
+    (442.25, 442.25, 0.25, True),        # identical
+    (442.25, 400.0, 0.25, True),         # 9.6% apart — same move, different basis
+    (500.0, 300.0, 0.25, False),         # 40% apart — not the same move
+    (1668.4, 23.0, 0.25, False),         # YYAI 1-for-20: separated by the ratio
+    (442.0, -442.0, 0.25, False),        # opposite signs can never agree
+    (0.0, 0.0, 0.25, True),              # both flat — nothing to disagree about
+    (float("nan"), 10.0, 0.25, False),   # non-finite never agrees
+    (float("inf"), 10.0, 0.25, False),
+    (400.0, 10.0, 1.0, True),            # tol 1.0 ≈ "sharing a sign is enough"
+])
+def test_changes_agree(feed, verified, tol, expected):
+    assert mv._changes_agree(feed, verified, tol) is expected
 
 
 def test_corrected_move_below_the_floor_stops_being_a_mover():
@@ -329,11 +445,20 @@ def test_verified_change_pct_never_raises():
         assert mv._verified_change_pct("X", 1.0) is None
 
 
-def test_recomputation_that_is_also_implausible_fails_closed():
-    # Provider split-adjustment can lag the effective date; if our own number
-    # is still absurd we have verified nothing.
-    out, _ = _run_split(1500.0)
-    assert "SPLT" not in out
+def test_two_implausible_numbers_that_agree_are_treated_as_corroboration():
+    """The accepted residual risk, pinned so a change to it is deliberate.
+
+    If our own provider ALSO had not adjusted for the split, our recomputation
+    would reproduce the feed's artifact exactly and the agreement would be
+    spurious. The one documented instance runs the other way — on YYAI's
+    effective date our bars were adjusted (+23%) while the feed was not
+    (+1668%) — and the alternative (drop every extreme move) makes the scanner
+    blind to precisely the names it exists to surface. Operators who want the
+    old stance set ``suspect_agreement_pct: 0``.
+    """
+    out, _ = _run_split(1500.0)                # vs the feed's +1668.4 — 10% apart
+    assert out["SPLT"].change_pct == pytest.approx(1500.0)
+    assert out["SPLT"].change_verified is True
 
 
 def test_merge_keeps_the_price_from_the_row_that_won_the_change():

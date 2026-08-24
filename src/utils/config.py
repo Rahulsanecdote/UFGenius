@@ -131,6 +131,18 @@ MOVERS_SUSPECT_CHANGE_PCT: float = (
     if math.isfinite(_suspect_change_pct) and _suspect_change_pct >= 0
     else 300.0
 )
+_suspect_agreement_pct = _as_float(_MOVERS.get("suspect_agreement_pct", 25.0), 25.0)
+# How close the split-adjusted recomputation has to land to the feed's number
+# for an extreme move to count as CORROBORATED rather than a corporate-action
+# artifact — measured relative to the larger of the two, in percent. Same
+# validation stance as the threshold above: a non-finite or negative value
+# would make every comparison fail and silently restore "drop every extreme
+# move", which is the failure this knob exists to fix, so it falls back.
+MOVERS_SUSPECT_AGREEMENT_PCT: float = (
+    _suspect_agreement_pct
+    if math.isfinite(_suspect_agreement_pct) and _suspect_agreement_pct >= 0
+    else 25.0
+)
 MOVERS_LIMIT: int = _as_int(_MOVERS.get("limit", 40), 40)
 
 _CATALYST_ALERTS: dict = _MOVERS.get("catalyst_alerts", {}) if isinstance(_MOVERS, dict) else {}

@@ -422,6 +422,27 @@ pytest --cov=src       # coverage
   identically to a quiet market ("no movers cleared the filters"). Failures are
   now recorded per run and surfaced by `/api/movers` as `available:false` +
   `reason` (nothing returned) or `degraded:true` + `source_errors` (partial).
+- **Corporate-action guard** (config `movers.suspect_change_pct` /
+  `suspect_agreement_pct`): the mover lists report an **unadjusted** quote
+  change, so a reverse split's price multiple arrives looking like a move (YYAI
+  1-for-20 on 2026-08-17 → "+1668%" on a stock up ~23%). Past
+  `suspect_change_pct` the number is re-derived from our own **split-adjusted**
+  bars (`_verified_change_pct`) and the two are compared, giving three outcomes:
+  they **agree** within `suspect_agreement_pct` ⇒ the extreme move is
+  *corroborated* and published (a split would have separated them by the split
+  ratio, not matched); they **disagree** and ours is plausible ⇒ the artifact is
+  *corrected* to ours; anything else — no bars at all, or two different
+  implausible numbers — ⇒ **withheld**. Treating agreement as grounds for
+  rejection is what hid CID HoldCo (DAIC) on 2026-08-22, a genuine
+  $0.426 → $2.31 (+442%) on 6M shares; the residual risk (our provider *also*
+  lagging the split, making the agreement spurious) is accepted for a
+  discovery-only layer and reversible with `suspect_agreement_pct: 0`. Both
+  surviving branches publish **our** number and flag it `change_verified` (the
+  dashboard's `†`), because in neither case is it the feed's. Withheld
+  candidates are **disclosed, not dropped silently** (`movers.last_withheld()`,
+  `/api/movers` → `withheld`, and the movers status line): an unexplained
+  absence is indistinguishable from a name that was never discovered, which is
+  what left DAIC with nothing to point at.
 - **Trade-halt awareness** (`src/data/halts.py`, config `movers.halts`): the
   movers feed reports a halted stock as a normal (usually top-ranked) mover.
   Halt state comes from Nasdaq Trader's official UTP feed (free, no key, all US
@@ -470,7 +491,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/alert-outcomes` | Measured forward outcomes of fired alerts (movers/catalyst): per source+horizon hit rate, avg/median in-direction move, pending/unresolved counts |
 | GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
 | GET | `/api/portfolio-risk` | Advisory portfolio-level risk snapshot: gross leverage / heat / per-name weights vs limits (roadmap Phase 4; `available:false` when disabled) |
-| GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `available:false` without an FMP key |
+| GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `withheld` lists candidates the corporate-action guard refused to publish, with the feed's claim and the reason. `available:false` without an FMP key |
 | GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations, `features` (which opt-in layers are running), and `suppressed` (qualifying candidates held back, with the reason) (Phase 7 shared state; `available:false` when the worker isn't running) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |
