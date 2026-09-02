@@ -3762,28 +3762,57 @@ HTML = '''
       return (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)}${suffix || ''}`;
     }
 
+    // Names the corporate-action guard discovered but refused to publish. The
+    // guard is right to withhold a % it can't verify — but a silent drop reads
+    // as "never discovered", which is how DAIC went missing (2026-08-22).
+    function withheldDetail(payload) {
+      return ((payload && payload.withheld) || []).map(w => {
+        const claimed = `${w.reported_change_pct >= 0 ? '+' : ''}${Number(w.reported_change_pct).toFixed(0)}%`;
+        return `${w.ticker} — feed reported ${claimed}, ` + (w.reason === 'conflicting'
+          ? `our split-adjusted bars say ${Number(w.recomputed_change_pct).toFixed(0)}% (they disagree, and both are implausible for one session)`
+          : 'and there were no split-adjusted bars to check it against');
+      });
+    }
+    function applyWithheld(status, payload) {
+      const w = (payload && payload.withheld) || [];
+      // NB: this template is a plain Python string, so a JS newline has to be
+      // written \\n here or Python eats the escape and breaks the script.
+      status.title = w.length
+        ? 'Withheld by the corporate-action guard:\\n' + withheldDetail(payload).join('\\n')
+        : '';
+      return w.length ? ` · ${w.length} withheld (${w.map(x => x.ticker).join(', ')})` : '';
+    }
+
     function renderMovers(payload) {
       const status = $('moversStatus');
       const table = $('moversTable');
       const body = $('moversBody');
       if (!payload || payload.available === false) {
         table.hidden = true;
+        status.title = '';
         status.textContent = (payload && payload.reason) || 'Market movers unavailable.';
         return;
       }
+      const withheld = applyWithheld(status, payload);
       const movers = payload.movers || [];
       if (!movers.length) {
         table.hidden = true;
-        status.textContent = 'No movers cleared the filters right now.';
+        // "Nothing qualified" is the wrong story when names WERE found and
+        // then held back — say which it was.
+        status.textContent = withheld
+          ? `Nothing published${withheld}.`
+          : 'No movers cleared the filters right now.';
         return;
       }
       body.innerHTML = movers.map((m, i) => {
         const dir = m.direction === 'short' ? 'short' : 'long';
         const chgCls = m.change_pct >= 0 ? 'chg-up' : 'chg-down';
-        // The feed's raw change is unadjusted for corporate actions; when it
-        // was implausible we recomputed it from split-adjusted bars — say so.
+        // The feed's raw change is unadjusted for corporate actions; past a
+        // threshold we recompute it from split-adjusted bars and show OURS —
+        // whether that corrected a reverse-split artifact or confirmed a real
+        // outsized move. Either way the number isn't the feed's, so say so.
         const adj = m.change_verified
-          ? '<span class="chg-adj" title="Feed value was implausible for one session (corporate action, e.g. a reverse split) — recomputed from split-adjusted bars">†</span>'
+          ? '<span class="chg-adj" title="Extreme move — this % was recomputed from our own split-adjusted bars rather than taken from the feed (which reports corporate actions, e.g. a reverse split, as price moves)">†</span>'
           : '';
         // A halted name can't be traded now and its volume signals are frozen
         // by the halt itself — say so rather than showing it as a live setup.
@@ -3817,7 +3846,7 @@ HTML = '''
       const servedBy = (payload.source_health || {}).served_by || {};
       const providers = [...new Set(Object.values(servedBy))];
       const via = providers.length ? ` · via ${escapeHtml(providers.join(', '))}` : '';
-      status.textContent = `${movers.length} movers · ${enrichedNote}${via}.${degraded}`;
+      status.textContent = `${movers.length} movers · ${enrichedNote}${via}${withheld}.${degraded}`;
     }
 
     async function loadMovers(enrich = false) {
@@ -5528,6 +5557,10 @@ def api_movers():
             "count": len(movers),
             "source_errors": source_errors,
             "source_health": health,
+            # Candidates the corporate-action guard refused to publish. Without
+            # this a withheld name is indistinguishable from one that was never
+            # discovered — the DAIC case (2026-08-22).
+            "withheld": health.get("withheld", []),
             "degraded": bool(source_errors),
             "enriched": sum(1 for m in movers if m.enriched),
             "enrich_requested": enrich,

@@ -124,8 +124,12 @@ services:
   #   IMPORTANT: Background Workers are a PAID Render feature (~$7/mo Starter).
   #   Remove this service (or set it aside) if you only want the free web deploy;
   #   the same command runs on any always-on box (`python bot.py --mode
-  #   movers-worker`). Set FMP_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and
-  #   ALPACA_API_KEY/SECRET as Secrets in the Render dashboard.
+  #   movers-worker`).
+  #
+  #   MINIMUM secrets to make this useful: ALPACA_API_KEY + ALPACA_SECRET_KEY
+  #   (discovery, intraday enrichment, stream, news wire) and TELEGRAM_BOT_TOKEN
+  #   + TELEGRAM_CHAT_ID (delivery). FMP_KEY is OPTIONAL — see the note on it
+  #   below.
   - type: worker
     name: ufgenius-movers-worker
     env: python
@@ -134,6 +138,16 @@ services:
     buildCommand: pip install --upgrade pip && pip install -r requirements.lock
     startCommand: python bot.py --mode movers-worker
     autoDeploy: false
+    # Persist data/ across deploys and restarts. Without this the ALERT OUTCOME
+    # LEDGER (src/observability/alert_outcomes.py — default on) resets every
+    # time the service restarts, so the per-source hit rate never accumulates
+    # and "are these alerts any good" stays unanswerable. The market-data cache
+    # and metrics ledger live here too. ~$0.25/GB/mo; a disk pins the service to
+    # one instance and disables zero-downtime deploys, both fine for one worker.
+    disk:
+      name: ufgenius-worker-state
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.2"
@@ -143,26 +157,35 @@ services:
         value: "true"
       - key: MOVERS_STREAM_ENABLED                 # live Alpaca tape → faster reaction
         value: "true"
-      - key: FMP_KEY                   # required — discovery source
+      # Discovery walks the movers.providers chain [alpaca, polygon, fmp] and the
+      # first provider that ANSWERS serves each source. Alpaca's screener covers
+      # gainers + losers; only most_actives is FMP-only (Polygon's snapshot has
+      # no most-actives endpoint). So Alpaca alone gives you discovery, and an
+      # unconfigured provider is SKIPPED, never counted as a failure.
+      - key: ALPACA_API_KEY            # required — discovery, intraday, stream, news
+        sync: false
+      - key: ALPACA_SECRET_KEY         # required
         sync: false
       - key: TELEGRAM_BOT_TOKEN        # required — alert delivery
         sync: false
-      - key: TELEGRAM_CHAT_ID          # required — where alerts go
-        sync: false
-      - key: ALPACA_API_KEY            # intraday enrichment + trade stream
-        sync: false
-      - key: ALPACA_SECRET_KEY
-        sync: false
+      - key: TELEGRAM_CHAT_ID          # required — where alerts go (the CHAT's id,
+        sync: false                    # not the bot's; read chat.id from getUpdates)
+      # - key: FMP_KEY                 # OPTIONAL — adds the most_actives source only
+      #   sync: false                  # (a free FMP tier exhausts its daily quota fast)
       # ── Catalyst-triggered alerts (opt-in, default OFF) ───────────────────
       #   Fires on the NEWS WIRE rather than on price, so a catalyst is seen
       #   at publication instead of after the move shows up on a gainers list.
       #   Discovery/alerting only — it never sizes, gates, or places anything.
       #   Belongs on THIS service, not the web one: it delivers via Telegram.
       #   Needs ALPACA_API_KEY/SECRET (the batch news wire is Alpaca-only).
-      # - key: CATALYST_ALERTS_ENABLED       # master switch
-      #   value: "true"
-      # - key: CATALYST_ALERTS_UNIVERSE      # watchlist | all (market-wide wire)
-      #   value: "watchlist"                 # 'watchlist' needs CUSTOM_WATCHLIST set
+      #
+      #   TURN IT OFF ON THE WEB SERVICE when you enable it here. The web service
+      #   has no Telegram creds, so every headline it classifies is spent on an
+      #   alert it can only render as "(not delivered)" in the worker strip.
+      - key: CATALYST_ALERTS_ENABLED       # master switch
+        value: "true"
+      - key: CATALYST_ALERTS_UNIVERSE      # watchlist | all (market-wide wire)
+        value: "all"                       # 'watchlist' needs CUSTOM_WATCHLIST set
       # - key: CUSTOM_WATCHLIST              # e.g. "AAPL,NVDA,TSLA" — required for
       #   sync: false                        # universe=watchlist, else nothing fires
       # - key: CATALYST_ALERTS_TIERS         # strong | moderate | weak | dilution

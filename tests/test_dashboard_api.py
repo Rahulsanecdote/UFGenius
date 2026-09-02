@@ -409,6 +409,31 @@ def test_movers_returns_ranked_list(client, monkeypatch):
     assert data["count"] == 2 and data["enriched"] == 2 and data["enrich_requested"] is True
     assert data["movers"][0]["ticker"] == "NBIS"
     assert data["movers"][0]["direction"] == "long"
+    # No withheld names in this run, and an older health dict without the key
+    # must not 500 the endpoint.
+    assert data["withheld"] == []
+
+
+def test_movers_endpoint_reports_withheld_candidates(client, monkeypatch):
+    """A name the corporate-action guard held back has to reach the caller.
+
+    Otherwise it is indistinguishable from a name that was never discovered —
+    the DAIC case (2026-08-22).
+    """
+    withheld = [{"ticker": "DAIC", "name": "CID HoldCo", "price": 2.31,
+                 "reported_change_pct": 442.25, "recomputed_change_pct": None,
+                 "sources": ["gainers"], "reason": "unverifiable"}]
+    monkeypatch.setattr("src.scanner.movers.fetch_market_movers", lambda **kw: [])
+    monkeypatch.setattr("src.scanner.movers.last_source_health",
+                        lambda: {"attempted": ["gainers"], "succeeded": ["gainers"],
+                                 "failed": [], "served_by": {"gainers": "fmp"},
+                                 "withheld": withheld})
+    r = client.get("/api/movers")
+    assert r.status_code == 200
+    data = r.get_json()
+    # An empty published list here is NOT a quiet market, and the payload says so.
+    assert data["available"] is True and data["count"] == 0
+    assert data["withheld"] == withheld
 
 
 # ── /api/movers-worker (Phase 7 shared state) ───────────────────────────────────

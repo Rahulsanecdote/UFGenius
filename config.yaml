@@ -26,10 +26,18 @@ movers:
   # on a reverse-split effective date the mechanical price multiple is reported
   # as a move (AiRWA/YYAI 1-for-20 on 2026-08-17 showed as "+1668%" while the
   # stock was up ~23%). Above this magnitude the number is re-derived from our
-  # own split-adjusted daily bars, and dropped if it can't be verified.
+  # own split-adjusted daily bars, and dropped if it can't be checked at all.
   # 0 disables the guard. 300% is far above a plausible single session and far
   # below the ratios reverse splits produce.
   suspect_change_pct: 300.0
+  # ...but "extreme" is not the same as "false". When the recomputation lands
+  # within this much of the feed's number (relative to the larger of the two),
+  # our bars have CONFIRMED the move and it is kept — a split would have pushed
+  # them apart by the split ratio, not matched. Dropping on agreement is what
+  # hid CID HoldCo (DAIC) on 2026-08-22, a genuine +442% on 6M shares.
+  # 0 demands an exact match (restoring the old drop-everything behaviour);
+  # 100 keeps anything the two merely agree on the SIGN of.
+  suspect_agreement_pct: 25.0
   limit: 40                 # max ranked candidates returned
   include_short_setups: true  # losers → SHORT-direction candidates
   # Trade-halt awareness. A halted name cannot be acted on, and LULD reopens gap

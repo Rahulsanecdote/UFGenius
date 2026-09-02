@@ -45,10 +45,20 @@ _EASTERN = ZoneInfo("America/New_York")
 _health_state = threading.local()
 
 
+# Cap on the disclosed withheld list. A run that withholds more names than this
+# has a systemic problem the first few entries already show.
+_MAX_WITHHELD = 8
+
+
+def _blank_health() -> dict:
+    return {"attempted": [], "succeeded": [], "failed": [], "served_by": {},
+            "withheld": []}
+
+
 def _health() -> dict:
     health = getattr(_health_state, "health", None)
     if health is None:
-        health = {"attempted": [], "succeeded": [], "failed": [], "served_by": {}}
+        health = _blank_health()
         _health_state.health = health
     return health
 
@@ -73,8 +83,10 @@ class MoverCandidate:
     is_breakout: bool = False
     enriched: bool = False
 
-    # True when the feed's % change was implausible (corporate action) and we
-    # replaced it with a split-adjusted recomputation — see _verified_change_pct.
+    # True when the feed's % change was extreme enough to check and the value
+    # shown is our split-adjusted recomputation instead — whether that CORRECTED
+    # a corporate-action artifact or CONFIRMED a genuinely huge move. Either way
+    # the number came from our own bars, not the feed. See _verified_change_pct.
     change_verified: bool = False
 
     # Trade-halt state (src/data/halts.py). A halted name is untradeable now and
@@ -127,14 +139,31 @@ def last_source_health() -> dict:
     "one source answered and legitimately had nothing".
     """
     # Copy per type: `served_by` is a mapping, and list()-ing it would silently
-    # reduce it to its keys.
-    return {key: (dict(value) if isinstance(value, dict) else list(value))
-            for key, value in _health().items()}
+    # reduce it to its keys. `withheld` holds dicts, which need copying too or
+    # a caller's edit reaches back into this thread's state.
+    def _copy(value):
+        if isinstance(value, dict):
+            return dict(value)
+        return [dict(v) if isinstance(v, dict) else v for v in value]
+
+    return {key: _copy(value) for key, value in _health().items()}
 
 
 def last_source_errors() -> list[str]:
     """Just the failures from this thread's most recent discovery run."""
     return list(_health()["failed"])
+
+
+def last_withheld() -> list[dict]:
+    """Movers the corporate-action guard discovered but refused to publish.
+
+    A dropped candidate used to leave no trace, so a name the feed reported at
+    +442% was indistinguishable from a name that never appeared — which is how
+    CID HoldCo (DAIC) went missing on 2026-08-22 with nothing to point at. The
+    guard is still right to withhold an unverifiable number; being unable to
+    tell that apart from "never discovered" was not.
+    """
+    return [dict(entry) for entry in _health()["withheld"]]
 
 
 def _fetch_source(source: str) -> list[dict]:
@@ -243,6 +272,44 @@ def _verified_change_pct(ticker: str, price: float) -> float | None:
     except Exception as exc:  # verification is best-effort — never break discovery
         log.debug(f"movers: change verification for {ticker} failed ({type(exc).__name__})")
         return None
+
+
+def _record_withheld(c: "MoverCandidate", reason: str, verified: float | None) -> None:
+    """Disclose a candidate the corporate-action guard refused to publish."""
+    withheld = _health()["withheld"]
+    if len(withheld) >= _MAX_WITHHELD:
+        return
+    withheld.append({
+        "ticker": c.ticker,
+        "name": c.name,
+        "price": round(c.price, 4),
+        "reported_change_pct": round(c.change_pct, 2),   # the FEED's claim
+        "recomputed_change_pct": (None if verified is None else round(verified, 2)),
+        "sources": list(c.sources),
+        "reason": reason,      # "unverifiable" | "conflicting"
+    })
+
+
+def _changes_agree(feed_pct: float, verified_pct: float, tol: float) -> bool:
+    """Do the feed's change and our recomputation describe the SAME move?
+
+    Compared *relatively*, against the larger of the two: at the magnitudes this
+    guard sees (a 300%+ claim) a fixed number of percentage points would mean
+    nothing. The two operands measure the same quote and differ only in their
+    previous-close basis, so on an ordinary session they land within rounding of
+    each other, while a reverse split separates them by the split ratio — YYAI's
+    1-for-20 gave +1668% against +23%, a relative gap of 0.99. Opposite signs
+    can never agree; that falls out of the arithmetic without its own branch.
+
+    ``tol`` is a fraction: 0 demands an exact match, 1.0 accepts any two values
+    that merely share a sign.
+    """
+    if not (math.isfinite(feed_pct) and math.isfinite(verified_pct)):
+        return False
+    scale = max(abs(feed_pct), abs(verified_pct))
+    if scale <= 0:
+        return True                       # both flat — nothing to disagree about
+    return abs(feed_pct - verified_pct) / scale <= tol
 
 
 def annotate_halts(candidates: list["MoverCandidate"]) -> list["MoverCandidate"]:
@@ -371,8 +438,7 @@ def fetch_market_movers(
     enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else enrich
 
     # Fresh health for this run, on this thread only.
-    _health_state.health = {"attempted": [], "succeeded": [], "failed": [],
-                            "served_by": {}}
+    _health_state.health = _blank_health()
     merged: dict[str, MoverCandidate] = {}
     for source in sources:
         for row in _fetch_source(source):
@@ -408,30 +474,61 @@ def fetch_market_movers(
 
     candidates: list[MoverCandidate] = []
     suspect = float(config.MOVERS_SUSPECT_CHANGE_PCT)
+    agree_tol = float(config.MOVERS_SUSPECT_AGREEMENT_PCT) / 100.0
     for c in merged.values():
         # Corporate-action guard, BEFORE the magnitude/direction filters so the
         # corrected number flows through all of them. A move past `suspect` is
-        # far more often a reverse-split artifact than a real session — and an
-        # unverifiable extreme claim is dropped rather than published.
+        # more often a reverse-split artifact than a real session — but not
+        # always, so the claim is CHECKED against our own split-adjusted bars
+        # rather than assumed false. Three outcomes, and only one keeps the
+        # feed's magnitude.
         if suspect > 0 and abs(c.change_pct) >= suspect:
             verified = _verified_change_pct(c.ticker, c.price)
-            # A recomputation that is ALSO implausible means our own bars have
-            # not picked the corporate action up either (provider adjustment
-            # lags the effective date) — nothing was verified, so fail closed.
-            if verified is None or abs(verified) >= suspect:
+            if verified is None:
+                # Nothing to check against — fail closed rather than publish an
+                # extreme claim on the feed's word alone. Recorded, not silent:
+                # this is the branch DAIC hit, and an unexplained absence is
+                # indistinguishable from never having been discovered.
                 log.warning(
-                    f"movers: dropping {c.ticker} — feed change {c.change_pct:+.1f}% "
-                    "is implausible for one session and could not be verified "
+                    f"movers: withholding {c.ticker} — feed change {c.change_pct:+.1f}% "
+                    "is implausible for one session and could not be checked "
                     "against split-adjusted bars (corporate action?)"
                 )
+                _record_withheld(c, "unverifiable", None)
                 continue
-            log.warning(
-                f"movers: {c.ticker} feed change {c.change_pct:+.1f}% is implausible "
-                f"(corporate action?) — using split-adjusted {verified:+.1f}%"
-            )
+            if _changes_agree(c.change_pct, verified, agree_tol):
+                # Our own split-adjusted bars independently reproduce the move,
+                # which is corroboration, not grounds for rejection: a reverse
+                # split would have pushed the two apart by the split ratio.
+                # Rejecting agreement is what hid CID HoldCo (DAIC) on
+                # 2026-08-22 — a genuine $0.43 → $2.31 on 6M shares.
+                log.info(
+                    f"movers: {c.ticker} feed change {c.change_pct:+.1f}% is extreme but "
+                    f"confirmed by split-adjusted bars ({verified:+.1f}%) — keeping"
+                )
+            elif abs(verified) >= suspect:
+                # They disagree AND the recomputation is itself implausible: our
+                # bars have not picked the corporate action up either (provider
+                # adjustment lags the effective date), so neither number is
+                # trustworthy and nothing was verified.
+                log.warning(
+                    f"movers: withholding {c.ticker} — feed change {c.change_pct:+.1f}% and "
+                    f"split-adjusted {verified:+.1f}% disagree, and both are implausible "
+                    "for one session (corporate action?)"
+                )
+                _record_withheld(c, "conflicting", verified)
+                continue
+            else:
+                log.warning(
+                    f"movers: {c.ticker} feed change {c.change_pct:+.1f}% is implausible "
+                    f"(corporate action?) — using split-adjusted {verified:+.1f}%"
+                )
+            # Both surviving branches publish the recomputation: it is the value
+            # on OUR basis, which is the basis every downstream consumer uses.
             c.change_pct = verified
             c.change_verified = True
-            # The source list's implied direction rested on the bogus number.
+            # A corrected move can flip sign, and the source list's implied
+            # direction rested on the number we just replaced.
             c.direction = "short" if verified < 0 else "long"
         if abs(c.change_pct) < float(min_change):
             continue
