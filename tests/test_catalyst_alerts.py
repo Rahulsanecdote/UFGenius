@@ -224,6 +224,41 @@ class TestPublicationDateGate:
         fired = _poll(CatalystAlerter(), [fresh])
         assert [f["ticker"] for f in fired] == ["ACME"]
 
+
+class TestRoundupGate:
+    """A market wrap must not become a catalyst for every ticker it names.
+
+    This path carries symbols and no company names, so the screener's subject
+    test is unusable here — "Surrozen Files IND" does not contain "SRZN". The
+    symbol COUNT works without a name.
+    """
+
+    def test_a_roundup_alerts_nothing(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_MAX_STORY_SYMBOLS", 6)
+        wrap = _news("Crude Oil Rises Over 4%; Darden Earnings Miss Views",
+                     ["DRI", "APUS", "SRZN", "P", "SFIX", "ACAD", "VKTX"])
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_TIERS", ["strong", "moderate"])
+        assert _poll(CatalystAlerter(), [wrap]) == []
+
+    def test_a_single_name_story_still_fires(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_MAX_STORY_SYMBOLS", 6)
+        story = _news("FDA approves ACME's lead drug", ["ACME"])
+        assert [f["ticker"] for f in _poll(CatalystAlerter(), [story])] == ["ACME"]
+
+    def test_a_two_name_story_still_fires(self, monkeypatch):
+        # M&A names both sides; that is not a roundup.
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_MAX_STORY_SYMBOLS", 6)
+        story = _news("ACME to acquire BETA for $2B", ["ACME", "BETA"])
+        assert sorted(f["ticker"] for f in _poll(CatalystAlerter(), [story])) == \
+            ["ACME", "BETA"]
+
+    def test_zero_disables_the_gate(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_MAX_STORY_SYMBOLS", 0)
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_MAX_PER_RUN", 50)
+        wrap = _news("FDA approves treatments across the sector",
+                     [f"SYM{i}" for i in range(12)])
+        assert len(_poll(CatalystAlerter(), [wrap])) == 12
+
     def test_lookback_is_passed_to_the_fetch(self, monkeypatch):
         monkeypatch.setattr(cfg, "CATALYST_ALERTS_LOOKBACK_SEC", 120)
         seen = {}

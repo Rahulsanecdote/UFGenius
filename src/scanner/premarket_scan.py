@@ -356,6 +356,7 @@ def build_snapshot(
                 max_age_hours=float(news_cfg.get("max_age_hours", 36)),
                 company_name=company,
                 allow_undated=bool(news_cfg.get("allow_undated", False)),
+                require_subject=bool(news_cfg.get("require_subject", True)),
             )
     if news_fn is not None:
         try:

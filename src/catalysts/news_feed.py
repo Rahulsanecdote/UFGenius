@@ -146,6 +146,60 @@ _TIER_PATTERNS = (
 )
 
 
+# A wire attaches a story to every ticker its BODY names, so a market wrap or a
+# movers listicle arrives tagged with a dozen symbols while its headline is
+# about one of them at most. Observed 2026-09-24: "Crude Oil Rises Over 4%;
+# Darden Earnings Miss Views" was attached to SRZN (the body listed it among the
+# day's movers) and classified `moderate` off *Darden's* earnings — a tier SRZN
+# never earned, on a day it moved 96% for unrelated reasons.
+_CORP_SUFFIX_RE = re.compile(
+    r"[\s,\.]+(inc|incorporated|corp|corporation|company|co|ltd|limited|plc|"
+    r"llc|l\.?p|holdings?|group|s\.?a|n\.?v|a\.?g|s\.?e|ab|oyj|asa)\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _company_core(company_name: str) -> str:
+    """The distinctive leading word of a company name, corporate suffix stripped.
+
+    "Surrozen Inc" → "Surrozen"; "Darden Restaurants Inc" → "Darden". Tokens
+    under four characters come back empty: a headline is full of ordinary short
+    words, and "3M"/"ON" would match constantly.
+    """
+    name = _CORP_SUFFIX_RE.sub("", str(company_name or "")).strip(" ,.")
+    if not name:
+        return ""
+    first = re.split(r"[\s/&,\-]+", name)[0].strip()
+    return first if len(first) >= 4 else ""
+
+
+def headline_concerns(title: str, symbol: str, company_name: str = "") -> bool:
+    """Does this headline actually concern ``symbol``?
+
+    A headline names the security, or it is not about it. Three ways to name it:
+    the ticker as a standalone CASE-SENSITIVE token (so "CAT reports" counts and
+    "the cat sat" does not), the full company name, or its distinctive leading
+    word — the last is what lets "Surrozen Gains Momentum" match the company
+    "Surrozen Inc", which a full-name substring test misses because the title
+    omits the suffix.
+
+    A heuristic, and deliberately the conservative one for this direction: a
+    missed match costs a tier (understating a candidate), while a false match is
+    how a different company's earnings become this one's catalyst.
+    """
+    title = str(title or "")
+    if not title:
+        return False
+    if symbol and re.search(rf"\b{re.escape(symbol)}\b", title):
+        return True
+    name = str(company_name or "").strip()
+    if name and name.lower() in title.lower():
+        return True
+    core = _company_core(name)
+    return bool(core) and re.search(
+        rf"\b{re.escape(core)}\b", title, re.IGNORECASE) is not None
+
+
 def _age_hours(published: Optional[datetime], now: datetime) -> Optional[float]:
     """Hours since publication, or None when there is no usable timestamp."""
     if published is None:
@@ -163,6 +217,9 @@ def classify_headlines(
     now: Optional[datetime] = None,
     max_age_hours: Optional[float] = None,
     allow_undated: bool = False,
+    symbol: str = "",
+    company_name: str = "",
+    max_story_symbols: Optional[int] = None,
 ) -> dict:
     """Classify a headline set into a catalyst tier, newest qualifying match wins.
 
@@ -190,6 +247,16 @@ def classify_headlines(
     A timestamp in the future beyond ``_FUTURE_TOLERANCE_HOURS`` is a broken
     date, not a fresh one, and counts as undated.
 
+    SUBJECT. A headline only classifies a security it actually names. Pass
+    ``symbol`` (and ``company_name`` when known) and ``headline_concerns`` gates
+    every tier — a wire attaches a story to every ticker its BODY mentions, so a
+    market wrap arrives tagged with a dozen symbols whose headline concerns one
+    of them at most. ``max_story_symbols`` is the blunter gate for callers that
+    have no company name to match on (the batch/firehose path carries symbols
+    only): a story the wire attached to more tickers than that is a roundup and
+    cannot carry a single-name catalyst. Both default off; a caller that passes
+    neither behaves as before.
+
     What this deliberately does NOT solve: a story republished today about an
     old event. On 2026-09-24 a wire piece carrying SRZN's IND submission was
     published at 11:41 ET describing an event from 2026-09-08 that the stock
@@ -200,8 +267,14 @@ def classify_headlines(
     """
     now = now or datetime.now(timezone.utc)
     considered: list[tuple[Optional[float], NewsHeadline]] = []
-    skipped_stale = skipped_undated = 0
+    skipped_stale = skipped_undated = skipped_offtopic = 0
     for h in headlines:
+        if max_story_symbols is not None and len(h.symbols) > int(max_story_symbols):
+            skipped_offtopic += 1
+            continue
+        if symbol and not headline_concerns(h.title, symbol, company_name):
+            skipped_offtopic += 1
+            continue
         age = _age_hours(h.published, now)
         if age is not None and age < -_FUTURE_TOLERANCE_HOURS:
             age = None          # future-dated: the timestamp is wrong, not fresh
@@ -219,7 +292,8 @@ def classify_headlines(
     # match is always preferred as the receipt.
     considered.sort(key=lambda p: (p[0] is None, p[0] if p[0] is not None else 0.0))
 
-    base = {"skipped_stale": skipped_stale, "skipped_undated": skipped_undated}
+    base = {"skipped_stale": skipped_stale, "skipped_undated": skipped_undated,
+            "skipped_offtopic": skipped_offtopic}
     for tier, pattern in _TIER_PATTERNS:
         for age, h in considered:
             title = (h.title or "").strip()
@@ -399,13 +473,13 @@ def _newsapi_identity_ok(title: str, symbol: str, company_name: str) -> bool:
     """Does a keyword-search result actually concern this security?
 
     NewsAPI is full-text search, not a symbol feed: querying "AI"/"ON"/"CAT"
-    matches ordinary English (Codex P2). Accept an article only when the title
-    carries the symbol as a standalone CASE-SENSITIVE token, or the company
-    name case-insensitively.
+    matches ordinary English (Codex P2). Delegates to the shared subject test,
+    which asks the same question the market-wrap gate asks — and which also
+    fixes a false negative here: this used to require the FULL company name as a
+    substring, so "Surrozen Gains Momentum" failed identity for "Surrozen Inc"
+    because the title omits the suffix, and then failed the ticker test too.
     """
-    if company_name and company_name.lower() in title.lower():
-        return True
-    return re.search(rf"\b{re.escape(symbol)}\b", title) is not None
+    return headline_concerns(title, symbol, company_name)
 
 
 def _fetch_newsapi(
@@ -504,8 +578,14 @@ def catalyst_news_for(
     now: Optional[datetime] = None,
     company_name: str = "",
     allow_undated: bool = False,
+    require_subject: bool = True,
 ) -> dict:
     """One-call convenience for the screener: fetch + classify. Never raises.
+
+    ``require_subject`` (default on) means a headline must name this security to
+    classify it — the per-symbol path knows both the ticker and the company
+    name, so it can make that judgement directly rather than falling back to the
+    symbol-count heuristic the batch path needs.
 
     The window is applied TWICE on purpose: ``fetch_headlines`` uses it to bound
     the request, and it is passed to the classifier as well so the tier is
@@ -522,9 +602,11 @@ def catalyst_news_for(
         return classify_headlines(
             headlines, now=now_utc, max_age_hours=max_age_hours,
             allow_undated=allow_undated,
+            symbol=ticker.upper() if require_subject else "",
+            company_name=company_name,
         )
     except Exception as exc:
         log.debug(f"{ticker}: catalyst news classification failed ({exc})")
         return {"tier": "none", "headline": None, "provider": None,
                 "published": None, "age_hours": None,
-                "skipped_stale": 0, "skipped_undated": 0}
+                "skipped_stale": 0, "skipped_undated": 0, "skipped_offtopic": 0}

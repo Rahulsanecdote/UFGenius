@@ -202,9 +202,29 @@ pytest --cov=src       # coverage
   submission the stock had already fallen 2% on, and the republication's date
   was genuinely today. The event date lives in the body text, which this module
   never fetches; catching it needs event-date extraction or first-seen tracking
-  across polls. Separately, a market-wrap headline ("Crude Oil Rises Over 4%;
-  Darden Earnings Miss Views") still classifies for every ticker the wire
-  attaches to it — a headline-subject mismatch, not a date problem. **Screener only** — firewalled from the
+  across polls.
+  **A headline only classifies a security it actually names.** The wire attaches
+  a story to every ticker its BODY mentions, so a market wrap arrives tagged
+  with a dozen symbols while its headline concerns one of them at most: "Crude
+  Oil Rises Over 4%; Darden Earnings Miss Views" reached SRZN on 2026-09-24 and
+  scored `moderate` off *Darden's* earnings. Two gates, because the two paths
+  hold different data. The per-symbol path (`catalyst_news_for` → screener)
+  knows the ticker AND the company name, so `headline_concerns()` tests the
+  subject directly — the ticker as a standalone case-sensitive token, the full
+  company name, or its distinctive leading word (`_company_core`: "Surrozen"
+  for "Surrozen Inc", since the title omits the suffix; tokens under four chars
+  are discarded as ordinary English). The batch/firehose path
+  (`catalyst_alerts`) carries symbols only, where that test is unusable —
+  "Surrozen Files IND" contains no "SRZN" — so it gates on symbol COUNT
+  instead (`movers.catalyst_alerts.max_story_symbols`, default 6, 0 disables):
+  a story the wire attached to more tickers than that is a roundup. Both are
+  opt-in per call and counted in `skipped_offtopic`. `_newsapi_identity_ok` now
+  delegates to the same test, which fixes a false negative it carried (it
+  required the FULL company name as a substring). Residual: a wrap naming
+  exactly the cap or fewer still passes the count gate — "Dow Tumbles Over 100
+  Points" carried 6 and cleared it, scoring `none` only because its headline
+  matched no tier pattern. Config `premarket.news.require_subject` (default
+  true). **Screener only** — firewalled from the
   money path, no filter loosened; `fetch_ohlcv/fetch_intraday(prepost=True)`
   supplies the 4:00–9:30 ET bars (yfinance flag; Alpaca/Polygon already span
   the extended session; cache keys get an `:ext` suffix). Free Finviz cannot

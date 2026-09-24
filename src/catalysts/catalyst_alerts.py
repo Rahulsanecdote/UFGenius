@@ -189,6 +189,10 @@ class CatalystAlerter:
         cap = max(0, int(config.CATALYST_ALERTS_MAX_PER_RUN))
         ttl = float(config.CATALYST_ALERTS_DEDUP_TTL_SEC)
         lookback = max(30.0, float(config.CATALYST_ALERTS_LOOKBACK_SEC))
+        # 0 (or negative) disables the roundup gate, the same way
+        # movers.suspect_change_pct: 0 disables the corporate-action guard.
+        _roundup_cap = int(config.CATALYST_ALERTS_MAX_STORY_SYMBOLS)
+        max_story_symbols = _roundup_cap if _roundup_cap > 0 else None
 
         universe = self._universe()
         if universe is not None and not universe:
@@ -229,8 +233,20 @@ class CatalystAlerter:
             # skipped rather than credited (it used to alert unconditionally,
             # since every age check in the fetchers lets `published is None`
             # through).
+            # max_story_symbols is the roundup gate. This path has symbols and
+            # no company names, so the per-symbol subject test is unusable here:
+            # "Surrozen Files IND" does not contain the string "SRZN" and would
+            # be rejected. The symbol COUNT works without a name — a story the
+            # wire attached to a dozen tickers is a roundup, and its headline
+            # describes one of them at most.
             verdict = classify_headlines(
-                [headline], now=now, max_age_hours=lookback / 3600.0)
+                [headline], now=now, max_age_hours=lookback / 3600.0,
+                max_story_symbols=max_story_symbols)
+            if verdict.get("skipped_offtopic"):
+                log.debug(
+                    f"catalyst-alerts: skipping roundup across "
+                    f"{len(headline.symbols)} symbols — {headline.title[:80]}")
+                continue
             if verdict.get("skipped_undated"):
                 # Silence here would be indistinguishable from a quiet wire —
                 # the failure mode this module is built to make loud.

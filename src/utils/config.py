@@ -164,6 +164,13 @@ CATALYST_ALERTS_MAX_PER_RUN: int = env_int(
     "CATALYST_ALERTS_MAX_PER_RUN", _as_int(_CATALYST_ALERTS.get("max_per_run", 5), 5))
 CATALYST_ALERTS_SUPPRESS_HALTED: bool = env_bool(
     "CATALYST_ALERTS_SUPPRESS_HALTED", bool(_CATALYST_ALERTS.get("suppress_halted", True)))
+# Roundup gate. The wire attaches a story to every ticker its BODY names, so a
+# market wrap or movers listicle arrives tagged with a dozen symbols while its
+# headline concerns one of them at most. Above this count the story cannot
+# carry a single-name catalyst tier. 0 disables the gate.
+CATALYST_ALERTS_MAX_STORY_SYMBOLS: int = env_int(
+    "CATALYST_ALERTS_MAX_STORY_SYMBOLS",
+    _as_int(_CATALYST_ALERTS.get("max_story_symbols", 6), 6))
 
 _MOVERS_HALTS: dict = _MOVERS.get("halts", {}) if isinstance(_MOVERS, dict) else {}
 MOVERS_HALTS_ENABLED: bool = env_bool("MOVERS_HALTS_ENABLED", bool(_MOVERS_HALTS.get("enabled", True)))

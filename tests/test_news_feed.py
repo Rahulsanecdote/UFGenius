@@ -18,6 +18,7 @@ from src.catalysts.news_feed import (
     catalyst_news_for,
     classify_headlines,
     fetch_headlines,
+    headline_concerns,
 )
 
 
@@ -104,11 +105,106 @@ class TestPublicationDate:
                                      now=_NOW, max_age_hours=36)
         assert verdict["tier"] == "strong"
 
+    def test_offtopic_and_date_skips_are_counted_separately(self):
+        verdict = classify_headlines(
+            [_dated("Crude Oil Rises; Darden Earnings Miss Views", 1, ),
+             _dated("Acme beats earnings estimates", 400)],
+            now=_NOW, max_age_hours=36, symbol="ACME", company_name="Acme Inc")
+        assert verdict["tier"] == "none"
+        assert verdict["skipped_offtopic"] == 1 and verdict["skipped_stale"] == 1
+
     def test_age_of_the_winning_headline_is_reported(self):
         verdict = classify_headlines([_dated("FDA approves Acme's drug", age_hours=12.5)],
                                      now=_NOW, max_age_hours=36)
         assert verdict["age_hours"] == 12.5
         assert verdict["published"] == _NOW - timedelta(hours=12.5)
+
+
+# ── market-wrap attribution ──────────────────────────────────────────────────
+#
+# A wire attaches a story to every ticker its BODY names, so a market wrap
+# arrives tagged with a dozen symbols while its headline concerns one of them at
+# most. Observed 2026-09-24: "Crude Oil Rises Over 4%; Darden Earnings Miss
+# Views" reached SRZN and scored `moderate` off DARDEN's earnings.
+
+class TestSubjectTest:
+    def test_ticker_token_is_case_sensitive(self):
+        assert headline_concerns("AI stocks rally as CAT reports", "CAT") is True
+        assert headline_concerns("The cat sat on the mat", "CAT") is False
+
+    def test_full_company_name_matches(self):
+        assert headline_concerns("Caterpillar wins contract", "CAT", "Caterpillar") is True
+
+    def test_company_core_matches_when_the_title_omits_the_suffix(self):
+        # The old full-substring test failed here: "surrozen inc" is not in the
+        # title, and the ticker "SRZN" is not either.
+        assert headline_concerns(
+            "Surrozen Gains Momentum as FDA Submission Opens Path", "SRZN",
+            "Surrozen Inc") is True
+
+    def test_a_different_company_does_not_match(self):
+        assert headline_concerns(
+            "Crude Oil Rises Over 4%; Darden Earnings Miss Views", "SRZN",
+            "Surrozen Inc") is False
+
+    def test_short_core_tokens_are_not_used(self):
+        # "3M Company" reduces to "3M", which is too short to match on safely —
+        # it falls back to the ticker test alone.
+        assert headline_concerns("A 3M-wide crater opened downtown", "MMM",
+                                 "3M Company") is False
+
+    @pytest.mark.parametrize("name,core", [
+        ("Surrozen Inc", "Surrozen"),
+        ("Darden Restaurants Inc", "Darden"),
+        ("Caterpillar", "Caterpillar"),
+        ("Acme Holdings Ltd", "Acme"),
+        ("3M Company", ""),
+    ])
+    def test_company_core_extraction(self, name, core):
+        assert news_feed._company_core(name) == core
+
+    def test_market_wrap_cannot_classify_a_ticker_it_never_names(self):
+        wrap = [_dated("Crude Oil Rises Over 4%; Darden Earnings Miss Views", 1)]
+        # Without the subject test it scores moderate off Darden's earnings.
+        assert classify_headlines(wrap, now=_NOW, max_age_hours=36)["tier"] == "moderate"
+        verdict = classify_headlines(wrap, now=_NOW, max_age_hours=36,
+                                     symbol="SRZN", company_name="Surrozen Inc")
+        assert verdict["tier"] == "none"
+        assert verdict["skipped_offtopic"] == 1
+
+    def test_the_company_the_wrap_is_actually_about_still_classifies(self):
+        # The same headline, for Darden, is a real (if soft) catalyst.
+        verdict = classify_headlines(
+            [_dated("Crude Oil Rises Over 4%; Darden Earnings Miss Views", 1)],
+            now=_NOW, max_age_hours=36, symbol="DRI",
+            company_name="Darden Restaurants Inc")
+        assert verdict["tier"] == "moderate"
+
+
+class TestRoundupGate:
+    """The batch path has symbols but no company names, so it counts instead."""
+
+    @staticmethod
+    def _story(title, n_symbols):
+        h = _dated(title, 1)
+        h.symbols = [f"SYM{i}" for i in range(n_symbols)]
+        return h
+
+    def test_a_story_naming_many_tickers_cannot_carry_a_tier(self):
+        wrap = [self._story("Crude Oil Rises; Darden Earnings Miss Views", 12)]
+        verdict = classify_headlines(wrap, now=_NOW, max_age_hours=36,
+                                     max_story_symbols=6)
+        assert verdict["tier"] == "none"
+        assert verdict["skipped_offtopic"] == 1
+
+    def test_a_single_name_story_passes(self):
+        story = [self._story("Acme beats earnings estimates, raises guidance", 1)]
+        assert classify_headlines(story, now=_NOW, max_age_hours=36,
+                                  max_story_symbols=6)["tier"] == "strong"
+
+    def test_the_gate_is_off_when_not_asked_for(self):
+        wrap = [self._story("Acme beats earnings estimates, raises guidance", 30)]
+        assert classify_headlines(wrap, now=_NOW, max_age_hours=36)["tier"] == "strong"
 
 
 # ── classifier taxonomy ──────────────────────────────────────────────────────
