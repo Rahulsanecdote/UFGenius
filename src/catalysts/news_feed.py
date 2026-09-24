@@ -52,6 +52,10 @@ _ALPACA_NEWS_URL = (
 _DEFAULT_MAX_AGE_HOURS = 36.0
 _DEFAULT_CACHE_TTL_SEC = 900  # 15 min — headlines move pre-market, but not per-poll
 _MAX_HEADLINES = 50
+# Clock skew between a wire's publisher and us is normally seconds. A timestamp
+# further ahead than this is a broken date, and treating it as the freshest
+# headline in the set would put it first in every ranking.
+_FUTURE_TOLERANCE_HOURS = 0.25
 
 
 @dataclass
@@ -142,22 +146,97 @@ _TIER_PATTERNS = (
 )
 
 
-def classify_headlines(headlines: list[NewsHeadline]) -> dict:
-    """Classify a headline set into a catalyst tier.
+def _age_hours(published: Optional[datetime], now: datetime) -> Optional[float]:
+    """Hours since publication, or None when there is no usable timestamp."""
+    if published is None:
+        return None
+    try:
+        ref = published if published.tzinfo else published.replace(tzinfo=timezone.utc)
+        return (now - ref).total_seconds() / 3600.0
+    except Exception:
+        return None
 
-    Returns ``{"tier", "headline", "provider"}`` where ``headline`` is the
-    first title that matched the winning tier (the receipt a human can check).
-    Tier precedence is fixed: dilution > strong > moderate > weak > none.
+
+def classify_headlines(
+    headlines: list[NewsHeadline],
+    *,
+    now: Optional[datetime] = None,
+    max_age_hours: Optional[float] = None,
+    allow_undated: bool = False,
+) -> dict:
+    """Classify a headline set into a catalyst tier, newest qualifying match wins.
+
+    Returns ``{"tier", "headline", "provider", "published", "age_hours",
+    "skipped_stale", "skipped_undated"}``. ``headline`` is the title that
+    matched the winning tier (the receipt a human can check) and ``age_hours``
+    says how old that receipt is. Tier precedence is fixed:
+    dilution > strong > moderate > weak > none.
+
+    Dates are checked HERE, not only at fetch time. This function used to read
+    ``h.title`` and nothing else, which left three holes. A headline with no
+    timestamp earned full catalyst credit, because every fetcher's cutoff reads
+    ``published is not None and published < since`` — so ``None`` sails past a
+    window it cannot be measured against. Within a tier the *first* headline in
+    list order won rather than the newest, and provider order is not a recency
+    guarantee. And the age of the winning headline was never returned, so no
+    caller could tell a twenty-minute-old catalyst from a thirty-five-hour-old
+    one; the alert formatter printed "just now" for an undated headline, which
+    asserts a freshness nobody measured.
+
+    ``max_age_hours=None`` keeps the old behaviour (no age filtering) for
+    callers that already filtered upstream. Pass the window and an undated
+    headline is skipped rather than credited, since a date-less headline cannot
+    satisfy a date window — ``allow_undated=True`` restores the lenient form.
+    A timestamp in the future beyond ``_FUTURE_TOLERANCE_HOURS`` is a broken
+    date, not a fresh one, and counts as undated.
+
+    What this deliberately does NOT solve: a story republished today about an
+    old event. On 2026-09-24 a wire piece carrying SRZN's IND submission was
+    published at 11:41 ET describing an event from 2026-09-08 that the stock
+    had already fallen 2% on. Its publication date was genuinely today — the
+    *event* date is in the body text, which this module never fetches. No
+    publication-date check can catch that; it needs event-date extraction or
+    first-seen tracking across polls.
     """
+    now = now or datetime.now(timezone.utc)
+    considered: list[tuple[Optional[float], NewsHeadline]] = []
+    skipped_stale = skipped_undated = 0
+    for h in headlines:
+        age = _age_hours(h.published, now)
+        if age is not None and age < -_FUTURE_TOLERANCE_HOURS:
+            age = None          # future-dated: the timestamp is wrong, not fresh
+        if max_age_hours is not None:
+            if age is None:
+                if not allow_undated:
+                    skipped_undated += 1
+                    continue
+            elif age > float(max_age_hours):
+                skipped_stale += 1
+                continue
+        considered.append((age, h))
+
+    # Newest first (smaller age = more recent); undated sort last so a dated
+    # match is always preferred as the receipt.
+    considered.sort(key=lambda p: (p[0] is None, p[0] if p[0] is not None else 0.0))
+
+    base = {"skipped_stale": skipped_stale, "skipped_undated": skipped_undated}
     for tier, pattern in _TIER_PATTERNS:
-        for h in headlines:
+        for age, h in considered:
             title = (h.title or "").strip()
             if not title or not pattern.search(title):
                 continue
             if tier == "strong" and _NEGATION_RE.search(title):
                 continue  # adverse phrasing never earns the strong tier
-            return {"tier": tier, "headline": title[:160], "provider": h.provider}
-    return {"tier": "none", "headline": None, "provider": None}
+            return {
+                "tier": tier,
+                "headline": title[:160],
+                "provider": h.provider,
+                "published": h.published,
+                "age_hours": None if age is None else round(age, 2),
+                **base,
+            }
+    return {"tier": "none", "headline": None, "provider": None,
+            "published": None, "age_hours": None, **base}
 
 
 # ── fetchers (each fail-soft: [] on any problem) ─────────────────────────────
@@ -424,14 +503,28 @@ def catalyst_news_for(
     use_cache: bool = True,
     now: Optional[datetime] = None,
     company_name: str = "",
+    allow_undated: bool = False,
 ) -> dict:
-    """One-call convenience for the screener: fetch + classify. Never raises."""
+    """One-call convenience for the screener: fetch + classify. Never raises.
+
+    The window is applied TWICE on purpose: ``fetch_headlines`` uses it to bound
+    the request, and it is passed to the classifier as well so the tier is
+    decided on headlines that actually fall inside it. The fetch-side cutoff
+    cannot do that job alone — it lets an undated headline through, and a cache
+    hit replays whatever was stored under the key without re-checking ages.
+    """
     try:
+        now_utc = now or datetime.now(timezone.utc)
         headlines = fetch_headlines(
-            ticker, max_age_hours=max_age_hours, use_cache=use_cache, now=now,
+            ticker, max_age_hours=max_age_hours, use_cache=use_cache, now=now_utc,
             company_name=company_name,
         )
-        return classify_headlines(headlines)
+        return classify_headlines(
+            headlines, now=now_utc, max_age_hours=max_age_hours,
+            allow_undated=allow_undated,
+        )
     except Exception as exc:
         log.debug(f"{ticker}: catalyst news classification failed ({exc})")
-        return {"tier": "none", "headline": None, "provider": None}
+        return {"tier": "none", "headline": None, "provider": None,
+                "published": None, "age_hours": None,
+                "skipped_stale": 0, "skipped_undated": 0}

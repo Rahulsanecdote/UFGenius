@@ -525,6 +525,12 @@ premarket:
   news:
     enabled: true
     max_age_hours: 36
+    # A headline with no publication time cannot be aged against the window
+    # above, so by default it earns no tier rather than full catalyst credit.
+    # (Every fetcher's own cutoff reads `published is not None and published <
+    # since`, so a missing date used to sail past the window unmeasured.) Set
+    # true only if a provider you rely on stops sending timestamps.
+    allow_undated: false
   # Catalyst score per tier (0-1, clamped). Provenance: post-news drift is
   # measured for hard events (PEAD/Savor); moderate news gets half weight;
   # attention-churn gets none.

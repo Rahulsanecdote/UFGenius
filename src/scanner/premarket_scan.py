@@ -167,6 +167,11 @@ class PremarketSnapshot:
     catalyst: str = "unknown"
     catalyst_headline: Optional[str] = None
     catalyst_provider: Optional[str] = None
+    # Hours between the winning headline's publication and the scan. Disclosed
+    # because "a strong headline exists" and "a strong headline just broke" are
+    # different claims, and the tier alone cannot tell them apart. None when the
+    # provider gave no timestamp.
+    catalyst_age_hours: Optional[float] = None
     dilution_news: bool = False
     days_to_earnings: Optional[int] = None
     flags: list[str] = field(default_factory=list)
@@ -350,6 +355,7 @@ def build_snapshot(
                 sym,
                 max_age_hours=float(news_cfg.get("max_age_hours", 36)),
                 company_name=company,
+                allow_undated=bool(news_cfg.get("allow_undated", False)),
             )
     if news_fn is not None:
         try:
@@ -362,11 +368,13 @@ def build_snapshot(
             snap.dilution_news = True
             snap.catalyst_headline = news.get("headline")
             snap.catalyst_provider = news.get("provider")
+            snap.catalyst_age_hours = news.get("age_hours")
         elif tier in ("strong", "moderate", "weak"):
             if snap.catalyst != "earnings":
                 snap.catalyst = f"news_{tier}"
             snap.catalyst_headline = news.get("headline")
             snap.catalyst_provider = news.get("provider")
+            snap.catalyst_age_hours = news.get("age_hours")
     return snap
 
 
@@ -673,6 +681,7 @@ def scan_premarket(
             "catalyst": snap.catalyst,
             "catalyst_headline": snap.catalyst_headline,
             "catalyst_provider": snap.catalyst_provider,
+            "catalyst_age_hours": snap.catalyst_age_hours,
             "days_to_earnings": snap.days_to_earnings,
             "profile": classify_profile(snap, settings),
             "score": score_snapshot(snap, settings),

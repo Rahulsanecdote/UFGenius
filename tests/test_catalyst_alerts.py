@@ -168,6 +168,62 @@ class TestMessage:
         assert "NOT a trade instruction" in msg
         assert "not a prediction" in msg
 
+    def test_undated_headline_does_not_claim_freshness(self):
+        # This used to render as "just now" — inventing the one fact an alert
+        # whose whole premise is "published moments ago" must not invent.
+        msg = format_catalyst_alert(
+            "ACME", "strong",
+            NewsHeadline(title="FDA approves ACME's drug", provider="alpaca"),
+            now=_NOW)
+        assert "just now" not in msg
+        assert "publication time unknown" in msg
+
+    def test_an_old_headline_carries_its_age(self):
+        msg = format_catalyst_alert(
+            "ACME", "strong",
+            _news("FDA approves ACME's drug", ["ACME"],
+                  published=_NOW - timedelta(hours=16)),
+            now=_NOW)
+        assert "16h ago" in msg
+
+    def test_a_fresh_headline_shows_no_age_clutter(self):
+        msg = format_catalyst_alert(
+            "ACME", "strong",
+            _news("FDA approves ACME's drug", ["ACME"],
+                  published=_NOW - timedelta(minutes=4)),
+            now=_NOW)
+        assert "ago" not in msg
+
+
+class TestPublicationDateGate:
+    """The wire's freshness claim has to be checkable, not assumed."""
+
+    def test_undated_headline_cannot_alert(self, monkeypatch):
+        undated = NewsHeadline(title="FDA approves ACME's drug", provider="alpaca",
+                               symbols=["ACME"])
+        assert _poll(CatalystAlerter(), [undated]) == []
+
+    def test_undated_headline_is_warned_about_not_silently_dropped(self, monkeypatch, caplog):
+        # A silent drop is indistinguishable from a quiet wire — the exact
+        # failure mode this module is built to make loud.
+        undated = NewsHeadline(title="FDA approves ACME's drug", provider="alpaca",
+                               symbols=["ACME"])
+        with caplog.at_level("WARNING"):
+            _poll(CatalystAlerter(), [undated])
+        assert any("undated" in r.message for r in caplog.records)
+
+    def test_headline_older_than_the_lookback_cannot_alert(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_LOOKBACK_SEC", 300)
+        stale = _news("FDA approves ACME's drug", ["ACME"],
+                      published=_NOW - timedelta(hours=3))
+        assert _poll(CatalystAlerter(), [stale]) == []
+
+    def test_a_headline_inside_the_lookback_still_fires(self):
+        fresh = _news("FDA approves ACME's drug", ["ACME"],
+                      published=_NOW - timedelta(seconds=60))
+        fired = _poll(CatalystAlerter(), [fresh])
+        assert [f["ticker"] for f in fired] == ["ACME"]
+
     def test_lookback_is_passed_to_the_fetch(self, monkeypatch):
         monkeypatch.setattr(cfg, "CATALYST_ALERTS_LOOKBACK_SEC", 120)
         seen = {}

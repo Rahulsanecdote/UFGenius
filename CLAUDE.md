@@ -181,7 +181,30 @@ pytest --cov=src       # coverage
   float rotation; catalyst = earnings calendar + a keyword-classified news
   feed (`src/catalysts/news_feed.py`: Alpaca News → yfinance → NewsAPI, tiers
   strong/moderate/weak/dilution, fail-soft)) and tags candidates
-  continuation/fade_risk/neutral. **Screener only** — firewalled from the
+  continuation/fade_risk/neutral.
+  **Publication dates are checked at classification, not only at fetch.**
+  `classify_headlines()` read `h.title` and nothing else, which left three
+  holes: an **undated** headline earned full catalyst credit (every fetcher's
+  cutoff reads `published is not None and published < since`, so `None` sails
+  past a window it was never measured against); within a tier the *first*
+  headline in list order won rather than the newest, and provider order is no
+  recency guarantee; and the winning headline's age was never returned, so the
+  alert formatter printed "just now" for an undated headline — asserting the
+  one fact an alert premised on *"published moments ago"* must not invent.
+  It now takes `now`/`max_age_hours`/`allow_undated`, skips stale and undated
+  headlines (counted in `skipped_stale`/`skipped_undated`, never silently),
+  prefers the newest match as the receipt, treats a future-dated timestamp as
+  broken rather than fresh, and returns `published`/`age_hours` so callers can
+  disclose it (`catalyst_age_hours` on the snapshot and in the API row; the
+  alert line carries "(16h ago)" past an hour). Config `premarket.news.
+  allow_undated` (default false). **Not** solved by this: a story republished
+  today about an old event — SRZN on 2026-09-24 carried a 2026-09-08 IND
+  submission the stock had already fallen 2% on, and the republication's date
+  was genuinely today. The event date lives in the body text, which this module
+  never fetches; catching it needs event-date extraction or first-seen tracking
+  across polls. Separately, a market-wrap headline ("Crude Oil Rises Over 4%;
+  Darden Earnings Miss Views") still classifies for every ticker the wire
+  attaches to it — a headline-subject mismatch, not a date problem. **Screener only** — firewalled from the
   money path, no filter loosened; `fetch_ohlcv/fetch_intraday(prepost=True)`
   supplies the 4:00–9:30 ET bars (yfinance flag; Alpaca/Polygon already span
   the extended session; cache keys get an `:ext` suffix). Free Finviz cannot

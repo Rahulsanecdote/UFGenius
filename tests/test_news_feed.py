@@ -25,6 +25,92 @@ def _h(title: str, provider: str = "test") -> NewsHeadline:
     return NewsHeadline(title=title, provider=provider)
 
 
+_NOW = datetime(2026, 9, 24, 16, 0, tzinfo=timezone.utc)
+
+
+def _dated(title: str, age_hours: float, provider: str = "test") -> NewsHeadline:
+    """A headline published ``age_hours`` before ``_NOW`` (negative = future)."""
+    return NewsHeadline(title=title, provider=provider,
+                        published=_NOW - timedelta(hours=age_hours))
+
+
+# ── publication-date handling ────────────────────────────────────────────────
+#
+# The classifier used to read `h.title` and nothing else. Every fetcher's own
+# cutoff reads `published is not None and published < since`, so an undated
+# headline passed a window it was never measured against, and within a tier the
+# first headline in list order won rather than the newest.
+
+class TestPublicationDate:
+    def test_stale_headline_cannot_earn_a_tier(self):
+        stale = [_dated("FDA approves Acme's lead drug", age_hours=400)]
+        assert classify_headlines(stale)["tier"] == "strong"   # no window: unchanged
+        verdict = classify_headlines(stale, now=_NOW, max_age_hours=36)
+        assert verdict["tier"] == "none"
+        assert verdict["skipped_stale"] == 1
+
+    def test_undated_headline_is_skipped_not_credited(self):
+        # The core bug: `published=None` satisfies no window, yet it used to
+        # earn full catalyst credit at every layer.
+        undated = [_h("FDA approves Acme's lead drug")]
+        assert classify_headlines(undated)["tier"] == "strong"  # no window: unchanged
+        verdict = classify_headlines(undated, now=_NOW, max_age_hours=36)
+        assert verdict["tier"] == "none"
+        assert verdict["skipped_undated"] == 1
+
+    def test_allow_undated_restores_the_lenient_form(self):
+        verdict = classify_headlines([_h("FDA approves Acme's lead drug")],
+                                     now=_NOW, max_age_hours=36, allow_undated=True)
+        assert verdict["tier"] == "strong"
+        assert verdict["age_hours"] is None      # still disclosed as unmeasurable
+
+    def test_newest_match_wins_within_a_tier(self):
+        # Provider order is not a recency guarantee, so the receipt has to be
+        # chosen by date, not by list position.
+        verdict = classify_headlines([
+            _dated("Acme wins $50M contract", age_hours=20),
+            _dated("Acme wins $10M contract", age_hours=2),
+        ], now=_NOW, max_age_hours=36)
+        assert verdict["tier"] == "strong"
+        assert "$10M" in verdict["headline"]
+        assert verdict["age_hours"] == 2.0
+
+    def test_dated_match_is_preferred_over_an_undated_one(self):
+        verdict = classify_headlines([
+            _h("Acme wins $50M contract"),
+            _dated("Acme wins $10M contract", age_hours=5),
+        ], now=_NOW, max_age_hours=36, allow_undated=True)
+        assert "$10M" in verdict["headline"]
+
+    def test_tier_precedence_still_outranks_recency(self):
+        # Dilution outranks everything: a 30-hour-old offering still beats a
+        # 10-minute-old contract win.
+        verdict = classify_headlines([
+            _dated("Acme wins $10M contract", age_hours=0.16),
+            _dated("Acme announces $50M registered direct offering", age_hours=30),
+        ], now=_NOW, max_age_hours=36)
+        assert verdict["tier"] == "dilution"
+
+    def test_future_dated_headline_is_treated_as_undated(self):
+        # A timestamp ahead of now is a broken date, not the freshest headline
+        # in the set — otherwise it sorts first in every ranking.
+        verdict = classify_headlines([_dated("FDA approves Acme's drug", age_hours=-5)],
+                                     now=_NOW, max_age_hours=36)
+        assert verdict["tier"] == "none"
+        assert verdict["skipped_undated"] == 1
+
+    def test_small_clock_skew_is_tolerated(self):
+        verdict = classify_headlines([_dated("FDA approves Acme's drug", age_hours=-0.1)],
+                                     now=_NOW, max_age_hours=36)
+        assert verdict["tier"] == "strong"
+
+    def test_age_of_the_winning_headline_is_reported(self):
+        verdict = classify_headlines([_dated("FDA approves Acme's drug", age_hours=12.5)],
+                                     now=_NOW, max_age_hours=36)
+        assert verdict["age_hours"] == 12.5
+        assert verdict["published"] == _NOW - timedelta(hours=12.5)
+
+
 # ── classifier taxonomy ──────────────────────────────────────────────────────
 
 class TestClassifier:
@@ -87,7 +173,11 @@ class TestClassifier:
 
     def test_no_match_is_none(self):
         result = classify_headlines([_h("Acme opens new office in Austin")])
-        assert result == {"tier": "none", "headline": None, "provider": None}
+        assert result["tier"] == "none"
+        assert result["headline"] is None and result["provider"] is None
+        # The date fields are present on the miss path too, so a caller can read
+        # them without branching on tier.
+        assert result["published"] is None and result["age_hours"] is None
         assert classify_headlines([])["tier"] == "none"
 
     def test_winning_headline_and_provider_are_reported(self):
