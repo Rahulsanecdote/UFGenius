@@ -8,6 +8,7 @@ halt suppression, dedup, the spam cap, and the fail-soft contract.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -41,6 +42,73 @@ def _enabled(monkeypatch):
 
 def _poll(alerter, items, **kw):
     return alerter.poll(now=_NOW, send=False, fetch=lambda *a, **k: items, **kw)
+
+
+# ── the wire's own polling window ────────────────────────────────────────────
+#
+# The wire does NOT share the worker's 07:00-16:00 scan window. US earnings are
+# overwhelmingly released after the close, so that gate muted it for exactly the
+# hours the most consequential news breaks. Nothing on this path reads volume,
+# so the thin extended-hours tape costs it nothing.
+
+def _et(month, day, hh, mm=0):
+    return datetime(2026, month, day, hh, mm, tzinfo=ZoneInfo("America/New_York"))
+
+
+class TestWireWindow:
+    def test_after_hours_earnings_block_is_open(self):
+        # 17:00 ET Monday — the case this window exists for.
+        assert catalyst_alerts.window_open(_et(8, 17, 17)) is True
+
+    def test_early_premarket_is_open(self):
+        # 04:30 ET, earlier than the scan window's 07:00 start.
+        assert catalyst_alerts.window_open(_et(8, 17, 4, 30)) is True
+
+    @pytest.mark.parametrize("hh", [2, 21, 23])
+    def test_overnight_is_closed(self, hh):
+        # A release then is picked up by the next pre-market poll anyway.
+        assert catalyst_alerts.window_open(_et(8, 17, hh)) is False
+
+    def test_weekend_is_closed(self):
+        assert catalyst_alerts.window_open(_et(8, 22, 12)) is False   # Saturday
+
+    def test_weekend_can_be_switched_on(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_WEEKDAYS_ONLY", False)
+        assert catalyst_alerts.window_open(_et(8, 22, 12)) is True
+
+    def test_equal_bounds_means_no_time_gate(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_WINDOW_START_ET", "09:00")
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_WINDOW_END_ET", "09:00")
+        assert catalyst_alerts.window_open(_et(8, 17, 2)) is True
+
+    def test_window_may_cross_midnight(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_WINDOW_START_ET", "20:00")
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_WINDOW_END_ET", "04:00")
+        assert catalyst_alerts.window_open(_et(8, 17, 22)) is True
+        assert catalyst_alerts.window_open(_et(8, 17, 2)) is True
+        assert catalyst_alerts.window_open(_et(8, 17, 12)) is False
+
+    def test_unreadable_bound_falls_back_loudly(self, monkeypatch, caplog):
+        # Every misconfiguration here presents as "the wire was quiet", so the
+        # ones that cannot work say so.
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_WINDOW_START_ET", "nonsense")
+        with caplog.at_level("WARNING"):
+            assert catalyst_alerts.window_open(_et(8, 17, 12)) is True
+        assert any("unreadable window time" in r.message for r in caplog.records)
+
+    def test_poll_is_a_no_op_outside_the_window(self):
+        out = CatalystAlerter().poll(
+            now=_et(8, 17, 2), send=False,
+            fetch=lambda *a, **k: [_news("FDA approves ACME's drug", ["ACME"])])
+        assert out == []
+
+    def test_poll_fires_in_the_after_hours_block(self):
+        at = _et(8, 17, 17)
+        out = CatalystAlerter().poll(
+            now=at, send=False,
+            fetch=lambda *a, **k: [_news("FDA approves ACME's drug", ["ACME"],
+                                         published=at)])
+        assert [f["ticker"] for f in out] == ["ACME"]
 
 
 class TestTierGate:

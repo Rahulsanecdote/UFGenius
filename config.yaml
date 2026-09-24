@@ -77,6 +77,18 @@ movers:
     # single-name catalyst tier. This path has symbols but no company names, so
     # it cannot use the screener's subject test. 0 disables the gate.
     max_story_symbols: 6
+    # The wire's OWN polling window (ET), deliberately WIDER than the worker's
+    # 07:00–16:00 scan window. US earnings are overwhelmingly released after the
+    # close, so sharing that window muted the wire for exactly the hours the
+    # most consequential news breaks — an approval at 17:00 stayed invisible
+    # until the next morning, by which point the pre-market had repriced it and
+    # the head start this layer exists for was gone. Nothing here reads volume,
+    # so the thin extended-hours tape costs it nothing (unlike the monitor,
+    # whose rule 3 would read the after-hours volume collapse as a faded setup).
+    # Equal start and end = no time gate; end before start crosses midnight.
+    window_start_et: "04:00"
+    window_end_et: "20:00"
+    weekdays_only: true       # the US wire is dead at weekends; Monday's pre-market catches up
   # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,
   # momentum, VWAP position, breakout) and rank by early-momentum QUALITY, not
   # just raw % change. Adds one intraday fetch per candidate (Alpaca/Polygon/yf).

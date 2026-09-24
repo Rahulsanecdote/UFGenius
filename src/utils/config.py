@@ -171,6 +171,25 @@ CATALYST_ALERTS_SUPPRESS_HALTED: bool = env_bool(
 CATALYST_ALERTS_MAX_STORY_SYMBOLS: int = env_int(
     "CATALYST_ALERTS_MAX_STORY_SYMBOLS",
     _as_int(_CATALYST_ALERTS.get("max_story_symbols", 6), 6))
+# The wire's OWN polling window (ET), deliberately wider than the worker's
+# scan window. US earnings are overwhelmingly released after the close, so a
+# layer whose whole premise is "the catalyst is published before the price
+# reacts" was switched off for exactly the hours the news breaks. 04:00-20:00
+# spans the full extended session in both directions and drops the overnight
+# hours, where a release would be picked up by the next pre-market poll anyway.
+# Equal start and end means no time gate (the weekday check still applies);
+# a window whose end is before its start crosses midnight.
+CATALYST_ALERTS_WINDOW_START_ET: str = env(
+    "CATALYST_ALERTS_WINDOW_START_ET",
+    str(_CATALYST_ALERTS.get("window_start_et", "04:00"))).strip()
+CATALYST_ALERTS_WINDOW_END_ET: str = env(
+    "CATALYST_ALERTS_WINDOW_END_ET",
+    str(_CATALYST_ALERTS.get("window_end_et", "20:00"))).strip()
+# Weekends: the US wire is effectively dead and Monday's pre-market poll picks
+# up anything that broke. False polls every day.
+CATALYST_ALERTS_WEEKDAYS_ONLY: bool = env_bool(
+    "CATALYST_ALERTS_WEEKDAYS_ONLY",
+    bool(_CATALYST_ALERTS.get("weekdays_only", True)))
 
 _MOVERS_HALTS: dict = _MOVERS.get("halts", {}) if isinstance(_MOVERS, dict) else {}
 MOVERS_HALTS_ENABLED: bool = env_bool("MOVERS_HALTS_ENABLED", bool(_MOVERS_HALTS.get("enabled", True)))
