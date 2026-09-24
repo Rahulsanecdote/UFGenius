@@ -301,17 +301,27 @@ def test_catalyst_alerter_is_optional():
     assert stats["catalyst_alerts"] == 0
 
 
-def test_catalyst_alerts_are_skipped_outside_the_scan_window():
+def test_the_wire_keeps_polling_outside_the_scan_window():
+    """The wire does NOT share the worker's scan window.
+
+    US earnings are overwhelmingly released after the close, so gating the wire
+    on 07:00-16:00 muted it for exactly the hours the news breaks. Discovery and
+    the monitor stay gated — they read volume, which the extended-hours tape
+    does not supply — but nothing on this path does.
+    """
     ctx = _cfg(MOVERS_WORKER_MARKET_HOURS_ONLY=True)
     for p in ctx:
         p.start()
     try:
         news = _CatalystAlerter()
-        _run(max_cycles=3, scan_window=lambda: False, catalyst_alerter=news)
+        stats, _, _ = _run(max_cycles=3, scan_window=lambda: False,
+                           catalyst_alerter=news)
     finally:
         for p in ctx:
             p.stop()
-    assert news.calls == 0
+    assert news.calls == 3                     # polled on every cycle...
+    assert stats["discoveries"] == 0           # ...while discovery stayed gated
+    assert stats["invalidations"] == 0         # ...and so did the monitor
 
 
 def test_published_features_reflect_whether_catalyst_alerts_run():

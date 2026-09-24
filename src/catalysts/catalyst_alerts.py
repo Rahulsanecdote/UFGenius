@@ -24,8 +24,9 @@ Telegram sender. Opt-in and **default OFF**.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 from src.alerts.telegram_alert import send_text_alert
 from src.catalysts.news_feed import (
@@ -50,6 +51,7 @@ _TIER_TAG = {
 }
 
 _UNIVERSES = {"watchlist", "all"}
+_EASTERN = ZoneInfo("America/New_York")
 
 # Config typos are the whole failure mode this module has to defend against:
 # every knob is now env-settable from a hosting dashboard, and an unrecognised
@@ -67,6 +69,52 @@ def _warn_once(key: str, message: str) -> None:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_et(raw: str, fallback: time) -> time:
+    """An "HH:MM" ET wall-clock time, tolerant of a bad value."""
+    try:
+        hh, mm = str(raw).split(":")
+        return time(int(hh), int(mm))
+    except (ValueError, TypeError, AttributeError):
+        _warn_once(f"window:{raw}",
+                   f"catalyst-alerts: unreadable window time '{raw}' — expected "
+                   f"HH:MM; using {fallback.strftime('%H:%M')}")
+        return fallback
+
+
+def window_open(now: Optional[datetime] = None) -> bool:
+    """Is the wire inside its own polling window?
+
+    Deliberately WIDER than the worker's scan window (07:00-16:00 ET). US
+    earnings are overwhelmingly released after the close, so gating the wire on
+    the scan window switched it off for precisely the hours the most
+    consequential news breaks: an approval at 17:00 stayed invisible until the
+    next morning, by which point the pre-market had repriced it and the wire's
+    head start — its entire reason to exist — was gone.
+
+    Default 04:00-20:00 ET covers the full extended session in both directions.
+    The overnight hours are dropped because a release then is picked up by the
+    next pre-market poll regardless, and weekends because the US wire is
+    effectively dead and Monday's pre-market catches anything that broke.
+
+    Fails OPEN: a bad clock or timezone must not silence the wire.
+    """
+    try:
+        et = (now or _utcnow()).astimezone(_EASTERN)
+        if config.CATALYST_ALERTS_WEEKDAYS_ONLY and et.weekday() >= 5:
+            return False
+        start = _parse_et(config.CATALYST_ALERTS_WINDOW_START_ET, time(4, 0))
+        end = _parse_et(config.CATALYST_ALERTS_WINDOW_END_ET, time(20, 0))
+        if start == end:
+            return True                       # no time gate, weekday rule only
+        now_t = et.time()
+        if start < end:
+            return start <= now_t <= end
+        return now_t >= start or now_t <= end  # window crosses midnight
+    except Exception as exc:
+        log.debug(f"catalyst-alerts: window check failed ({type(exc).__name__}) — polling")
+        return True
 
 
 def format_catalyst_alert(
@@ -182,6 +230,12 @@ class CatalystAlerter:
         if not config.CATALYST_ALERTS_ENABLED:
             return []
         now = now or _utcnow()
+        # The wire keeps its OWN window rather than inheriting the worker's
+        # scan window, so it stays live through the after-hours earnings block.
+        # Self-gated here so every caller gets it, not just the worker.
+        if not window_open(now):
+            log.debug("catalyst-alerts: outside the wire window — skipping poll")
+            return []
         fetch = fetch or fetch_news_batch
         tiers = self._tiers()
         if not tiers:

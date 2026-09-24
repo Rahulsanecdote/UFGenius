@@ -104,16 +104,25 @@ def run_worker(
             window_open = True
             try:
                 window_open = (not hours_only) or bool(scan_window())
+                # The wire runs EVERY cycle, not on the rediscovery cadence: it
+                # is one request for the whole watchlist, and its whole point is
+                # to beat the price-derived path to the news.
+                #
+                # It also runs OUTSIDE the scan window, on its own wider window
+                # (catalyst_alerts.window_*_et, default 04:00-20:00 ET). US
+                # earnings are overwhelmingly released after the close, so
+                # sharing the 07:00-16:00 scan window muted the wire for exactly
+                # the hours the news breaks. Unlike discovery and the monitor,
+                # nothing here reads volume, so the thin extended-hours tape
+                # costs it nothing — see the monitor's rule 3, which would
+                # report the after-hours volume collapse as a faded setup.
+                if catalyst_alerter is not None:
+                    news_fired = catalyst_alerter.poll(send=True)
+                    stats["catalyst_alerts"] += len(news_fired)
+                    state.record_alerts(news_fired)
+                    if outcome_ledger is not None:
+                        outcome_ledger.record(news_fired, source="catalyst")
                 if window_open:
-                    # The wire runs EVERY cycle, not on the rediscovery cadence:
-                    # it is one request for the whole watchlist, and its whole
-                    # point is to beat the price-derived path to the news.
-                    if catalyst_alerter is not None:
-                        news_fired = catalyst_alerter.poll(send=True)
-                        stats["catalyst_alerts"] += len(news_fired)
-                        state.record_alerts(news_fired)
-                        if outcome_ledger is not None:
-                            outcome_ledger.record(news_fired, source="catalyst")
                     # Re-discover on a slower cadence (it is the expensive step);
                     # monitor every cycle so invalidations are timely.
                     if (cycle - 1) % rediscover_every == 0:

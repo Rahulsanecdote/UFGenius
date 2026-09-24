@@ -411,7 +411,24 @@ pytest --cov=src       # coverage
   the price reaction. `news_feed.fetch_news_batch()` is one Alpaca request for a
   whole watchlist (or, with `universe: all`, the market-wide firehose, so a name
   can surface before anyone has listed it as a mover), so the worker polls it
-  **every cycle** rather than on the discovery cadence. Each headline is
+  **every cycle** rather than on the discovery cadence.
+  **The wire keeps its OWN window, wider than the worker's scan window**
+  (`catalyst_alerts.window_start_et` / `window_end_et` / `weekdays_only`,
+  default 04:00–20:00 ET weekdays; equal bounds = no time gate, end-before-start
+  crosses midnight; `window_open()` self-gates `poll()` so every caller inherits
+  it, and fails OPEN on a clock error). It used to share the 07:00–16:00 scan
+  window, which muted it for exactly the hours the news breaks: **US earnings
+  are overwhelmingly released after the close**, so an approval at 17:00 stayed
+  invisible until 07:00 the next morning — by which point the pre-market had
+  repriced it and the head start this layer exists for was gone. Discovery and
+  the monitor stay gated on the scan window because they read **volume**, which
+  the extended-hours tape does not supply (Yahoo publishes none at all); the
+  monitor's rule 3 would read the after-hours volume collapse as "relative
+  volume faded" on every watched name — the same false-invalidation the halt
+  handling already guards with `skip_invalidation`. Nothing on the wire path
+  reads volume, so none of that applies to it. Overnight and weekends are
+  dropped because the next pre-market poll picks those up regardless.
+  Each headline is
   classified **alone** by the existing `news_feed` tier taxonomy (so `strong`
   means what it means to the screener), routed to every ticker the wire attached
   to it, deduped per (symbol, story), and **suppressed for halted symbols**.
@@ -419,7 +436,8 @@ pytest --cov=src       # coverage
   sooner than a price-derived scanner can notice the consequence; the alert text
   says so. Discovery/alerting only; fail-soft everywhere.
   Every knob takes an env override (`CATALYST_ALERTS_ENABLED`, `_UNIVERSE`,
-  `_TIERS`, `_LOOKBACK_SEC`, `_DEDUP_TTL_SEC`, `_MAX_PER_RUN`,
+  `_TIERS`, `_LOOKBACK_SEC`, `_DEDUP_TTL_SEC`, `_MAX_PER_RUN`, `_WINDOW_START_ET`,
+  `_WINDOW_END_ET`, `_WEEKDAYS_ONLY`,
   `_SUPPRESS_HALTED`) so a managed host can retune the wire without a commit +
   redeploy. Because every misconfiguration here presents as "the wire was
   quiet", the ones that *cannot* match anything are **loud**: an unknown tier or
