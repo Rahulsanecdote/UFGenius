@@ -71,6 +71,12 @@ movers:
     dedup_ttl_sec: 3600       # don't re-alert the same story for a symbol
     max_per_run: 5            # spam guard per cycle
     suppress_halted: true     # never alert a name that is currently halted
+    # Roundup gate. The wire attaches a story to every ticker its BODY names, so
+    # a market wrap arrives tagged with a dozen symbols while its headline is
+    # about one of them at most. Above this count the story cannot carry a
+    # single-name catalyst tier. This path has symbols but no company names, so
+    # it cannot use the screener's subject test. 0 disables the gate.
+    max_story_symbols: 6
   # Phase 2 — enrich each mover with LIVE intraday signals (relative volume,
   # momentum, VWAP position, breakout) and rank by early-momentum QUALITY, not
   # just raw % change. Adds one intraday fetch per candidate (Alpaca/Polygon/yf).
@@ -525,6 +531,19 @@ premarket:
   news:
     enabled: true
     max_age_hours: 36
+    # A headline with no publication time cannot be aged against the window
+    # above, so by default it earns no tier rather than full catalyst credit.
+    # (Every fetcher's own cutoff reads `published is not None and published <
+    # since`, so a missing date used to sail past the window unmeasured.) Set
+    # true only if a provider you rely on stops sending timestamps.
+    allow_undated: false
+    # A headline must NAME this security to classify it. The wire attaches a
+    # story to every ticker its body mentions, so "Crude Oil Rises Over 4%;
+    # Darden Earnings Miss Views" reached SRZN on 2026-09-24 and scored
+    # `moderate` off Darden's earnings. Matched on the ticker as a standalone
+    # case-sensitive token, the full company name, or its distinctive leading
+    # word ("Surrozen" for "Surrozen Inc").
+    require_subject: true
   # Catalyst score per tier (0-1, clamped). Provenance: post-news drift is
   # measured for hard events (PEAD/Savor); moderate news gets half weight;
   # attention-churn gets none.

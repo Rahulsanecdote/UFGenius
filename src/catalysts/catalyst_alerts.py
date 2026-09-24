@@ -30,6 +30,7 @@ from typing import Callable, Optional
 from src.alerts.telegram_alert import send_text_alert
 from src.catalysts.news_feed import (
     NewsHeadline,
+    _age_hours,
     classify_headlines,
     fetch_news_batch,
 )
@@ -68,11 +69,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def format_catalyst_alert(symbol: str, tier: str, headline: NewsHeadline) -> str:
-    """The alert message: tier, ticker, and the headline as a checkable receipt."""
+def format_catalyst_alert(
+    symbol: str, tier: str, headline: NewsHeadline,
+    *, now: Optional[datetime] = None,
+) -> str:
+    """The alert message: tier, ticker, and the headline as a checkable receipt.
+
+    The timestamp line states what is known. An undated headline used to render
+    as "just now", which claims a freshness nobody measured — the one thing an
+    alert whose entire premise is *"this was published moments ago"* must not
+    invent. Anything older than an hour carries its age, so a stale headline
+    reaching the wire is legible in the alert itself rather than looking current.
+    """
     tag, _ = _TIER_TAG.get(tier, ("📰 NEWS", "long"))
-    when = headline.published.astimezone(timezone.utc).strftime("%H:%M UTC") \
-        if headline.published else "just now"
+    age = _age_hours(headline.published, now or _utcnow())
+    if headline.published is None:
+        when = "publication time unknown"
+    else:
+        stamp = headline.published.astimezone(timezone.utc).strftime("%H:%M UTC")
+        when = stamp if age is None or age < 1.0 else f"{stamp} ({age:.0f}h ago)"
     source = f" ({headline.source})" if headline.source else ""
     return (
         f"{tag} · {symbol}\n"
@@ -174,6 +189,10 @@ class CatalystAlerter:
         cap = max(0, int(config.CATALYST_ALERTS_MAX_PER_RUN))
         ttl = float(config.CATALYST_ALERTS_DEDUP_TTL_SEC)
         lookback = max(30.0, float(config.CATALYST_ALERTS_LOOKBACK_SEC))
+        # 0 (or negative) disables the roundup gate, the same way
+        # movers.suspect_change_pct: 0 disables the corporate-action guard.
+        _roundup_cap = int(config.CATALYST_ALERTS_MAX_STORY_SYMBOLS)
+        max_story_symbols = _roundup_cap if _roundup_cap > 0 else None
 
         universe = self._universe()
         if universe is not None and not universe:
@@ -207,8 +226,38 @@ class CatalystAlerter:
             if len(fired) >= cap:
                 break
             # Classify this story alone: the tier must describe THIS headline,
-            # not the loudest one in the batch.
-            tier = classify_headlines([headline]).get("tier", "none")
+            # not the loudest one in the batch. The lookback window goes in too —
+            # this layer's whole claim is that the catalyst was published
+            # moments ago, so a headline that cannot be shown to fall inside the
+            # window must not be able to make that claim. An undated one is
+            # skipped rather than credited (it used to alert unconditionally,
+            # since every age check in the fetchers lets `published is None`
+            # through).
+            # max_story_symbols is the roundup gate. This path has symbols and
+            # no company names, so the per-symbol subject test is unusable here:
+            # "Surrozen Files IND" does not contain the string "SRZN" and would
+            # be rejected. The symbol COUNT works without a name — a story the
+            # wire attached to a dozen tickers is a roundup, and its headline
+            # describes one of them at most.
+            verdict = classify_headlines(
+                [headline], now=now, max_age_hours=lookback / 3600.0,
+                max_story_symbols=max_story_symbols)
+            if verdict.get("skipped_offtopic"):
+                log.debug(
+                    f"catalyst-alerts: skipping roundup across "
+                    f"{len(headline.symbols)} symbols — {headline.title[:80]}")
+                continue
+            if verdict.get("skipped_undated"):
+                # Silence here would be indistinguishable from a quiet wire —
+                # the failure mode this module is built to make loud.
+                _warn_once(
+                    f"undated:{headline.provider or 'unknown'}",
+                    f"catalyst-alerts: dropping undated headlines from provider "
+                    f"'{headline.provider or 'unknown'}' — a headline with no "
+                    f"publication time cannot be aged against the "
+                    f"{lookback:.0f}s lookback, so it cannot alert")
+                continue
+            tier = verdict.get("tier", "none")
             if tier not in tiers:
                 continue
             for symbol in headline.symbols or []:

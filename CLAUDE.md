@@ -181,7 +181,50 @@ pytest --cov=src       # coverage
   float rotation; catalyst = earnings calendar + a keyword-classified news
   feed (`src/catalysts/news_feed.py`: Alpaca News → yfinance → NewsAPI, tiers
   strong/moderate/weak/dilution, fail-soft)) and tags candidates
-  continuation/fade_risk/neutral. **Screener only** — firewalled from the
+  continuation/fade_risk/neutral.
+  **Publication dates are checked at classification, not only at fetch.**
+  `classify_headlines()` read `h.title` and nothing else, which left three
+  holes: an **undated** headline earned full catalyst credit (every fetcher's
+  cutoff reads `published is not None and published < since`, so `None` sails
+  past a window it was never measured against); within a tier the *first*
+  headline in list order won rather than the newest, and provider order is no
+  recency guarantee; and the winning headline's age was never returned, so the
+  alert formatter printed "just now" for an undated headline — asserting the
+  one fact an alert premised on *"published moments ago"* must not invent.
+  It now takes `now`/`max_age_hours`/`allow_undated`, skips stale and undated
+  headlines (counted in `skipped_stale`/`skipped_undated`, never silently),
+  prefers the newest match as the receipt, treats a future-dated timestamp as
+  broken rather than fresh, and returns `published`/`age_hours` so callers can
+  disclose it (`catalyst_age_hours` on the snapshot and in the API row; the
+  alert line carries "(16h ago)" past an hour). Config `premarket.news.
+  allow_undated` (default false). **Not** solved by this: a story republished
+  today about an old event — SRZN on 2026-09-24 carried a 2026-09-08 IND
+  submission the stock had already fallen 2% on, and the republication's date
+  was genuinely today. The event date lives in the body text, which this module
+  never fetches; catching it needs event-date extraction or first-seen tracking
+  across polls.
+  **A headline only classifies a security it actually names.** The wire attaches
+  a story to every ticker its BODY mentions, so a market wrap arrives tagged
+  with a dozen symbols while its headline concerns one of them at most: "Crude
+  Oil Rises Over 4%; Darden Earnings Miss Views" reached SRZN on 2026-09-24 and
+  scored `moderate` off *Darden's* earnings. Two gates, because the two paths
+  hold different data. The per-symbol path (`catalyst_news_for` → screener)
+  knows the ticker AND the company name, so `headline_concerns()` tests the
+  subject directly — the ticker as a standalone case-sensitive token, the full
+  company name, or its distinctive leading word (`_company_core`: "Surrozen"
+  for "Surrozen Inc", since the title omits the suffix; tokens under four chars
+  are discarded as ordinary English). The batch/firehose path
+  (`catalyst_alerts`) carries symbols only, where that test is unusable —
+  "Surrozen Files IND" contains no "SRZN" — so it gates on symbol COUNT
+  instead (`movers.catalyst_alerts.max_story_symbols`, default 6, 0 disables):
+  a story the wire attached to more tickers than that is a roundup. Both are
+  opt-in per call and counted in `skipped_offtopic`. `_newsapi_identity_ok` now
+  delegates to the same test, which fixes a false negative it carried (it
+  required the FULL company name as a substring). Residual: a wrap naming
+  exactly the cap or fewer still passes the count gate — "Dow Tumbles Over 100
+  Points" carried 6 and cleared it, scoring `none` only because its headline
+  matched no tier pattern. Config `premarket.news.require_subject` (default
+  true). **Screener only** — firewalled from the
   money path, no filter loosened; `fetch_ohlcv/fetch_intraday(prepost=True)`
   supplies the 4:00–9:30 ET bars (yfinance flag; Alpaca/Polygon already span
   the extended session; cache keys get an `:ext` suffix). Free Finviz cannot
