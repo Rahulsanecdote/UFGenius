@@ -595,3 +595,59 @@ def test_health_is_isolated_between_concurrent_runs():
 
     assert results["healthy"]["failed"] == []
     assert results["failing"]["failed"] == ["gainers: no_provider_answered"]
+
+
+# ── bar freshness (feeds MoversAlerter's require_fresh_session gate) ─────────
+
+
+def _dated_frame(stamps):
+    import pandas as pd
+    n = len(stamps)
+    return pd.DataFrame(
+        {"Close": list(range(1, n + 1)), "High": list(range(1, n + 1)),
+         "Low": list(range(1, n + 1)), "Volume": [100] * n},
+        index=pd.DatetimeIndex(stamps),
+    )
+
+
+def test_enrich_records_the_last_bar_timestamp():
+    """The gate is only as good as this: no timestamp, nothing ever alerts."""
+    from datetime import datetime
+
+    import pandas as pd
+
+    c = mv.MoverCandidate(ticker="X", price=10.0, change_pct=6.0,
+                          direction="long", sources=["gainers"], base_score=20.0, score=20.0)
+    df = _dated_frame([datetime(2026, 9, 25, 13, 40), datetime(2026, 9, 25, 13, 45)])
+    metrics = {"last_price": 10.2, "rel_volume": 5.0, "momentum_pct": 3.0, "is_breakout": True}
+    ps = [
+        patch("src.data.fetcher.fetch_intraday", return_value=df),
+        patch("src.scanner.intraday_scan.score_intraday_frame", return_value=metrics),
+        patch("src.technical.intraday_features.vwap", return_value=10.0),
+    ]
+    for p in ps:
+        p.start()
+    try:
+        mv._enrich_candidate(c)
+    finally:
+        for p in ps:
+            p.stop()
+    assert c.bars_as_of == datetime(2026, 9, 25, 13, 45)      # LAST bar, not first
+    assert c.as_dict()["bars_as_of"] == "2026-09-25T13:45:00"
+    assert isinstance(pd.DatetimeIndex(df.index), pd.DatetimeIndex)
+
+
+def test_last_bar_time_normalises_to_naive_utc():
+    """fetch_intraday's convention is naive UTC; a tz-aware frame must match it."""
+    from datetime import datetime, timezone
+
+    aware = _dated_frame([datetime(2026, 9, 25, 13, 45, tzinfo=timezone.utc)])
+    assert mv._last_bar_time(aware) == datetime(2026, 9, 25, 13, 45)
+
+
+def test_last_bar_time_is_none_on_an_unusable_index():
+    """A non-datetime index must not raise — it reads as unknown, and the
+    alerter treats unknown as stale rather than as current."""
+    import pandas as pd
+
+    assert mv._last_bar_time(pd.DataFrame({"Close": []})) is None

@@ -207,6 +207,9 @@ _MOVERS_ALERTS: dict = _MOVERS.get("alerts", {}) if isinstance(_MOVERS, dict) el
 MOVERS_ALERTS_ENABLED: bool = env_bool("MOVERS_ALERTS_ENABLED", bool(_MOVERS_ALERTS.get("enabled", False)))
 MOVERS_ALERTS_MIN_SCORE: float = _as_float(_MOVERS_ALERTS.get("min_score", 70), 70.0)
 MOVERS_ALERTS_REQUIRE_ENRICHED: bool = bool(_MOVERS_ALERTS.get("require_enriched", True))
+MOVERS_ALERTS_REQUIRE_FRESH_SESSION: bool = env_bool(
+    "MOVERS_ALERTS_REQUIRE_FRESH_SESSION",
+    bool(_MOVERS_ALERTS.get("require_fresh_session", True)))
 MOVERS_ALERTS_DEDUP_TTL_SEC: float = _as_float(_MOVERS_ALERTS.get("dedup_ttl_sec", 1800), 1800.0)
 MOVERS_ALERTS_MAX_PER_RUN: int = _as_int(_MOVERS_ALERTS.get("max_per_run", 10), 10)
 # Phase 4 — post-open monitoring + invalidation.

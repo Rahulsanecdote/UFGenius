@@ -12,6 +12,7 @@ Discovery/monitoring layer only: it never sizes, gates, or places anything.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src.alerts.telegram_alert import send_text_alert
 from src.utils import config
@@ -25,6 +26,30 @@ _MAX_SUPPRESSED = 8
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def _same_trading_day(bars_as_of: datetime | None, now: datetime) -> bool:
+    """True when the last enrichment bar falls on the SAME ET date as ``now``.
+
+    The ET calendar date is the check, not an age in hours: it is exactly what
+    "this session" means, and it stays correct across weekends and holidays
+    without needing a market calendar. An unreadable timestamp is NOT current —
+    the point of the gate is that metrics may only be presented as live when
+    that is established, never merely unrefuted.
+
+    Both arguments are naive UTC, the convention ``fetch_intraday`` returns.
+    """
+    if bars_as_of is None:
+        return False
+    try:
+        bar_et = bars_as_of.replace(tzinfo=timezone.utc).astimezone(_EASTERN)
+        now_et = now.replace(tzinfo=timezone.utc).astimezone(_EASTERN)
+        return bar_et.date() == now_et.date()
+    except Exception:
+        return False
 
 
 def _confidence_label(score: float) -> str:
@@ -100,6 +125,16 @@ class MoversAlerter:
         # alerting hardest on exactly the cohort that fades.
         if config.MOVERS_ALERTS_REQUIRE_ENRICHED and not c.enriched:
             return "no_intraday_data"
+        # Enriched, but from the WRONG DAY. Before 09:30 the movers chain serves
+        # the previous session, and the intraday fetch then returns yesterday's
+        # bars, so rel-volume / VWAP / momentum all describe a finished session
+        # while the alert reads as live. Observed 2026-09-25: alerts fired at
+        # 08:18 ET carried Thursday's closing prices and Thursday's day moves
+        # verbatim (HUBC $2.33 -27.4%, TRT $7.26 -36.6%, AVX $5.45 +32.9% — each
+        # an exact match for the prior session's close and change).
+        if (config.MOVERS_ALERTS_REQUIRE_FRESH_SESSION
+                and not _same_trading_day(getattr(c, "bars_as_of", None), now)):
+            return "stale_session_data"
         key = (c.ticker, c.direction)
         last = self._recent.get(key)
         ttl = float(config.MOVERS_ALERTS_DEDUP_TTL_SEC)

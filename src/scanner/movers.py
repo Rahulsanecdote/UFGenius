@@ -82,6 +82,13 @@ class MoverCandidate:
     vwap_pct: float | None = None      # % above(+) / below(-) session VWAP
     is_breakout: bool = False
     enriched: bool = False
+    # Timestamp (naive UTC) of the LAST CLOSED BAR the enrichment read. Before
+    # 09:30 the movers chain serves the PREVIOUS session, and the intraday fetch
+    # then returns yesterday's bars — so every enriched metric describes a
+    # finished session while the alert presents it as live. `enriched` cannot
+    # catch that: there ARE bars, they are just the wrong day. This is what the
+    # freshness gate reads. See MoversAlerter._suppression_reason.
+    bars_as_of: "datetime | None" = None
 
     # True when the feed's % change was extreme enough to check and the value
     # shown is our split-adjusted recomputation instead — whether that CORRECTED
@@ -112,6 +119,8 @@ class MoverCandidate:
             "vwap_pct": self.vwap_pct,
             "is_breakout": self.is_breakout,
             "enriched": self.enriched,
+            "bars_as_of": (self.bars_as_of.isoformat()
+                           if self.bars_as_of is not None else None),
         }
 
 
@@ -378,6 +387,20 @@ def _enriched_score(direction: str, change_pct: float, rel_volume: float,
     return round(max(0.0, min(100.0, gap + rvol + mom + vw + brk)), 1)
 
 
+def _last_bar_time(df) -> "datetime | None":
+    """Timestamp of the frame's last bar, naive UTC, or None if unreadable.
+
+    ``fetch_intraday`` hands back a naive-UTC index (``lookahead.py`` converts
+    then strips the tz), which is the convention the freshness check assumes.
+    """
+    try:
+        ts = df.index[-1]
+        ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts
+    except Exception:
+        return None
+
+
 def _enrich_candidate(c: "MoverCandidate") -> "MoverCandidate":
     """Attach live intraday signals and recompute the rank. No-op on any failure.
 
@@ -403,6 +426,7 @@ def _enrich_candidate(c: "MoverCandidate") -> "MoverCandidate":
         if v and last:
             c.vwap_pct = round((last - v) / v * 100.0, 2)
         c.enriched = True
+        c.bars_as_of = _last_bar_time(df)
         c.score = _enriched_score(
             c.direction, c.change_pct, c.rel_volume or 0.0,
             c.momentum_pct or 0.0, c.vwap_pct, c.is_breakout,
