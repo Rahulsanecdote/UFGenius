@@ -110,7 +110,13 @@ movers:
   # turns against it, it loses VWAP, volume fades, or the quality score collapses).
   # `bot.py --mode movers-monitor` discovers → alerts → then loops this.
   monitor:
-    enabled: false            # master switch (the monitor mode still runs; this gates invalidation alerts)
+    # Master switch for INVALIDATION (env: MOVERS_MONITOR_ENABLED). The watched
+    # candidates are re-enriched either way — those live signals feed the
+    # dashboard watch set and the price stream — but with this off no setup is
+    # transitioned to invalidated and no "stand down" note is sent. Until this
+    # comment was written the switch gated NOTHING: it was read in config.py and
+    # nowhere else, so the worker invalidated and alerted regardless of it.
+    enabled: false
     poll_interval_sec: 60     # seconds between re-evaluations
     rel_volume_floor: 1.0     # invalidate when current relative volume drops below this
     momentum_flip: -0.5       # invalidate when aligned momentum <= this (turned against the setup)

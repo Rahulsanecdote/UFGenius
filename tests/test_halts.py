@@ -223,6 +223,9 @@ class TestMonitorHoldsHaltedSetups:
         from src.scanner.movers_monitor import MoversMonitor
 
         monkeypatch.setattr(cfg, "MOVERS_HALT_SKIP_INVALIDATION", True)
+        # Without the master switch nothing invalidates at all, which would make
+        # the halt-hold test below pass for the wrong reason.
+        monkeypatch.setattr(cfg, "MOVERS_MONITOR_ENABLED", True)
         monkeypatch.setattr(cfg, "MOVERS_MONITOR_RVOL_FLOOR", 1.0)
         monkeypatch.setattr(cfg, "MOVERS_MONITOR_MIN_SCORE", 50)
         monkeypatch.setattr(cfg, "MOVERS_MONITOR_MOMENTUM_FLIP", -0.5)

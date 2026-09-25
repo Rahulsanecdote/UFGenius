@@ -161,6 +161,16 @@ class MoversMonitor:
                 c.is_halted = False   # resumed since the last cycle
                 c.halt_reason = ""
 
+            # The master switch gates INVALIDATION, not the refresh above: the
+            # live signals feed the dashboard watch set and the price stream
+            # either way, so turning the monitor off must not blind those. It
+            # used to gate nothing at all — the switch was read in config.py and
+            # nowhere else, so the worker invalidated and pushed "stand down"
+            # alerts regardless of it, and both config.yaml and CLAUDE.md
+            # described a control that did not exist.
+            if not config.MOVERS_MONITOR_ENABLED:
+                continue
+
             invalid, reason = check_invalidation(
                 c.direction, c.rel_volume, c.momentum_pct, c.vwap_pct, c.score,
             )
