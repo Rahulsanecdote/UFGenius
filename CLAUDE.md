@@ -483,7 +483,34 @@ pytest --cov=src       # coverage
 - **Movers provider chain** (`src/scanner/movers_providers.py`, config
   `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
   FMP-only, so an exhausted daily quota took the intraday path down entirely.
-  Each source now walks the chain and the **first provider that answers wins**.
+  Each source walks the chain; `movers.provider_mode` decides how.
+  **`merge` (default)** queries every configured provider that serves the
+  source and **unions** the answers. `first_wins` — the original chain, where
+  the first provider that answers serves the source and the rest are never
+  asked — made the *leading* provider's screener universe the entire candidate
+  pool: a name outside it was invisible with nothing recorded in `withheld` or
+  `suppressed`, because it never entered the pipeline at all. Observed
+  2026-09-25: MSGY ran $2.13 → $5.95 (+202%) and never alerted, though
+  replaying its own tape through the live scorer clears the alert floor for
+  seven consecutive windows from 10:35 ET (100/100 at 10:45) and the LULD halt
+  that legitimately silences it did not begin until ~11:07. Providers disagree
+  about what a "mover" is — universe, float/liquidity floors, SIP vs IEX — so
+  the union is the only pool that reflects the market rather than one vendor's
+  screener. Cross-**provider** duplicates are resolved in `_fetch_source` by
+  **chain order**, deliberately *not* by the cross-**source** rule one level
+  down (which keeps the largest-magnitude change): that rule was reasoned about
+  for two endpoints of one feed, and letting rival vendors compete under it
+  would mean the most extreme quote always wins — and since these lists report
+  **unadjusted** changes, that systematically selects whichever provider is
+  most wrong, across the whole band below `suspect_change_pct` where the
+  corporate-action guard never looks. A later provider only ever *adds*
+  symbols. A provider failing beside a working one is now a **partial** outage
+  (`<source>: <provider>: could_not_answer` in `source_errors`, dashboard reads
+  `degraded`) where first-wins hid it; everything failing is still
+  `no_provider_answered`. **Cost:** merge multiplies calls per source by the
+  providers serving it — at the default cadence (~108 discoveries/day) FMP goes
+  from ~108 calls/day to ~324, past its 250/day free tier, and an exhausted FMP
+  quota is the exact failure the chain was built for. Watch `source_errors`.
   The adapters return `list`-vs-`None` on purpose: an **empty list is a real
   answer** (a quiet market) and stops the chain, while `None` means "could not
   answer" (no key, HTTP error, or a payload the API doesn't document — FMP

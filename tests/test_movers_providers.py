@@ -137,8 +137,11 @@ def _fake(name, supports, result, configured=True):
     return provider, calls
 
 
-def _discover(monkeypatch, chain, source="gainers"):
+def _discover(monkeypatch, chain, source="gainers", mode="merge"):
+    # `mode` defaults to the product default so the harness cannot quietly
+    # diverge from it; the first-wins tests below name their mode explicitly.
     monkeypatch.setattr(mv, "provider_chain", lambda *a, **k: chain)
+    monkeypatch.setattr(cfg, "MOVERS_PROVIDER_MODE", mode)
     monkeypatch.setattr(cfg, "MOVERS_HALTS_ENABLED", False)
     monkeypatch.setattr(cfg, "MOVERS_SOURCES", [source])
     monkeypatch.setattr(cfg, "MOVERS_ENRICH_INTRADAY", False)
@@ -152,10 +155,12 @@ _ROW = [{"symbol": "AAA", "price": 10.0, "changesPercentage": 20.0, "name": ""}]
 
 
 class TestChain:
+    """`provider_mode: first_wins` — the original chain, still supported."""
+
     def test_first_provider_that_answers_wins(self, monkeypatch):
         first, first_calls = _fake("first", ["gainers"], _ROW)
         second, second_calls = _fake("second", ["gainers"], _ROW)
-        out = _discover(monkeypatch, [first, second])
+        out = _discover(monkeypatch, [first, second], mode="first_wins")
         assert [c.ticker for c in out] == ["AAA"]
         assert first_calls == ["gainers"] and second_calls == []   # never reached
         assert mv.last_source_health()["served_by"] == {"gainers": "first"}
@@ -163,7 +168,7 @@ class TestChain:
     def test_falls_through_when_a_provider_cannot_answer(self, monkeypatch):
         dead, dead_calls = _fake("dead", ["gainers"], None)
         alive, alive_calls = _fake("alive", ["gainers"], _ROW)
-        out = _discover(monkeypatch, [dead, alive])
+        out = _discover(monkeypatch, [dead, alive], mode="first_wins")
         assert [c.ticker for c in out] == ["AAA"]
         assert dead_calls == ["gainers"] and alive_calls == ["gainers"]
         assert mv.last_source_health()["served_by"] == {"gainers": "alive"}
@@ -173,7 +178,7 @@ class TestChain:
         # genuinely empty list look like a broken provider.
         quiet, _ = _fake("quiet", ["gainers"], [])
         backup, backup_calls = _fake("backup", ["gainers"], _ROW)
-        out = _discover(monkeypatch, [quiet, backup])
+        out = _discover(monkeypatch, [quiet, backup], mode="first_wins")
         assert out == []
         assert backup_calls == []
         health = mv.last_source_health()
@@ -182,34 +187,34 @@ class TestChain:
     def test_a_provider_that_raises_falls_through(self, monkeypatch):
         broken, _ = _fake("broken", ["gainers"], RuntimeError("adapter bug"))
         alive, _ = _fake("alive", ["gainers"], _ROW)
-        assert [c.ticker for c in _discover(monkeypatch, [broken, alive])] == ["AAA"]
+        assert [c.ticker for c in _discover(monkeypatch, [broken, alive], mode="first_wins")] == ["AAA"]
 
     def test_unsupported_sources_are_skipped_not_failed(self, monkeypatch):
         narrow, narrow_calls = _fake("narrow", ["losers"], _ROW)
         wide, _ = _fake("wide", ["gainers"], _ROW)
-        _discover(monkeypatch, [narrow, wide])
+        _discover(monkeypatch, [narrow, wide], mode="first_wins")
         assert narrow_calls == []                       # never asked
         assert mv.last_source_health()["served_by"] == {"gainers": "wide"}
 
     def test_unconfigured_providers_are_skipped(self, monkeypatch):
         keyless, keyless_calls = _fake("keyless", ["gainers"], _ROW, configured=False)
         alive, _ = _fake("alive", ["gainers"], _ROW)
-        _discover(monkeypatch, [keyless, alive])
+        _discover(monkeypatch, [keyless, alive], mode="first_wins")
         assert keyless_calls == []
         assert mv.last_source_health()["served_by"] == {"gainers": "alive"}
 
     def test_nothing_configured_is_reported_differently_from_everything_failing(
             self, monkeypatch):
         keyless, _ = _fake("keyless", ["gainers"], _ROW, configured=False)
-        _discover(monkeypatch, [keyless])
+        _discover(monkeypatch, [keyless], mode="first_wins")
         assert mv.last_source_health()["failed"] == ["gainers: no_provider_configured"]
 
         dead, _ = _fake("dead", ["gainers"], None)
-        _discover(monkeypatch, [dead])
+        _discover(monkeypatch, [dead], mode="first_wins")
         assert mv.last_source_health()["failed"] == ["gainers: no_provider_answered"]
 
     def test_empty_chain_fails_the_source(self, monkeypatch):
-        assert _discover(monkeypatch, []) == []
+        assert _discover(monkeypatch, [], mode="first_wins") == []
         assert mv.last_source_health()["failed"] == ["gainers: no_provider_configured"]
 
 
@@ -312,3 +317,106 @@ def test_an_unknown_source_is_recorded_as_a_failure(monkeypatch):
     health = mv.last_source_health()
     assert health["failed"] == ["typo_source: unknown_source"]
     assert health["succeeded"] == []
+
+
+class TestMergeMode:
+    """`provider_mode: merge` (default) — every provider asked, answers unioned.
+
+    The regression: first-wins made the LEADING provider's screener universe the
+    entire candidate pool. A name outside it was invisible with nothing recorded
+    in `withheld` or `suppressed`, because it never entered the pipeline at all.
+    MSGY on 2026-09-25 ran $2.13 -> $5.95 (+202%) and never alerted, though
+    replaying its own tape through the live scorer clears the alert floor for
+    seven consecutive windows from 10:35 ET -- half an hour before the LULD halt
+    that legitimately silenced it.
+    """
+
+    # The shape of the failure: 'ONLY' is listed by the second provider alone.
+    _FIRST = [{"symbol": "AAA", "price": 10.0, "changesPercentage": 20.0, "name": ""}]
+    _SECOND = [{"symbol": "AAA", "price": 10.0, "changesPercentage": 20.0, "name": ""},
+               {"symbol": "ONLY", "price": 5.95, "changesPercentage": 202.0, "name": ""}]
+
+    def test_a_name_only_the_second_provider_lists_is_discovered(self, monkeypatch):
+        first, first_calls = _fake("first", ["gainers"], self._FIRST)
+        second, second_calls = _fake("second", ["gainers"], self._SECOND)
+        out = _discover(monkeypatch, [first, second])
+        assert sorted(c.ticker for c in out) == ["AAA", "ONLY"]
+        assert first_calls == ["gainers"] and second_calls == ["gainers"]
+
+    def test_first_wins_is_what_lost_it(self, monkeypatch):
+        """Control: same providers, same rows, old mode — ONLY disappears."""
+        first, _ = _fake("first", ["gainers"], self._FIRST)
+        second, second_calls = _fake("second", ["gainers"], self._SECOND)
+        out = _discover(monkeypatch, [first, second], mode="first_wins")
+        assert [c.ticker for c in out] == ["AAA"]
+        assert second_calls == []
+
+    def test_every_answering_provider_is_named(self, monkeypatch):
+        first, _ = _fake("first", ["gainers"], self._FIRST)
+        second, _ = _fake("second", ["gainers"], self._SECOND)
+        _discover(monkeypatch, [first, second])
+        assert mv.last_source_health()["served_by"] == {"gainers": "first+second"}
+
+    def test_chain_order_wins_a_duplicate_not_the_biggest_move(self, monkeypatch):
+        """The cross-SOURCE merge keeps the largest-magnitude change, a rule
+        reasoned about for two endpoints of ONE feed. Rival vendors must not
+        compete under it: these lists report UNADJUSTED changes, so "biggest
+        wins" would systematically select whichever provider is most wrong."""
+        lead, _ = _fake("lead", ["gainers"],
+                        [{"symbol": "DUP", "price": 10.0, "changesPercentage": 20.0}])
+        wilder, _ = _fake("wilder", ["gainers"],
+                          [{"symbol": "DUP", "price": 99.0, "changesPercentage": 195.0}])
+        out = _discover(monkeypatch, [lead, wilder])
+        assert len(out) == 1
+        assert out[0].change_pct == 20.0 and out[0].price == 10.0   # chain order
+
+    def test_an_empty_answer_does_not_hide_the_other_providers(self, monkeypatch):
+        """A quiet list is a real answer, but under merge it is not the whole
+        market -- the others are still asked."""
+        quiet, quiet_calls = _fake("quiet", ["gainers"], [])
+        alive, alive_calls = _fake("alive", ["gainers"], self._SECOND)
+        out = _discover(monkeypatch, [quiet, alive])
+        assert sorted(c.ticker for c in out) == ["AAA", "ONLY"]
+        assert quiet_calls == ["gainers"] and alive_calls == ["gainers"]
+
+    def test_one_failure_among_answers_is_a_partial_outage(self, monkeypatch):
+        """Under first-wins a dead provider was invisible whenever a later one
+        answered. Merging makes it real: the union is missing its names."""
+        dead, _ = _fake("dead", ["gainers"], None)
+        alive, _ = _fake("alive", ["gainers"], self._FIRST)
+        out = _discover(monkeypatch, [dead, alive])
+        health = mv.last_source_health()
+        assert [c.ticker for c in out] == ["AAA"]             # still serves
+        assert health["succeeded"] == ["gainers"]
+        assert health["failed"] == ["gainers: dead: could_not_answer"]
+
+    def test_all_failing_is_still_no_provider_answered(self, monkeypatch):
+        a, _ = _fake("a", ["gainers"], None)
+        b, _ = _fake("b", ["gainers"], None)
+        assert _discover(monkeypatch, [a, b]) == []
+        failed = mv.last_source_health()["failed"]
+        assert failed[-1] == "gainers: no_provider_answered"
+
+    def test_unsupported_and_unconfigured_are_still_skipped_not_failed(self, monkeypatch):
+        narrow, narrow_calls = _fake("narrow", ["losers"], self._FIRST)
+        keyless, keyless_calls = _fake("keyless", ["gainers"], self._FIRST, configured=False)
+        alive, _ = _fake("alive", ["gainers"], self._FIRST)
+        _discover(monkeypatch, [narrow, keyless, alive])
+        assert narrow_calls == [] and keyless_calls == []
+        assert mv.last_source_health()["failed"] == []
+        assert mv.last_source_health()["served_by"] == {"gainers": "alive"}
+
+    def test_a_raising_adapter_does_not_lose_the_others(self, monkeypatch):
+        broken, _ = _fake("broken", ["gainers"], RuntimeError("adapter bug"))
+        alive, _ = _fake("alive", ["gainers"], self._SECOND)
+        out = _discover(monkeypatch, [broken, alive])
+        assert sorted(c.ticker for c in out) == ["AAA", "ONLY"]
+
+    def test_unknown_mode_is_loud_and_merges(self, monkeypatch):
+        """Both modes look like 'discovery ran' from outside, so a typo cannot
+        silently pick one."""
+        first, _ = _fake("first", ["gainers"], self._FIRST)
+        second, second_calls = _fake("second", ["gainers"], self._SECOND)
+        out = _discover(monkeypatch, [first, second], mode="frist_wins")
+        assert sorted(c.ticker for c in out) == ["AAA", "ONLY"]
+        assert second_calls == ["gainers"]

@@ -19,6 +19,26 @@ movers:
   # gainers/losers only (its most-actives rows carry no price); Polygon is
   # gainers/losers too; FMP is the only one covering most_actives.
   providers: [alpaca, polygon, fmp]
+  # How the chain above is used.
+  #   merge       — query EVERY configured provider that serves a source and
+  #                 UNION the answers (default). First-wins made the leading
+  #                 provider's screener universe the entire candidate pool, so
+  #                 a name outside it was invisible with nothing recorded
+  #                 anywhere: it never entered the pipeline. MSGY on 2026-09-25
+  #                 ran +202% and never alerted, though replaying its own tape
+  #                 through the live scorer clears the alert floor for seven
+  #                 straight windows from 10:35 ET, half an hour before the
+  #                 halt that legitimately silenced it.
+  #   first_wins  — the original chain: the first provider that ANSWERS serves
+  #                 the source and the rest are never asked.
+  # COST: merge multiplies calls per source by the number of providers serving
+  # it. At the default cadence (rediscover every 5 cycles x 60s = every 5 min,
+  # 07:00-16:00) that is ~108 discoveries/day, so FMP goes from ~108 calls/day
+  # (most_actives only, the others answered upstream) to ~324 — past the 250/day
+  # free tier. An exhausted FMP quota is the exact failure the chain was built
+  # for, so watch /api/movers `source_errors` after switching, and fall back to
+  # first_wins or lengthen worker.rediscover_every_cycles if it bites.
+  provider_mode: merge
   min_price: 1.0            # drop sub-$1 names (penny/liquidity guard); lower at your own risk
   max_price: 0              # 0 = no upper cap
   min_change_pct: 3.0       # only consider names moving at least this % (absolute)

@@ -119,6 +119,9 @@ MOVERS_SOURCES: list = list(_MOVERS.get("sources", ["gainers", "losers", "most_a
 # Discovery provider chain, in order — the first that ANSWERS serves the source.
 # FMP-only used to mean an exhausted daily quota took discovery down entirely.
 MOVERS_PROVIDERS: list = list(_MOVERS.get("providers", ["alpaca", "polygon", "fmp"]))
+# "merge" (query every provider, union the answers) | "first_wins" (original chain).
+MOVERS_PROVIDER_MODE: str = env(
+    "MOVERS_PROVIDER_MODE", str(_MOVERS.get("provider_mode", "merge")))
 MOVERS_MIN_PRICE: float = _as_float(_MOVERS.get("min_price", 1.0), 1.0)
 MOVERS_MAX_PRICE: float = _as_float(_MOVERS.get("max_price", 0), 0.0)
 MOVERS_MIN_CHANGE_PCT: float = _as_float(_MOVERS.get("min_change_pct", 3.0), 3.0)
