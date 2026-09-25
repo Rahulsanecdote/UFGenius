@@ -119,6 +119,9 @@ MOVERS_SOURCES: list = list(_MOVERS.get("sources", ["gainers", "losers", "most_a
 # Discovery provider chain, in order — the first that ANSWERS serves the source.
 # FMP-only used to mean an exhausted daily quota took discovery down entirely.
 MOVERS_PROVIDERS: list = list(_MOVERS.get("providers", ["alpaca", "polygon", "fmp"]))
+# "merge" (query every provider, union the answers) | "first_wins" (original chain).
+MOVERS_PROVIDER_MODE: str = env(
+    "MOVERS_PROVIDER_MODE", str(_MOVERS.get("provider_mode", "merge")))
 MOVERS_MIN_PRICE: float = _as_float(_MOVERS.get("min_price", 1.0), 1.0)
 MOVERS_MAX_PRICE: float = _as_float(_MOVERS.get("max_price", 0), 0.0)
 MOVERS_MIN_CHANGE_PCT: float = _as_float(_MOVERS.get("min_change_pct", 3.0), 3.0)
@@ -226,7 +229,7 @@ MOVERS_MONITOR_ALERT_ON_INVALIDATION: bool = env_bool(
 # Phase 5 — always-on worker.
 _MOVERS_WORKER: dict = _MOVERS.get("worker", {}) if isinstance(_MOVERS, dict) else {}
 MOVERS_WORKER_POLL_INTERVAL_SEC: float = _as_float(_MOVERS_WORKER.get("poll_interval_sec", 60), 60.0)
-MOVERS_WORKER_REDISCOVER_EVERY_CYCLES: int = _as_int(_MOVERS_WORKER.get("rediscover_every_cycles", 5), 5)
+MOVERS_WORKER_REDISCOVER_EVERY_CYCLES: int = _as_int(_MOVERS_WORKER.get("rediscover_every_cycles", 8), 8)
 MOVERS_WORKER_MARKET_HOURS_ONLY: bool = bool(_MOVERS_WORKER.get("market_hours_only", True))
 # Phase 7 — shared worker↔web state. JSON snapshot the worker publishes and the
 # dashboard reads (/api/movers-worker). Path is shared across processes, like

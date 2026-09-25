@@ -406,7 +406,7 @@ pytest --cov=src       # coverage
 - **Catalyst-triggered alerts** (`src/catalysts/catalyst_alerts.py`, config
   `movers.catalyst_alerts`, **default off**): the movers path is structurally
   late — a name only reaches it after moving enough to appear on a provider's
-  gainers list, and rediscovery runs every ~5 cycles. This fires on the **news
+  gainers list, and rediscovery runs every ~8 cycles. This fires on the **news
   wire** instead, where a catalyst has a definite publication time that precedes
   the price reaction. `news_feed.fetch_news_batch()` is one Alpaca request for a
   whole watchlist (or, with `universe: all`, the market-wide firehose, so a name
@@ -483,7 +483,37 @@ pytest --cov=src       # coverage
 - **Movers provider chain** (`src/scanner/movers_providers.py`, config
   `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
   FMP-only, so an exhausted daily quota took the intraday path down entirely.
-  Each source now walks the chain and the **first provider that answers wins**.
+  Each source walks the chain; `movers.provider_mode` decides how.
+  **`merge` (default)** queries every configured provider that serves the
+  source and **unions** the answers. `first_wins` — the original chain, where
+  the first provider that answers serves the source and the rest are never
+  asked — made the *leading* provider's screener universe the entire candidate
+  pool: a name outside it was invisible with nothing recorded in `withheld` or
+  `suppressed`, because it never entered the pipeline at all. Observed
+  2026-09-25: MSGY ran $2.13 → $5.95 (+202%) and never alerted, though
+  replaying its own tape through the live scorer clears the alert floor for
+  seven consecutive windows from 10:35 ET (100/100 at 10:45) and the LULD halt
+  that legitimately silences it did not begin until ~11:07. Providers disagree
+  about what a "mover" is — universe, float/liquidity floors, SIP vs IEX — so
+  the union is the only pool that reflects the market rather than one vendor's
+  screener. Cross-**provider** duplicates are resolved in `_fetch_source` by
+  **chain order**, deliberately *not* by the cross-**source** rule one level
+  down (which keeps the largest-magnitude change): that rule was reasoned about
+  for two endpoints of one feed, and letting rival vendors compete under it
+  would mean the most extreme quote always wins — and since these lists report
+  **unadjusted** changes, that systematically selects whichever provider is
+  most wrong, across the whole band below `suspect_change_pct` where the
+  corporate-action guard never looks. A later provider only ever *adds*
+  symbols. A provider failing beside a working one is now a **partial** outage
+  (`<source>: <provider>: could_not_answer` in `source_errors`, dashboard reads
+  `degraded`) where first-wins hid it; everything failing is still
+  `no_provider_answered`. **Cost:** merge multiplies calls per source by the
+  providers serving it, and `worker.rediscover_every_cycles` is set to **8**
+  (not 5) to pay for it: ~68 discoveries/day and ~204 FMP calls, inside its
+  250/day free tier, where 5 would be ~108 and ~324 — past it, and an exhausted
+  FMP quota is the exact failure the chain was built for. The price is up to
+  ~8 minutes before a brand-new mover is first seen, bought against a union
+  that can see it at all. Watch `source_errors`.
   The adapters return `list`-vs-`None` on purpose: an **empty list is a real
   answer** (a quiet market) and stops the chain, while `None` means "could not
   answer" (no key, HTTP error, or a payload the API doesn't document — FMP

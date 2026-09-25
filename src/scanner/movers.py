@@ -175,17 +175,46 @@ def last_withheld() -> list[dict]:
     return [dict(entry) for entry in _health()["withheld"]]
 
 
+def _merge_mode() -> bool:
+    """True when every provider is queried and the answers unioned.
+
+    An unknown value is loud rather than silently picking a behaviour, since
+    both modes look like "discovery ran" from the outside.
+    """
+    mode = str(config.MOVERS_PROVIDER_MODE or "merge").strip().lower()
+    if mode not in {"merge", "first_wins"}:
+        log.warning(f"movers: unknown provider_mode '{mode}' — using 'merge'")
+        return True
+    return mode == "merge"
+
+
 def _fetch_source(source: str) -> list[dict]:
-    """Fetch one mover list, walking the configured provider chain.
+    """Fetch one mover list from the configured providers.
 
-    The first provider that actually answers wins. An **empty** answer is a
-    real answer — a quiet market — and stops the chain; only a provider that
-    *cannot* answer (no key, HTTP error, undocumented payload) falls through.
-    That distinction is why the adapters return None-vs-list rather than just a
-    list: FMP replies to an exhausted quota with HTTP 200 and a JSON object, so
-    "looks successful but isn't" has to be detectable.
+    Two modes (``movers.provider_mode``):
 
-    Never raises; records the outcome and the serving provider in the per-run
+    ``merge`` (default) queries EVERY configured provider that serves the
+    source and unions the answers. First-wins made the leading provider's
+    screener universe the whole candidate pool: a name outside it was invisible
+    with nothing recorded anywhere, because it never entered the pipeline at
+    all. Observed 2026-09-25 — MSGY ran $2.13 → $5.95 (+202%) and never
+    alerted, though replaying its own tape through the live scorer clears the
+    alert floor for seven consecutive windows from 10:35 ET (peaking at 100/100
+    at 10:45) and the LULD halt that legitimately silences it did not begin
+    until ~11:07. Providers disagree about what a "mover" is — universe, float
+    and liquidity floors, SIP vs IEX — so the union is the only pool that
+    reflects the market rather than one vendor's screener.
+
+    ``first_wins`` is the original chain: the first provider that ANSWERS
+    serves the source and the rest are never asked.
+
+    In both modes an **empty** answer is a real answer (a quiet market); only a
+    provider that *cannot* answer (no key, HTTP error, undocumented payload)
+    is a failure. That distinction is why the adapters return None-vs-list: FMP
+    replies to an exhausted quota with HTTP 200 and a JSON object, so "looks
+    successful but isn't" has to be detectable.
+
+    Never raises; records the outcome and the serving provider(s) in the per-run
     health so a soft failure cannot pass for an empty market.
     """
     health = _health()
@@ -198,7 +227,16 @@ def _fetch_source(source: str) -> list[dict]:
         health["failed"].append(f"{source}: unknown_source")
         return []
 
+    merge = _merge_mode()
     tried: list[str] = []
+    answered: list[str] = []
+    # Held back until we know whether anything answered: a provider failing
+    # beside a working one is a PARTIAL outage (the union is missing its
+    # names, and the dashboard should read `degraded`), while everything
+    # failing is a total one that `no_provider_answered` already states.
+    # Recording both would just say it twice.
+    partial_failures: list[str] = []
+    merged: dict[str, dict] = {}
     for provider in provider_chain():
         if source not in provider.supports:
             continue          # not a failure — this provider never serves it
@@ -215,13 +253,43 @@ def _fetch_source(source: str) -> list[dict]:
                         f"({type(exc).__name__})")
             rows = None
         if rows is None:
+            if merge:
+                # Under first-wins this was invisible whenever a later provider
+                # answered — the list just quietly lost that vendor's names.
+                partial_failures.append(f"{source}: {provider.name}: could_not_answer")
             continue          # could not answer — try the next provider
+        answered.append(provider.name)
+        if not merge:
+            health["succeeded"].append(source)
+            health["served_by"][source] = provider.name
+            if len(tried) > 1:
+                log.info(f"movers: {source} served by fallback provider "
+                         f"'{provider.name}' after {', '.join(tried[:-1])} could not")
+            return rows
+        # Dedupe ACROSS PROVIDERS here, in chain order, so only one row per
+        # symbol reaches the cross-source merge in fetch_market_movers. That
+        # merge keeps the largest-magnitude change — a rule reasoned about for
+        # two ENDPOINTS of one provider, which carry different snapshots of the
+        # same feed. Letting rival vendors compete under it would mean the most
+        # extreme quote always wins, and since these lists report UNADJUSTED
+        # changes, that systematically selects whichever provider is most wrong
+        # (the corporate-action guard only re-checks past `suspect_change_pct`,
+        # so the whole band below it would silently skew). Chain order is the
+        # operator's stated preference and is deterministic; a later provider
+        # only ever ADDS symbols the earlier ones did not list.
+        for row in rows:
+            try:
+                symbol = str(row.get("symbol", "")).upper().strip()
+            except Exception:
+                continue
+            if symbol and symbol not in merged:
+                merged[symbol] = row
+
+    if merge and answered:
         health["succeeded"].append(source)
-        health["served_by"][source] = provider.name
-        if len(tried) > 1:
-            log.info(f"movers: {source} served by fallback provider "
-                     f"'{provider.name}' after {', '.join(tried[:-1])} could not")
-        return rows
+        health["served_by"][source] = "+".join(answered)
+        health["failed"].extend(partial_failures)
+        return list(merged.values())
 
     reason = "no_provider_answered" if tried else "no_provider_configured"
     log.warning(f"movers: {source} unavailable — {reason} "

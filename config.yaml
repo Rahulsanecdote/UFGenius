@@ -19,6 +19,26 @@ movers:
   # gainers/losers only (its most-actives rows carry no price); Polygon is
   # gainers/losers too; FMP is the only one covering most_actives.
   providers: [alpaca, polygon, fmp]
+  # How the chain above is used.
+  #   merge       — query EVERY configured provider that serves a source and
+  #                 UNION the answers (default). First-wins made the leading
+  #                 provider's screener universe the entire candidate pool, so
+  #                 a name outside it was invisible with nothing recorded
+  #                 anywhere: it never entered the pipeline. MSGY on 2026-09-25
+  #                 ran +202% and never alerted, though replaying its own tape
+  #                 through the live scorer clears the alert floor for seven
+  #                 straight windows from 10:35 ET, half an hour before the
+  #                 halt that legitimately silenced it.
+  #   first_wins  — the original chain: the first provider that ANSWERS serves
+  #                 the source and the rest are never asked.
+  # COST: merge multiplies calls per source by the number of providers serving
+  # it. worker.rediscover_every_cycles is set to 8 (not 5) to pay for it: at 8
+  # cycles x 60s over 07:00-16:00 that is ~68 discoveries/day and ~204 FMP
+  # calls, inside its 250/day free tier; at 5 it would be ~108 and ~324, past
+  # it. An exhausted FMP quota answers HTTP 200 with a JSON object — the exact
+  # failure the chain was built for — so watch /api/movers `source_errors`, and
+  # fall back to first_wins or lengthen the cadence further if it still bites.
+  provider_mode: merge
   min_price: 1.0            # drop sub-$1 names (penny/liquidity guard); lower at your own risk
   max_price: 0              # 0 = no upper cap
   min_change_pct: 3.0       # only consider names moving at least this % (absolute)
@@ -136,7 +156,15 @@ movers:
   # movers.monitor.enabled true for it to actually push.
   worker:
     poll_interval_sec: 60        # monitor re-evaluation cadence
-    rediscover_every_cycles: 5   # re-run discovery every N cycles (≈5 min at 60s)
+    # Re-run discovery every N cycles (≈N minutes at poll_interval_sec: 60).
+    # 8, not 5, because provider_mode: merge multiplies calls per source by the
+    # providers serving it: at 5 this is ~108 discoveries/day and FMP lands on
+    # ~324 calls, past its 250/day free tier. At 8 it is ~68 discoveries and
+    # ~204 FMP calls, with headroom. The cost of the slower cadence is up to
+    # ~8 minutes before a brand-new mover is first seen, against a union that
+    # can see it at all — MSGY scored 100/100 for 30 minutes and was never
+    # discovered, so coverage is worth more here than the extra 3 minutes.
+    rediscover_every_cycles: 8
     market_hours_only: true      # only scan during the pre-market→close window
     # Phase 7 — shared worker↔web state (the worker publishes a snapshot each
     # cycle; the dashboard reads it via /api/movers-worker).
