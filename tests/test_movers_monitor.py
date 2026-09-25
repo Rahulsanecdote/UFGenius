@@ -11,7 +11,8 @@ from src.scanner import movers_monitor as mm
 
 
 def _thresholds(**over):
-    base = dict(MOVERS_MONITOR_MOMENTUM_FLIP=-0.5, MOVERS_MONITOR_REQUIRE_VWAP_HOLD=True,
+    base = dict(MOVERS_MONITOR_ENABLED=True,
+                MOVERS_MONITOR_MOMENTUM_FLIP=-0.5, MOVERS_MONITOR_REQUIRE_VWAP_HOLD=True,
                 MOVERS_MONITOR_RVOL_FLOOR=1.0, MOVERS_MONITOR_MIN_SCORE=50.0,
                 MOVERS_MONITOR_ALERT_ON_INVALIDATION=True)
     base.update(over)
@@ -132,3 +133,53 @@ def test_enrich_error_does_not_break_evaluate():
     trans = _with_thresholds(lambda: monitor.evaluate(enrich=boom))
     assert trans == []                     # no crash
     assert len(monitor.active()) == 1      # still watched (unchanged)
+
+
+# ── the master switch (movers.monitor.enabled / MOVERS_MONITOR_ENABLED) ───────
+# It used to gate NOTHING: config.py defined it and no module read it, so the
+# worker invalidated and pushed "stand down" alerts with it set false.
+
+
+def test_disabled_monitor_does_not_invalidate_a_dead_setup():
+    monitor = mm.MoversMonitor()
+    monitor.watch([_cand()])
+
+    def fade(c):
+        c.rel_volume, c.momentum_pct, c.vwap_pct, c.score = 0.5, -3.0, -2.0, 30.0
+
+    alert = MagicMock()
+    trans = _with_thresholds(lambda: monitor.evaluate(enrich=fade, alert=alert),
+                             MOVERS_MONITOR_ENABLED=False)
+    assert trans == []
+    assert len(monitor.active()) == 1      # still watched, not transitioned
+    alert.assert_not_called()
+
+
+def test_disabled_monitor_still_refreshes_live_signals():
+    """The dashboard watch set and the price stream read these — don't blind them."""
+    monitor = mm.MoversMonitor()
+    monitor.watch([_cand()])
+
+    def fade(c):
+        c.rel_volume, c.momentum_pct, c.vwap_pct, c.score = 0.5, -3.0, -2.0, 30.0
+
+    _with_thresholds(lambda: monitor.evaluate(enrich=fade),
+                     MOVERS_MONITOR_ENABLED=False)
+    state = monitor.active()[0]
+    assert state.updates == 1                      # the refresh ran
+    assert state.candidate.score == 30.0           # and landed on the candidate
+
+
+def test_alert_on_invalidation_is_a_no_op_without_the_master_switch():
+    """Both must be on to push — render.yaml sets them as a pair for that reason."""
+    monitor = mm.MoversMonitor()
+    monitor.watch([_cand()])
+    alert = MagicMock()
+
+    def fade(c):
+        c.rel_volume, c.momentum_pct, c.vwap_pct, c.score = 0.5, -3.0, -2.0, 30.0
+
+    _with_thresholds(lambda: monitor.evaluate(enrich=fade, alert=alert),
+                     MOVERS_MONITOR_ENABLED=False,
+                     MOVERS_MONITOR_ALERT_ON_INVALIDATION=True)
+    alert.assert_not_called()

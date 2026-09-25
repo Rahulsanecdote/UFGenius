@@ -153,8 +153,10 @@ services:
         value: "3.12.2"
       - key: MOVERS_ALERTS_ENABLED                 # push new-setup alerts (Telegram)
         value: "true"
-      - key: MOVERS_MONITOR_ALERT_ON_INVALIDATION  # push invalidation alerts
+      - key: MOVERS_MONITOR_ENABLED                # invalidate setups that break down
         value: "true"
+      - key: MOVERS_MONITOR_ALERT_ON_INVALIDATION  # ...and push a note when they do
+        value: "true"                              # (no-op unless the line above is set)
       - key: MOVERS_STREAM_ENABLED                 # live Alpaca tape → faster reaction
         value: "true"
       # Discovery walks the movers.providers chain [alpaca, polygon, fmp] and the
