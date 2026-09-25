@@ -406,7 +406,7 @@ pytest --cov=src       # coverage
 - **Catalyst-triggered alerts** (`src/catalysts/catalyst_alerts.py`, config
   `movers.catalyst_alerts`, **default off**): the movers path is structurally
   late — a name only reaches it after moving enough to appear on a provider's
-  gainers list, and rediscovery runs every ~5 cycles. This fires on the **news
+  gainers list, and rediscovery runs every ~8 cycles. This fires on the **news
   wire** instead, where a catalyst has a definite publication time that precedes
   the price reaction. `news_feed.fetch_news_batch()` is one Alpaca request for a
   whole watchlist (or, with `universe: all`, the market-wide firehose, so a name
@@ -508,9 +508,12 @@ pytest --cov=src       # coverage
   (`<source>: <provider>: could_not_answer` in `source_errors`, dashboard reads
   `degraded`) where first-wins hid it; everything failing is still
   `no_provider_answered`. **Cost:** merge multiplies calls per source by the
-  providers serving it — at the default cadence (~108 discoveries/day) FMP goes
-  from ~108 calls/day to ~324, past its 250/day free tier, and an exhausted FMP
-  quota is the exact failure the chain was built for. Watch `source_errors`.
+  providers serving it, and `worker.rediscover_every_cycles` is set to **8**
+  (not 5) to pay for it: ~68 discoveries/day and ~204 FMP calls, inside its
+  250/day free tier, where 5 would be ~108 and ~324 — past it, and an exhausted
+  FMP quota is the exact failure the chain was built for. The price is up to
+  ~8 minutes before a brand-new mover is first seen, bought against a union
+  that can see it at all. Watch `source_errors`.
   The adapters return `list`-vs-`None` on purpose: an **empty list is a real
   answer** (a quiet market) and stops the chain, while `None` means "could not
   answer" (no key, HTTP error, or a payload the API doesn't document — FMP
