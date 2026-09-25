@@ -450,16 +450,36 @@ pytest --cov=src       # coverage
   deliberately carries no creds so the worker service alerts exactly once.
 - **Held-back alerts are disclosed** (`MoversAlerter.last_suppressed()`): a
   candidate that clears `alerts.min_score` but is blocked by another rule is
-  recorded with its reason (`no_intraday_data` / `halted` / `already_alerted`)
-  and published in the worker snapshot. Observed 2026-08-19: ZSTK ran +370%,
+  recorded with its reason (`no_intraday_data` / `stale_session_data` /
+  `halted` / `already_alerted`) and published in the worker snapshot. Observed 2026-08-19: ZSTK ran +370%,
   scored 85, entered the watch set, and never alerted because
   `alerts.require_enriched` (default **on**) refuses a candidate whose intraday
   bars are missing — its score would then be the *discovery* score,
   `min(85, |change| × 2.5)`, i.e. magnitude alone, the weakest thing measured.
   The suppression is correct; being unable to tell it apart from "never
-  discovered" was not. The dashboard shows `no_intraday_data`/`halted` only
-  (`already_alerted` is not a withheld decision), and sub-threshold candidates
-  are never listed — the majority would bury the entries that mean something.
+  discovered" was not. The dashboard shows `no_intraday_data`/
+  `stale_session_data`/`halted` only (`already_alerted` is not a withheld
+  decision), and sub-threshold candidates are never listed — the majority would
+  bury the entries that mean something.
+  **`require_fresh_session`** (default **on**) is the second half of that rule
+  and closes what `require_enriched` structurally cannot see. The movers chain
+  reports the **previous** session before 09:30 (the same staleness
+  `premarket_movers` exists for), and the intraday fetch then returns
+  *yesterday's* bars — so `enriched` is True, the metrics are real, and every
+  one of them describes a finished day while the alert reads as live. Observed
+  2026-09-25: alerts fired at 08:18–08:19 ET carried Thursday's closing prices
+  and Thursday's day moves verbatim (HUBC $2.33 −27.4%, TRT $7.26 −36.6%,
+  AVX $5.45 +32.9% — each an exact match for the prior session's close and
+  change). `_enrich_candidate` now records the last closed bar's timestamp on
+  the candidate (`bars_as_of`, naive UTC) and the alerter requires it to fall
+  on the **same ET calendar date** as the alert. The ET date, not an age in
+  hours, is what "this session" means, and it stays right across weekends and
+  holidays with no market calendar. An unreadable timestamp counts as stale:
+  the gate may only pass when freshness is *established*, never merely
+  unrefuted. Held-back candidates are disclosed like every other reason. This
+  suppresses the 07:00–09:30 phantom alerts; making that window produce *real*
+  pre-market candidates means wiring `premarket_movers` into the worker's
+  discovery, which this does not do.
 - **Movers provider chain** (`src/scanner/movers_providers.py`, config
   `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
   FMP-only, so an exhausted daily quota took the intraday path down entirely.

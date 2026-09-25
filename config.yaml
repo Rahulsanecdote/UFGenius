@@ -103,6 +103,13 @@ movers:
     enabled: false          # master switch
     min_score: 70           # only alert candidates scoring >= this (0-100)
     require_enriched: true   # only alert when live intraday signals are present
+    # ...and only when those signals are from TODAY's session. Before 09:30 the
+    # movers chain serves the PREVIOUS session (see premarket_movers), and the
+    # intraday fetch then returns yesterday's bars, so require_enriched passes
+    # on data describing a finished day. Observed 2026-09-25: 08:18 ET alerts
+    # carried Thursday's closes and Thursday's day moves exactly. Held-back
+    # candidates are disclosed as `stale_session_data`, never dropped silently.
+    require_fresh_session: true
     dedup_ttl_sec: 1800     # don't re-alert the same ticker+direction within this window
     max_per_run: 10         # cap alerts per scan cycle (spam guard)
   # Phase 4 — post-open monitoring + invalidation. Keep watching alerted movers

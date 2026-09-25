@@ -7,7 +7,7 @@ including its namespaced tags.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -149,8 +149,11 @@ class TestActiveHalts:
 # ── movers wiring ────────────────────────────────────────────────────────────
 
 def _cand(ticker="WFF", **over):
+    # bars_as_of: the alerter's freshness gate treats a candidate with no
+    # timestamp as stale, which would mute the halt tests for the wrong reason.
     base = dict(ticker=ticker, price=3.19, change_pct=121.6, direction="long",
-                sources=["gainers"], score=77.0, base_score=77.0, enriched=True)
+                sources=["gainers"], score=77.0, base_score=77.0, enriched=True,
+                bars_as_of=datetime.now(timezone.utc).replace(tzinfo=None))
     base.update(over)
     return mv.MoverCandidate(**base)
 
