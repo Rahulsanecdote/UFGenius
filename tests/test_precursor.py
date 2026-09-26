@@ -193,3 +193,77 @@ def test_warmup_is_stated_and_enforced():
     one_short = _frame(_baseline(n=pc.warmup_bars() - 1))
     assert pc.detect_precursor(one_short) is None
     assert pc.detect_precursor(_frame(_baseline(n=pc.warmup_bars()))) is not None
+
+
+# ── the cost floor ───────────────────────────────────────────────────────────
+# Backtesting WITHOUT this returned profit factor 0.06 and an average loss of
+# -2.83R on 50 S&P names — not a verdict on the signal but on the geometry. A
+# measured trade risked $0.625/share on a $339 stock (0.184% of price) against
+# $1.356 of modelled round-trip cost (0.400%): friction was 2.17x the entire
+# risk unit, so a perfect entry stopping out exactly at its stop still lost ~2R.
+
+
+class TestCostFloor:
+    def _priced(self, price):
+        """The same coil geometry at an arbitrary price level.
+
+        Scaling the whole structure keeps compression, dry-up and expansion
+        identical while changing only the stop distance AS A FRACTION OF PRICE
+        — which is exactly what the floor measures.
+        """
+        k = price / 9.5
+        return _frame(
+            [(b[0] * k, b[1] * k, b[2] * k, b[3]) for b in _baseline()]
+            + [(b[0] * k, b[1] * k, b[2] * k, b[3]) for b in _coil()]
+            + [tuple([v * k for v in _expansion()[:3]] + [_expansion()[3]])]
+        )
+
+    def test_measured_and_exposed(self):
+        m = pc.detect_precursor(self._priced(9.5))
+        assert m["risk_pct"] is not None
+        assert m["round_trip_cost_pct"] == pytest.approx(0.4, abs=0.01)
+        assert m["risk_cost_multiple"] == pytest.approx(
+            m["risk_pct"] / m["round_trip_cost_pct"], rel=1e-3)
+
+    def test_the_same_setup_passes_cheap_and_fails_expensive(self):
+        """The ONLY difference is price level. The coil is a fixed fraction of
+        price here, so this isolates nothing but risk-vs-friction... which is
+        the point: the floor must not care about the pattern, only the economics."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "BACKTEST_COMMISSION_PCT", 0.0)
+            mp.setattr(cfg, "BACKTEST_SLIPPAGE_PCT", 0.0001)   # 1bp/side, liquid
+            cheap = pc.evaluate_precursor(self._priced(9.5))
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "BACKTEST_COMMISSION_PCT", 0.01)   # 1%/side, brutal
+            mp.setattr(cfg, "BACKTEST_SLIPPAGE_PCT", 0.01)
+            dear = pc.evaluate_precursor(self._priced(9.5))
+        assert cheap["enter"] is True
+        assert dear["enter"] is False
+        assert any("too tight to pay for itself" in r for r in dear["reasons"])
+
+    def test_the_refusal_states_both_numbers(self):
+        """An operator must be able to see WHY without reading the source."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "BACKTEST_COMMISSION_PCT", 0.01)
+            mp.setattr(cfg, "BACKTEST_SLIPPAGE_PCT", 0.01)
+            d = pc.evaluate_precursor(self._priced(9.5))
+        reason = next(r for r in d["reasons"] if "too tight" in r)
+        assert "% of price" in reason and "round-trip cost" in reason
+        assert "need 2.0x" in reason
+
+    def test_zero_disables_it(self):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "BACKTEST_COMMISSION_PCT", 0.01)
+            mp.setattr(cfg, "BACKTEST_SLIPPAGE_PCT", 0.01)
+            mp.setattr(cfg, "PRECURSOR_MIN_RISK_COST_MULTIPLE", 0.0)
+            assert pc.evaluate_precursor(self._priced(9.5))["enter"] is True
+
+    def test_it_gates_the_backtest_entry_too(self):
+        """The guard has to live in the evaluator, not the harness — otherwise
+        the backtest and the live path would disagree about what a trade is."""
+        from src.backtest.intraday_engine import _STRATEGIES
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "BACKTEST_COMMISSION_PCT", 0.01)
+            mp.setattr(cfg, "BACKTEST_SLIPPAGE_PCT", 0.01)
+            assert _STRATEGIES["precursor"](self._priced(9.5)) is None

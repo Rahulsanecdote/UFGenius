@@ -585,6 +585,11 @@ PRECURSOR_MIN_RANGE_POSITION: float = env_float(
     _as_float(_PRECURSOR.get("min_range_position", 0.70), 0.70))
 PRECURSOR_REQUIRE_ABOVE_VWAP: bool = env_bool(
     "PRECURSOR_REQUIRE_ABOVE_VWAP", bool(_PRECURSOR.get("require_above_vwap", True)))
+# Stop distance must be at least this multiple of modelled round-trip cost, or
+# friction eats the risk unit and the trade is losing arithmetic. 0 disables.
+PRECURSOR_MIN_RISK_COST_MULTIPLE: float = env_float(
+    "PRECURSOR_MIN_RISK_COST_MULTIPLE",
+    _as_float(_PRECURSOR.get("min_risk_cost_multiple", 2.0), 2.0))
 
 # Explainability layer (upgrade plan P3.1): optional LLM bull/bear narrative.
 # Advisory only — never gates or places an order. Default OFF and cost-capped.

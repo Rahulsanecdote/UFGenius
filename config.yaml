@@ -408,6 +408,18 @@ precursor:
   min_expansion_range: 1.50   # newest bar true range / coil average true range
   min_range_position: 0.70    # close must sit this far up the day's high-low range
   require_above_vwap: true    # only look for upside resolutions
+  # COST FLOOR. The coil low sits close to price by construction, so on a
+  # high-priced name the whole risk unit can be SMALLER than the cost of
+  # getting in and out — losing arithmetic before the signal has any say.
+  # Backtested on 50 S&P names (1m, 2026-09-21..25) WITHOUT this: profit factor
+  # 0.06, average loss -2.83R. A measured trade risked $0.625/share on a $339
+  # stock (0.184% of price) against $1.356 round-trip cost (0.400%) — friction
+  # 2.17x the risk unit.
+  # At multiple N a loss costs ~(1 + 1/N)R and a 2R target nets ~(2 - 1/N)R:
+  # N=2 is ~1.5R against 1.5R, N=3 is ~1.67R against 1.33R. Higher is better
+  # economics and fewer setups. Derived from backtest_commission_pct +
+  # backtest_slippage_pct, not fitted to returns. 0 disables.
+  min_risk_cost_multiple: 2.0
 
 
 # Explainability layer (upgrade plan P3.1). An OPTIONAL LLM narrative that reads

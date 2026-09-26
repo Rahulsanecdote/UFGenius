@@ -311,6 +311,28 @@ pytest --cov=src       # coverage
   5m produced *nothing*, because the detector had no history to have an opinion
   with until after the move ended. **It is a 1-minute tool**; on 5m it is quiet
   through exactly the window morning momentum happens in.
+  **Cost floor** (`precursor.min_risk_cost_multiple`, default 2.0, 0 disables):
+  the stop must sit at least that multiple of modelled round-trip friction away
+  from price. The coil low is close to price *by construction*, so on a
+  high-priced name the entire risk unit can be smaller than the cost of getting
+  in and out — losing arithmetic before the signal has any say. Measured
+  2026-09-26 on 50 S&P names (1m, 09-21→25) *without* the floor: 127 trades,
+  win rate 18.9%, **profit factor 0.06**, average loss **−2.83R**. Pulling one
+  trade apart: $0.625/share of risk on a $339 stock (0.184% of price) against
+  $1.356 of modelled round-trip cost (0.400%) — friction **2.17× the whole risk
+  unit**, so a perfect entry stopping exactly at its stop still loses ~2R and a
+  2R target nets nothing. At multiple N a loss costs ~(1 + 1/N)R and a 2R
+  target nets ~(2 − 1/N)R, so N=2 is ~1.5R against 1.5R. Derived from
+  `backtest_commission_pct` + `backtest_slippage_pct`, **not fitted to
+  returns** — the distinction that separates it from the curve-fitting this
+  module exists to avoid. It lives in the evaluator rather than the harness so
+  the backtest and the live path cannot disagree about what a trade is.
+  That run is **not a fair test of the idea**, and both reasons are worth
+  keeping: S&P mega-caps are the wrong regime (a 6-bar 1m coil on a $339 stock
+  spans 0.18% of price; on a $3 microcap the same structure spans several
+  percent), and the default cost model charges an illiquid-name spread on a
+  name whose real round trip is a basis point or two. The microcap re-run that
+  would settle it was rate-limited by yfinance and still owes an answer.
   Registered as a third entry in the intraday backtest
   (`--mode intraday-backtest --entry precursor --interval 1m`) so it is
   measurable out-of-sample *before* it is allowed to alert anywhere.

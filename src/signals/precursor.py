@@ -167,6 +167,14 @@ def detect_precursor(df: pd.DataFrame) -> Optional[dict]:
         range_pos = (last_close - day_low) / day_range
 
     session_vwap = vwap(df)
+    # Risk unit vs round-trip friction. A coil low sits very close to price by
+    # construction, so on a high-priced name the entire risk unit can be
+    # SMALLER than the cost of getting in and out — at which point the trade is
+    # losing arithmetic before the signal has any say. Measured here, enforced
+    # in evaluate_precursor.
+    risk = (last_close - coil_low) if coil_low is not None else None
+    cost = last_close * (float(config.BACKTEST_COMMISSION_PCT)
+                         + float(config.BACKTEST_SLIPPAGE_PCT)) * 2.0
     return {
         "compression": round(coil_atr / base_atr, 4),
         "coil_atr": round(coil_atr, 4),
@@ -186,6 +194,11 @@ def detect_precursor(df: pd.DataFrame) -> Optional[dict]:
         "last_price": round(last_close, 4),
         "coil_bars": coil_n,
         "baseline_bars": base_n,
+        "risk_pct": (round(risk / last_close * 100.0, 4)
+                     if risk is not None and last_close else None),
+        "round_trip_cost_pct": round(cost / last_close * 100.0, 4) if last_close else None,
+        "risk_cost_multiple": (round(risk / cost, 3)
+                               if risk is not None and cost > 0 else None),
     }
 
 
@@ -228,6 +241,24 @@ def evaluate_precursor(df: pd.DataFrame, now: Optional[datetime] = None) -> dict
     high_in_range = (m["range_position"] is not None
                      and m["range_position"] >= float(config.PRECURSOR_MIN_RANGE_POSITION))
     vwap_ok = (m["above_vwap"] is True) or not bool(config.PRECURSOR_REQUIRE_ABOVE_VWAP)
+    # Cost floor. The stop must be far enough away that round-trip friction is
+    # a fraction of the risk unit rather than a multiple of it. Backtesting the
+    # detector on 50 S&P names (1m, 2026-09-21..25) returned profit factor 0.06
+    # and an average loss of -2.83R -- not a verdict on the signal but on the
+    # geometry: a measured trade risked $0.625/share on a $339 stock (0.184% of
+    # price) against $1.356 of modelled round-trip cost (0.400%), so friction
+    # was 2.17x the whole risk unit. A perfect entry stopping out exactly at
+    # its stop still loses ~2R, and a 2R target nets nothing.
+    #
+    # At multiple N a loss costs about (1 + 1/N)R and a 2R target nets about
+    # (2 - 1/N)R, so N=2 is roughly 1.5R against 1.5R and N=3 is 1.67R against
+    # 1.33R. Higher is better economics and fewer setups. This is DERIVED from
+    # the cost model, not fitted to returns -- the distinction that keeps it
+    # from being the curve-fitting this module exists to avoid.
+    min_mult = float(config.PRECURSOR_MIN_RISK_COST_MULTIPLE)
+    risk_ok = (min_mult <= 0
+               or (m["risk_cost_multiple"] is not None
+                   and m["risk_cost_multiple"] >= min_mult))
 
     reasons: list[str] = []
     if compressed:
@@ -254,7 +285,7 @@ def evaluate_precursor(df: pd.DataFrame, now: Optional[datetime] = None) -> dict
     # out of strength, and flatly against what this detector claims to look
     # for. Volume dry-up is the only genuine grade here: it is what separates a
     # coil from a tape that merely went quiet.
-    if compressed and expanding and high_in_range and vwap_ok:
+    if compressed and expanding and high_in_range and vwap_ok and risk_ok:
         signal = "STRONG_BUY" if dry else "BUY"
     else:
         signal = "HOLD"
@@ -266,6 +297,12 @@ def evaluate_precursor(df: pd.DataFrame, now: Optional[datetime] = None) -> dict
             reasons.append("Coiled low in the day's range — not a continuation setup")
         elif not vwap_ok:
             reasons.append("Below VWAP")
+        elif not risk_ok:
+            mult = m["risk_cost_multiple"]
+            reasons.append(
+                f"Stop too tight to pay for itself — risk {m['risk_pct']:.3f}% of price "
+                f"vs {m['round_trip_cost_pct']:.3f}% round-trip cost"
+                + (f" ({mult:.2f}x, need {min_mult:.1f}x)" if mult is not None else ""))
 
     score = (
         50.0
