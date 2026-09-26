@@ -281,6 +281,39 @@ pytest --cov=src       # coverage
   (`src/backtest/intraday_engine.py`); still judge it on paper via
   `/api/paper-scorecard` + `/api/attribution` before real money. See
   `docs/SWEEP_RECLAIM.md`.
+- **Pre-expansion detection (spike precursor)** (`src/signals/precursor.py`,
+  config `precursor:`, **default off**): the third angle on the movers path
+  being structurally late. Discovery reacts to magnitude *after* a name reaches
+  a gainers list; the catalyst wire attacks that from the news side; this
+  attacks it from **price structure** — the state a tape is in *before* the
+  vertical part of a move. Four features, one or two parameters each: range
+  **compression** (coil ATR vs a non-overlapping baseline ATR), **volume
+  dry-up** during the coil (what separates a coil from a tape that merely went
+  quiet), an **expansion trigger** (the newest bar clearing the coil high with
+  both range and volume behind it), and **upper-range position + VWAP** (so the
+  resolution being looked for is upward). Three non-overlapping windows —
+  trigger / coil / baseline — because a coil window containing the trigger
+  looks widest exactly when it fires, and a baseline containing the coil is a
+  reference dragged toward the thing it measures. The stop hint is the **coil
+  low**, an absolute level: back inside the range and the premise is false.
+  **Not prediction** — contraction precedes expansion only in the weak sense
+  that expansion has to come out of something; it says nothing about direction,
+  and most coils resolve into noise. A coil alone is a **watch** state and
+  never an entry, for the same reason. Deliberately *not* a candlestick-pattern
+  library: individual candle shapes on 1m/5m microcap bars are mostly
+  microstructure, and "every pattern × every parameter" is the search space
+  that produces something beautiful in-sample and worthless out of it — the
+  thing `--mode optimize`'s overfitting haircut and `candidate_ranking: rotate`
+  exist to fight.
+  **The binding constraint is warm-up, not any threshold.** `warmup_bars()` is
+  coil + baseline + 2 = 28 at the defaults: 28 minutes on 1m bars, **140 on
+  5m**. Replaying MSGY (2026-09-25, $2.13 → $5.95 between 09:30 and 11:07) at
+  5m produced *nothing*, because the detector had no history to have an opinion
+  with until after the move ended. **It is a 1-minute tool**; on 5m it is quiet
+  through exactly the window morning momentum happens in.
+  Registered as a third entry in the intraday backtest
+  (`--mode intraday-backtest --entry precursor --interval 1m`) so it is
+  measurable out-of-sample *before* it is allowed to alert anywhere.
 - **Intraday backtest harness (`--mode intraday-backtest`):** the out-of-sample
   check for the intraday entries (`src/backtest/intraday_engine.py`,
   `backtest_intraday`, config `intraday_backtest:`). Replays the breakout /

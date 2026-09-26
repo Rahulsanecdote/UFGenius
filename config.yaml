@@ -376,6 +376,40 @@ observability:
     max_records: 400                         # bounded ledger (oldest trimmed)
     path: "data/alert_outcomes.json"
 
+# Pre-expansion (spike precursor) detection — src/signals/precursor.py.
+# The movers path is structurally LATE: a name reaches it only after moving
+# enough to appear on a gainers list. This detects the state a tape is in
+# BEFORE the vertical part of a move: range compressing on drying volume, price
+# held near the day's high, then the first bar whose range AND volume expand out
+# of the coil.
+#
+# NOT prediction. Contraction precedes expansion only in the weak sense that
+# expansion has to come out of something; it says nothing about direction, and
+# most coils resolve into noise. Useful as "look at this one now", harmful as a
+# trigger. Four features on purpose — a candlestick-pattern library with every
+# parameter tuned is a search space that produces something beautiful in-sample
+# and worthless out of it.
+#
+# DEFAULT OFF. Check it out-of-sample first:
+#   python bot.py --mode intraday-backtest --entry precursor --interval 5m
+# then judge it on measured alert outcomes, not on the backtest alone.
+# WARM-UP: coil_bars + baseline_bars + 2 = 28 bars before anything is measurable.
+# That is 28 minutes on 1m bars but 140 minutes on 5m — i.e. on 5m this is blind
+# until ~11:50 ET. MSGY on 2026-09-25 ran its whole $2.13 -> $5.95 leg between
+# 09:30 and 11:07 and produced NOTHING at 5m for exactly that reason. Run it on
+# 1m bars; on 5m it is quiet through the window morning momentum happens in.
+precursor:
+  enabled: false              # master switch (no-op until turned on)
+  coil_bars: 6                # bars forming the compression window
+  baseline_bars: 20           # bars BEFORE the coil used as the reference range
+  max_compression: 0.70       # coil ATR / baseline ATR must be <= this to count as coiled
+  max_volume_dryup: 0.85      # coil volume / baseline volume — participation falling during the coil
+  min_expansion_volume: 1.80  # newest bar volume / coil average volume
+  min_expansion_range: 1.50   # newest bar true range / coil average true range
+  min_range_position: 0.70    # close must sit this far up the day's high-low range
+  require_above_vwap: true    # only look for upside resolutions
+
+
 # Explainability layer (upgrade plan P3.1). An OPTIONAL LLM narrative that reads
 # the verified quant snapshot and writes a human-readable bull/bear rationale for
 # the dashboard/alerts. Advisory ONLY — it never gates, sizes, or places an order,

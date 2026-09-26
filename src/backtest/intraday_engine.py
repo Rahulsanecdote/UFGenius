@@ -48,6 +48,7 @@ import pandas as pd
 
 from src.data.fetcher import _INTRADAY_DEFAULT_PERIOD, fetch_intraday
 from src.signals.intraday_signal import evaluate_intraday_entry
+from src.signals.precursor import evaluate_precursor
 from src.signals.sweep_reclaim import evaluate_sweep_reclaim
 from src.utils import config
 from src.utils.logger import get_logger
@@ -129,9 +130,23 @@ def _sweep_decision(window: pd.DataFrame) -> Optional[dict]:
     return {"stop_abs": float(stop_abs), "stop_distance": None, "signal": d.get("signal")}
 
 
+def _precursor_decision(window: pd.DataFrame) -> Optional[dict]:
+    d = evaluate_precursor(window)
+    if not d.get("enter"):
+        return None
+    # The coil LOW, absolute: the premise of the entry is that price left the
+    # compression and held. Back inside it and the premise is simply false, so
+    # that level is the stop rather than a volatility multiple away from it.
+    stop_abs = (d.get("precursor") or {}).get("stop_hint")
+    if stop_abs is None or not np.isfinite(float(stop_abs)):
+        return None
+    return {"stop_abs": float(stop_abs), "stop_distance": None, "signal": d.get("signal")}
+
+
 _STRATEGIES: dict[str, Callable[[pd.DataFrame], Optional[dict]]] = {
     "breakout": _breakout_decision,
     "sweep_reclaim": _sweep_decision,
+    "precursor": _precursor_decision,
 }
 
 

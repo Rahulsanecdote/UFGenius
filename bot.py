@@ -1184,7 +1184,7 @@ Examples:
     )
     parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST", "MOVERS", "PREMARKET"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist; MOVERS = the prior regular session's movers; PREMARKET = the CURRENT extended-hours session)")
     parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
-    parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim"], help="Intraday entry to backtest (for --mode intraday-backtest)")
+    parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim", "precursor"], help="Intraday entry to backtest (for --mode intraday-backtest)")
     parser.add_argument("--interval",     help="Intraday bar size for --mode intraday-backtest (e.g. 5m, 1m; default INTRADAY_DEFAULT_INTERVAL)")
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")

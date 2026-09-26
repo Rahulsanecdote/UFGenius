@@ -561,6 +561,31 @@ ALERT_OUTCOMES_PATH: str = _resolve_root(env(
     _ALERT_OUTCOMES.get("path") or str(_ROOT / "data" / "alert_outcomes.json"),
 ))
 
+# Pre-expansion (spike precursor) detection. Discovery/alerting only, default
+# OFF, and checked out-of-sample via `--mode intraday-backtest --entry precursor`.
+_PRECURSOR: dict = get("precursor", {})
+PRECURSOR_ENABLED: bool = env_bool(
+    "PRECURSOR_ENABLED", bool(_PRECURSOR.get("enabled", False)))
+PRECURSOR_COIL_BARS: int = env_int(
+    "PRECURSOR_COIL_BARS", _as_int(_PRECURSOR.get("coil_bars", 6), 6))
+PRECURSOR_BASELINE_BARS: int = env_int(
+    "PRECURSOR_BASELINE_BARS", _as_int(_PRECURSOR.get("baseline_bars", 20), 20))
+PRECURSOR_MAX_COMPRESSION: float = env_float(
+    "PRECURSOR_MAX_COMPRESSION", _as_float(_PRECURSOR.get("max_compression", 0.70), 0.70))
+PRECURSOR_MAX_VOLUME_DRYUP: float = env_float(
+    "PRECURSOR_MAX_VOLUME_DRYUP", _as_float(_PRECURSOR.get("max_volume_dryup", 0.85), 0.85))
+PRECURSOR_MIN_EXPANSION_VOLUME: float = env_float(
+    "PRECURSOR_MIN_EXPANSION_VOLUME",
+    _as_float(_PRECURSOR.get("min_expansion_volume", 1.80), 1.80))
+PRECURSOR_MIN_EXPANSION_RANGE: float = env_float(
+    "PRECURSOR_MIN_EXPANSION_RANGE",
+    _as_float(_PRECURSOR.get("min_expansion_range", 1.50), 1.50))
+PRECURSOR_MIN_RANGE_POSITION: float = env_float(
+    "PRECURSOR_MIN_RANGE_POSITION",
+    _as_float(_PRECURSOR.get("min_range_position", 0.70), 0.70))
+PRECURSOR_REQUIRE_ABOVE_VWAP: bool = env_bool(
+    "PRECURSOR_REQUIRE_ABOVE_VWAP", bool(_PRECURSOR.get("require_above_vwap", True)))
+
 # Explainability layer (upgrade plan P3.1): optional LLM bull/bear narrative.
 # Advisory only — never gates or places an order. Default OFF and cost-capped.
 _EXPLAIN: dict = get("explain", {})
