@@ -327,6 +327,16 @@ pytest --cov=src       # coverage
   returns** — the distinction that separates it from the curve-fitting this
   module exists to avoid. It lives in the evaluator rather than the harness so
   the backtest and the live path cannot disagree about what a trade is.
+  A/B on identical cached bars (15 frames, 5,619 bars, floor off then on)
+  refused **10 of 10** entries, and shows why: the risk/cost ratio has a median
+  of **0.20×** and **99.6% of bars sit below the 2× floor**. On 1m mega-cap
+  bars the coil-low stop is routinely a *fifth* of the round-trip cost. The
+  floor therefore makes the detector arithmetically inapplicable to that
+  regime rather than blocking it by a hardcoded price filter — and it adapts:
+  give it a cost model that matches the instrument and the same setups pass.
+  Which is the other half of the lesson, since 0.4% round-trip is far too
+  punitive for a name whose real spread is a basis point or two. The guard is
+  only ever as right as the cost model it reads.
   That run is **not a fair test of the idea**, and both reasons are worth
   keeping: S&P mega-caps are the wrong regime (a 6-bar 1m coil on a $339 stock
   spans 0.18% of price; on a $3 microcap the same structure spans several
