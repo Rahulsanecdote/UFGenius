@@ -3942,6 +3942,7 @@ HTML = '''
       // a withheld decision, it is one you already received.
       const SUPPRESS_TEXT = {
         no_intraday_data: 'no intraday data, quality unassessable',
+        no_session_volume: 'tape published no volume, participation unmeasurable',
         stale_session_data: 'intraday data is from a prior session',
         halted: 'halted, cannot act',
       };

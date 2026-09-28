@@ -128,7 +128,12 @@ class MoversAlerter:
         # the weakest thing we measure. Alerting on it unlabelled would mean
         # alerting hardest on exactly the cohort that fades.
         if config.MOVERS_ALERTS_REQUIRE_ENRICHED and not c.enriched:
-            return "no_intraday_data"
+            # Name the specific thing that was missing when enrichment recorded
+            # it. "no intraday data" is wrong for a pre-market tape that
+            # published prices but no volume — there were bars, we just cannot
+            # measure participation from them, and an operator reading the
+            # dashboard needs to know which.
+            return getattr(c, "enrich_blocked", "") or "no_intraday_data"
         # Enriched, but from the WRONG DAY. Before 09:30 the movers chain serves
         # the previous session, and the intraday fetch then returns yesterday's
         # bars, so rel-volume / VWAP / momentum all describe a finished session

@@ -89,6 +89,11 @@ class MoverCandidate:
     # catch that: there ARE bars, they are just the wrong day. This is what the
     # freshness gate reads. See MoversAlerter._suppression_reason.
     bars_as_of: "datetime | None" = None
+    # Why enrichment could not complete, when it could not. Empty means either
+    # "enriched" or "no attempt". The alerter names this in its suppression
+    # reason, so an unassessable candidate is disclosed as the specific thing it
+    # was missing rather than the generic "no intraday data".
+    enrich_blocked: str = ""
 
     # True when the feed's % change was extreme enough to check and the value
     # shown is our split-adjusted recomputation instead — whether that CORRECTED
@@ -512,12 +517,40 @@ def _enrich_candidate(c: "MoverCandidate", *, prepost: bool = False) -> "MoverCa
         if metrics is None:
             return c  # too few bars — keep base score
 
+        # `vwap` returns None exactly when the current session's total volume is
+        # <= 0, so this is the one check that says "this tape published prices
+        # but no participation". Measured 2026-09-28 08:43 ET on the keyless
+        # pre-market path: 12 candidates, every extended-hours bar carrying
+        # volume 0 (KOS had 50M shares across 09-22..09-25 and exactly 0 today),
+        # so `rel_volume` came back 0.0 and VWAP None for all of them.
+        #
+        # Claiming `enriched` there is a false claim, and it is not harmless.
+        # `_enriched_score` caps at gap(28) + rvol(30) + mom(24) + vwap(12) +
+        # brk(8); with rvol and vwap both structurally 0 the ceiling is 60
+        # against an alert floor of 70, so NO candidate could ever alert however
+        # large the move. Worse, it was invisible: `last_suppressed()` only
+        # records candidates that clear the floor, and these sat below it — so
+        # the morning showed candidates discovered, zero alerts and zero
+        # suppressions, indistinguishable from a quiet tape.
+        #
+        # Unenriched, the candidate keeps its magnitude-derived base score,
+        # clears the floor on a real gap, and is held back and DISCLOSED — the
+        # same treatment ZSTK's missing bars get. Renormalising the score over
+        # the measurable components instead was rejected: that manufactures an
+        # alert out of magnitude plus momentum, and magnitude alone is the
+        # weakest thing here measures.
+        v = _vwap(df)
+        if v is None:
+            c.enrich_blocked = "no_session_volume"
+            log.debug(f"movers: {c.ticker} extended tape published no volume — "
+                      "participation unmeasurable, left unenriched")
+            return c
+
         c.rel_volume = metrics.get("rel_volume")
         c.momentum_pct = metrics.get("momentum_pct")
         c.is_breakout = bool(metrics.get("is_breakout"))
-        v = _vwap(df)
         last = metrics.get("last_price")
-        if v and last:
+        if last:
             c.vwap_pct = round((last - v) / v * 100.0, 2)
         c.enriched = True
         c.bars_as_of = _last_bar_time(df)

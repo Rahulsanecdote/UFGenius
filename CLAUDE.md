@@ -172,6 +172,19 @@ pytest --cov=src       # coverage
   grace, so a just-closed bar is picked up on the next poll; `_ttl_for_interval`)
   and the look-ahead guards in `src/data/lookahead.py`
   (order/dedupe, drop future-labelled bars, `as_of` clamp, stale-frame check).
+  **The returned index keeps the provider's timezone** — the guards convert a
+  local copy of the index for their own comparison and hand the frame back with
+  the original index, so yfinance's tz-aware `America/New_York` survives. That
+  is deliberate (`intraday_features.current_session_bars` takes `.date()` off
+  this index, so forcing UTC would re-bucket the extended session) but it means
+  a caller must **convert** with `lookahead._as_naive`, never strip the tz:
+  `replace(tzinfo=None)` keeps the wall clock and silently shifts an ET bar by
+  the UTC offset. `movers._last_bar_time` did exactly that, storing an 08:41 ET
+  bar as 08:41 "UTC" — four hours early. `_same_trading_day` compares ET
+  calendar dates, and under EDT a four-hour backward shift still lands on the
+  right day, so `require_fresh_session` was correct *by coincidence*; under EST
+  a 04:00–04:59 ET pre-market bar moves onto the previous ET date and a live
+  candidate is suppressed as `stale_session_data`.
   Use it (not `fetch_ohlcv`) for anything real-time; daily bars still use
   `fetch_ohlcv`. Knobs live under `config.yaml` `intraday:` / `INTRADAY_*`.
 - **Pre-market screener:** `--mode premarket-scan` (`src/scanner/premarket_scan.py`,
@@ -649,9 +662,29 @@ pytest --cov=src       # coverage
   and its class land in `served_by["premarket"]`) and **volume** (the
   extended-hours tape carries little or none — Yahoo publishes none at all — so
   `rel_volume` pre-market is weak or absent, and a candidate too thin to score
-  stays unenriched and is held back as `no_intraday_data`. That is correct:
+  stays unenriched and is held back as `no_session_volume`. That is correct:
   participation is the thing we cannot measure there, so we do not claim to have
-  measured it). The worker's own scan window still starts at
+  measured it).
+  **Enrichment refuses a tape that published prices but no volume.** It used to
+  set `enriched=True` whenever `score_intraday_frame` returned anything, and
+  measuring the keyless path at 08:43 ET on 2026-09-28 showed what that costs:
+  14 candidates, every extended-hours bar carrying volume **0** (KOS had 50M
+  shares across 09-22..09-25 and exactly 0 that morning), so `rel_volume` came
+  back `0.0` and VWAP `None` for all of them — and enrichment claimed success.
+  Not cosmetic: `_enriched_score` caps at gap(28) + rvol(30) + mom(24) +
+  vwap(12) + brk(8), so with rvol and vwap both structurally 0 the ceiling is
+  **60 against an alert floor of 70** — no candidate could alert whatever the
+  size of the move. And it was **invisible**, because `last_suppressed()` only
+  records candidates *above* the floor: a +50% gapper went 85 → 28 and then
+  appeared in neither `fired` nor `suppressed`, identical to a quiet tape. The
+  check is `vwap(df) is None`, which is true exactly when the current session's
+  total volume is ≤ 0 — so it reuses that function's own failure condition
+  rather than duplicating the test. Unenriched, the candidate keeps its
+  magnitude base score, clears the floor on a real gap, and is disclosed
+  (`enrich_blocked` → the alerter's reason, dashboard label). Renormalising the
+  score over the measurable components was **rejected**: that manufactures an
+  alert out of magnitude plus momentum, and magnitude alone is the weakest thing
+  measured — the whole reason `require_enriched` exists. The worker's own scan window still starts at
   `continuous_scan.premarket_start_et` (07:00), so **04:00–07:00 remains outside
   it**. Surfaced as `features.premarket_discovery` in the worker snapshot, for
   the same reason the catalyst flag exists: a quiet morning looks identical

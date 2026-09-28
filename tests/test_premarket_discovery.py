@@ -189,3 +189,84 @@ class TestBarsAsOfTimezone:
     def test_unreadable_input_is_none_not_a_raise(self):
         assert mv._last_bar_time(pd.DataFrame()) is None
         assert mv._last_bar_time(None) is None
+
+
+class TestVolumelessTapeIsDisclosedNotSilent:
+    """A tape that publishes prices but no volume cannot be scored, and saying
+    so is the whole point.
+
+    Measured 2026-09-28 08:43 ET on the keyless pre-market path: 12 candidates
+    discovered, every extended-hours bar carrying volume 0 (KOS had 50M shares
+    across 09-22..09-25 and exactly 0 that morning). `rel_volume` came back 0.0
+    and VWAP None for all of them, and enrichment claimed success anyway.
+
+    That is not a cosmetic lie. `_enriched_score` caps at gap(28) + rvol(30) +
+    mom(24) + vwap(12) + brk(8); with rvol and vwap both structurally 0 the
+    ceiling is 60 against an alert floor of 70 — no candidate could alert
+    whatever the move. And `last_suppressed()` only records candidates above the
+    floor, so nothing appeared there either: candidates discovered, zero alerts,
+    zero suppressions, identical to a quiet tape.
+    """
+
+    def _frame(self, volumes, *, start="2026-09-28 04:00:00"):
+        idx = pd.date_range(start, periods=len(volumes), freq="5min",
+                            tz="America/New_York")
+        n = len(volumes)
+        return pd.DataFrame(
+            {"Open": [5.0] * n, "High": [5.2] * n, "Low": [4.9] * n,
+             "Close": [5.1] * n, "Volume": list(volumes)},
+            index=idx,
+        )
+
+    def _candidate(self):
+        return mv.MoverCandidate(ticker="GAPR", price=6.0, change_pct=50.0,
+                                 direction="long", base_score=85.0, score=85.0)
+
+    def test_the_ceiling_is_below_the_floor(self):
+        """The arithmetic, stated once so it cannot drift silently."""
+        best = max(mv._enriched_score("long", chg, 0.0, mom, None, brk)
+                   for chg in (5, 50, 500) for mom in (0, 10, 50)
+                   for brk in (False, True))
+        assert best == 60.0
+        assert best < float(cfg.MOVERS_ALERTS_MIN_SCORE)
+
+    def test_a_volumeless_tape_leaves_the_candidate_unenriched(self):
+        df = self._frame([0] * 30)
+        with patch("src.data.fetcher.fetch_intraday", return_value=df):
+            out = mv._enrich_candidate(self._candidate(), prepost=True)
+        assert out.enriched is False
+        assert out.enrich_blocked == "no_session_volume"
+        assert out.score == 85.0          # keeps the discovery score
+
+    def test_a_tape_with_volume_still_enriches(self):
+        df = self._frame([10_000] * 30)
+        with patch("src.data.fetcher.fetch_intraday", return_value=df):
+            out = mv._enrich_candidate(self._candidate(), prepost=True)
+        assert out.enriched is True
+        assert out.enrich_blocked == ""
+        assert out.vwap_pct is not None
+
+    def test_it_is_disclosed_with_the_specific_reason(self):
+        """Not `no_intraday_data`: there WERE bars. The operator needs to know
+        which thing was missing."""
+        from src.scanner.movers_alerts import MoversAlerter
+        c = self._candidate()
+        c.enriched = False
+        c.enrich_blocked = "no_session_volume"
+        a = MoversAlerter()
+        now = datetime(2026, 9, 28, 12, 20)
+        assert a._suppression_reason(c, now) == "no_session_volume"
+
+    def test_a_plain_enrichment_failure_still_reads_as_no_intraday_data(self):
+        from src.scanner.movers_alerts import MoversAlerter
+        c = self._candidate()
+        c.enriched = False                      # no reason recorded
+        assert MoversAlerter()._suppression_reason(
+            c, datetime(2026, 9, 28, 12, 20)) == "no_intraday_data"
+
+    def test_the_dashboard_can_label_the_new_reason(self):
+        """A reason the dashboard cannot label is filtered out of the panel, so
+        the disclosure would be lost on the way to the operator."""
+        import pathlib
+        src = pathlib.Path("dashboard.py").read_text()
+        assert "no_session_volume:" in src
