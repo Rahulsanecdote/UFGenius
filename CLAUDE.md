@@ -371,6 +371,25 @@ pytest --cov=src       # coverage
   firewalled from the money path. `screen()` passes Finviz's own filter string
   through untouched. Note their terms restrict automated access; enabling it is
   deliberately an operator decision.
+- **Logs are redacted at the logger** (`src/utils/logger.py`, `redact()` +
+  `_RedactFilter`): `requests` and most provider SDKs put the **full request
+  URL** into their exception text, and Polygon / Alpha Vantage / FMP
+  authenticate by **query string**, so the ordinary idiom
+  `log.warning(f"{symbol}: Polygon OHLCV failed ({exc})")` writes a live API key
+  into `logs/bot.log` and into whatever the operator redirected stdout to.
+  Observed 2026-09-28: a `--mode validate` run leaked a Polygon key into
+  `data/validate.log` on the first HTTP 429, and from there into a terminal
+  paste. The filter sits on the **logger**, not a handler (a handler filter is
+  bypassed by any handler a caller attaches later) and redacts the **formatted**
+  message, so printf-style `log.warning("%s failed (%s)", sym, exc)` is covered
+  too. It masks `key=value` / `"key": "value"` for api-key/token/secret/password
+  names, `Bearer`/`Basic` credentials (which carry the value after a space, so
+  the key=value pattern cannot see them), and the literal secret *values* read
+  from config — catching one logged outside a URL. Only the value is masked, so
+  the rest of the URL stays debuggable. Never raises. This lives here rather
+  than at the ~80 sites that interpolate an exception because the leak is a
+  property of the exception text, not of any call site, and a rule that must be
+  remembered 80 times gets missed on the 81st.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
