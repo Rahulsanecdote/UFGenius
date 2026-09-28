@@ -350,6 +350,34 @@ pytest --cov=src       # coverage
   Which is the other half of the lesson, since 0.4% round-trip is far too
   punitive for a name whose real spread is a basis point or two. The guard is
   only ever as right as the cost model it reads.
+  **That cost model has now been measured** (`docs/COST_MODEL.md`, raw sample
+  `docs/spread_sample_2026-09-28.json`: 29 quotes, 2026-09-28 09:52 ET). It is
+  wrong in **both** directions. Above $500M/day dollar volume the median round
+  trip is **0.0286%**, so 0.400% is 1.7–68× too punitive (AAPL: 0.0059%, i.e.
+  68×). Below $50M/day the median is **1.6155%** and the worst 3.9216% (CHRN),
+  so the same number is up to 10× too *generous* — a microcap backtest run on it
+  reads as free money. Alpaca is commission-free, so the model's 0.100%/side
+  commission leg is fictional outright and is half of it.
+  **Dollar volume ranks the spread at −0.697; price alone at +0.079, i.e.
+  noise** — so a price-tiered cost model would be worthless, and penny mode's
+  belief that price × volume is the real liquidity gate is the one that holds.
+  Residuals have a cause no cost model can see: ADRX had $40M/day and a 3.00%
+  spread because it listed four days earlier; CHRN 0.9% of its shares floated.
+  **Correcting the cost does not rescue the precursor, and which way it lands is
+  not determined by the sample**: rescaling the A/B's measured 0.20× median
+  risk/cost gives **0.32× (still refused)** at the liquid band's worst observed
+  cost and **2.80× (clears)** at its median — an 8.3× swing on one name, LLY,
+  whose 0.2385% sits 40× above AAPL's in the *same* band. The lesson is not the
+  tier's value; it is that a tier exists at all. Cost has to be **per-symbol** —
+  a live quote read on the live path, and on the backtest path a spread
+  *estimator* from bars (Corwin–Schultz / Abdi–Ranaldo), which needs calibrating
+  against measured quotes first or it reintroduces exactly the
+  evaluator-vs-harness disagreement the floor's placement exists to prevent.
+  `commission_pct`/`slippage_pct` are therefore **unchanged** for now: lowering
+  modelled cost flatters every backtest, which is the one direction a system
+  with no demonstrated edge must not drift by accident. Unmeasured still: the
+  **$50M–$500M/day band has no observations**, where most of the S&P 500 lives;
+  and market impact, of which the quoted spread is only the floor.
   That run is **not a fair test of the idea**, and both reasons are worth
   keeping: S&P mega-caps are the wrong regime (a 6-bar 1m coil on a $339 stock
   spans 0.18% of price; on a $3 microcap the same structure spans several

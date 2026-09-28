@@ -1,0 +1,346 @@
+{
+  "provenance": {
+    "captured_at_utc": "2026-09-28T14:22:2x",
+    "captured_at_et": "2026-09-28 09:52 ET",
+    "session": "regular, ~22 minutes after the 09:30 open",
+    "quote_source": "Robinhood get_equity_quotes (bid_price/ask_price)",
+    "volume_source": "Robinhood get_equity_fundamentals average_volume_30_days",
+    "n_quotes": 29,
+    "n_with_dollar_volume": 20,
+    "method": "spread_pct_of_mid = (ask-bid)/mid; treated as the ROUND-TRIP crossing cost (half-spread paid per side). Commission excluded: Alpaca is commission-free, so the model's 0.100%/side commission leg is fictional.",
+    "known_limits": [
+      "One timestamp, not an average over the session.",
+      "22 minutes after the open, when spreads are wider than mid-session.",
+      "Robinhood's published bid/ask, not a verified consolidated NBBO.",
+      "Quoted spread only \u2014 no market impact, no partial fills, no queue position.",
+      "n=20 for the dollar-volume analysis; 10 quotes lack a volume reading."
+    ]
+  },
+  "model_being_replaced": {
+    "commission_pct_per_side": 0.001,
+    "slippage_pct_per_side": 0.001,
+    "round_trip_pct": 0.4,
+    "source": "config.yaml commission_pct + slippage_pct, unmeasured"
+  },
+  "observations": [
+    {
+      "symbol": "AAPL",
+      "bid": 341.67,
+      "ask": 341.69,
+      "mid": 341.68,
+      "spread_abs": 0.02,
+      "spread_pct_of_mid": 0.0059,
+      "half_spread_pct": 0.0029,
+      "avg_volume_30d": 42015926,
+      "avg_dollar_volume_musd": 14356.0
+    },
+    {
+      "symbol": "MSFT",
+      "bid": 508.78,
+      "ask": 508.93,
+      "mid": 508.855,
+      "spread_abs": 0.15,
+      "spread_pct_of_mid": 0.0295,
+      "half_spread_pct": 0.0147,
+      "avg_volume_30d": 22078792,
+      "avg_dollar_volume_musd": 11234.9
+    },
+    {
+      "symbol": "NVDA",
+      "bid": 231.34,
+      "ask": 231.37,
+      "mid": 231.355,
+      "spread_abs": 0.03,
+      "spread_pct_of_mid": 0.013,
+      "half_spread_pct": 0.0065,
+      "avg_volume_30d": 127279993,
+      "avg_dollar_volume_musd": 29446.9
+    },
+    {
+      "symbol": "AMZN",
+      "bid": 246.52,
+      "ask": 246.54,
+      "mid": 246.53,
+      "spread_abs": 0.02,
+      "spread_pct_of_mid": 0.0081,
+      "half_spread_pct": 0.0041,
+      "avg_volume_30d": 34746163,
+      "avg_dollar_volume_musd": 8566.0
+    },
+    {
+      "symbol": "META",
+      "bid": 722.69,
+      "ask": 722.89,
+      "mid": 722.79,
+      "spread_abs": 0.2,
+      "spread_pct_of_mid": 0.0277,
+      "half_spread_pct": 0.0138,
+      "avg_volume_30d": 22966749,
+      "avg_dollar_volume_musd": 16600.1
+    },
+    {
+      "symbol": "GOOGL",
+      "bid": 340.7,
+      "ask": 340.75,
+      "mid": 340.725,
+      "spread_abs": 0.05,
+      "spread_pct_of_mid": 0.0147,
+      "half_spread_pct": 0.0073,
+      "avg_volume_30d": 26451737,
+      "avg_dollar_volume_musd": 9012.8
+    },
+    {
+      "symbol": "AVGO",
+      "bid": 351.15,
+      "ask": 351.19,
+      "mid": 351.17,
+      "spread_abs": 0.04,
+      "spread_pct_of_mid": 0.0114,
+      "half_spread_pct": 0.0057,
+      "avg_volume_30d": 26752207,
+      "avg_dollar_volume_musd": 9394.6
+    },
+    {
+      "symbol": "JPM",
+      "bid": 340.49,
+      "ask": 340.82,
+      "mid": 340.655,
+      "spread_abs": 0.33,
+      "spread_pct_of_mid": 0.0969,
+      "half_spread_pct": 0.0484,
+      "avg_volume_30d": 7510952,
+      "avg_dollar_volume_musd": 2558.6
+    },
+    {
+      "symbol": "COST",
+      "bid": 925.09,
+      "ask": 925.43,
+      "mid": 925.26,
+      "spread_abs": 0.34,
+      "spread_pct_of_mid": 0.0367,
+      "half_spread_pct": 0.0184,
+      "avg_volume_30d": 2271348,
+      "avg_dollar_volume_musd": 2101.6
+    },
+    {
+      "symbol": "LLY",
+      "bid": 1185.14,
+      "ask": 1187.97,
+      "mid": 1186.555,
+      "spread_abs": 2.83,
+      "spread_pct_of_mid": 0.2385,
+      "half_spread_pct": 0.1193,
+      "avg_volume_30d": 2393429,
+      "avg_dollar_volume_musd": 2839.9
+    },
+    {
+      "symbol": "NFLX",
+      "bid": 70.1,
+      "ask": 70.11,
+      "mid": 70.105,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.0143,
+      "half_spread_pct": 0.0071,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "CRM",
+      "bid": 228.8,
+      "ask": 228.9,
+      "mid": 228.85,
+      "spread_abs": 0.1,
+      "spread_pct_of_mid": 0.0437,
+      "half_spread_pct": 0.0218,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "MCD",
+      "bid": 235.9,
+      "ask": 235.97,
+      "mid": 235.935,
+      "spread_abs": 0.07,
+      "spread_pct_of_mid": 0.0297,
+      "half_spread_pct": 0.0148,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "UNH",
+      "bid": 376.31,
+      "ask": 376.49,
+      "mid": 376.4,
+      "spread_abs": 0.18,
+      "spread_pct_of_mid": 0.0478,
+      "half_spread_pct": 0.0239,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "ADBE",
+      "bid": 229.69,
+      "ask": 229.77,
+      "mid": 229.73,
+      "spread_abs": 0.08,
+      "spread_pct_of_mid": 0.0348,
+      "half_spread_pct": 0.0174,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "CDE",
+      "bid": 18.5,
+      "ask": 18.51,
+      "mid": 18.505,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.054,
+      "half_spread_pct": 0.027,
+      "avg_volume_30d": 34494471,
+      "avg_dollar_volume_musd": 638.3
+    },
+    {
+      "symbol": "HL",
+      "bid": 17.48,
+      "ask": 17.49,
+      "mid": 17.485,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.0572,
+      "half_spread_pct": 0.0286,
+      "avg_volume_30d": 35296379,
+      "avg_dollar_volume_musd": 617.2
+    },
+    {
+      "symbol": "TGB",
+      "bid": 8.72,
+      "ask": 8.73,
+      "mid": 8.725,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.1146,
+      "half_spread_pct": 0.0573,
+      "avg_volume_30d": 5522294,
+      "avg_dollar_volume_musd": 48.2
+    },
+    {
+      "symbol": "ADRX",
+      "bid": 18.7,
+      "ask": 19.27,
+      "mid": 18.985,
+      "spread_abs": 0.57,
+      "spread_pct_of_mid": 3.0024,
+      "half_spread_pct": 1.5012,
+      "avg_volume_30d": 2106909,
+      "avg_dollar_volume_musd": 40.0
+    },
+    {
+      "symbol": "KOS",
+      "bid": 2.67,
+      "ask": 2.68,
+      "mid": 2.675,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.3738,
+      "half_spread_pct": 0.1869,
+      "avg_volume_30d": 12139122,
+      "avg_dollar_volume_musd": 32.5
+    },
+    {
+      "symbol": "NWCL",
+      "bid": 7.57,
+      "ask": 7.75,
+      "mid": 7.66,
+      "spread_abs": 0.18,
+      "spread_pct_of_mid": 2.3499,
+      "half_spread_pct": 1.1749,
+      "avg_volume_30d": 770936,
+      "avg_dollar_volume_musd": 5.9
+    },
+    {
+      "symbol": "SRFM",
+      "bid": 1.13,
+      "ask": 1.14,
+      "mid": 1.135,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.8811,
+      "half_spread_pct": 0.4405,
+      "avg_volume_30d": 6536057,
+      "avg_dollar_volume_musd": 7.4
+    },
+    {
+      "symbol": "CHRN",
+      "bid": 19.25,
+      "ask": 20.02,
+      "mid": 19.635,
+      "spread_abs": 0.77,
+      "spread_pct_of_mid": 3.9216,
+      "half_spread_pct": 1.9608,
+      "avg_volume_30d": 143792,
+      "avg_dollar_volume_musd": 2.8
+    },
+    {
+      "symbol": "HEPS",
+      "bid": 2.52,
+      "ask": 2.53,
+      "mid": 2.525,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.396,
+      "half_spread_pct": 0.198,
+      "avg_volume_30d": 560652,
+      "avg_dollar_volume_musd": 1.4
+    },
+    {
+      "symbol": "FLX",
+      "bid": 1.18,
+      "ask": 1.21,
+      "mid": 1.195,
+      "spread_abs": 0.03,
+      "spread_pct_of_mid": 2.5105,
+      "half_spread_pct": 1.2552,
+      "avg_volume_30d": 216711,
+      "avg_dollar_volume_musd": 0.3
+    },
+    {
+      "symbol": "ACAD",
+      "bid": 20.27,
+      "ask": 20.3,
+      "mid": 20.285,
+      "spread_abs": 0.03,
+      "spread_pct_of_mid": 0.1479,
+      "half_spread_pct": 0.0739,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "PATH",
+      "bid": 11.97,
+      "ask": 11.98,
+      "mid": 11.975,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.0835,
+      "half_spread_pct": 0.0418,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "RBLX",
+      "bid": 42.89,
+      "ask": 42.92,
+      "mid": 42.905,
+      "spread_abs": 0.03,
+      "spread_pct_of_mid": 0.0699,
+      "half_spread_pct": 0.035,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    },
+    {
+      "symbol": "NU",
+      "bid": 12.55,
+      "ask": 12.56,
+      "mid": 12.555,
+      "spread_abs": 0.01,
+      "spread_pct_of_mid": 0.0796,
+      "half_spread_pct": 0.0398,
+      "avg_volume_30d": null,
+      "avg_dollar_volume_musd": null
+    }
+  ]
+}
