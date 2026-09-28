@@ -1091,7 +1091,13 @@ def fetch_intraday(
                   span the extended session. Cached under a separate key.
 
     Returns:
-        A naive-UTC-indexed OHLCV DataFrame (empty on failure).
+        A look-ahead-sanitized OHLCV DataFrame (empty on failure). The index
+        carries whatever timezone the serving provider sent — yfinance returns
+        tz-aware ``America/New_York``, Alpaca/Polygon UTC — because the guards
+        normalise the tz only inside their own comparisons and hand the frame
+        back with its original index. Callers that compare these timestamps to
+        anything must convert with ``lookahead._as_naive``; stripping the tz
+        keeps the wall clock and silently shifts an ET bar by the UTC offset.
 
     Raises:
         ValueError: if ``interval`` is not an intraday interval (use

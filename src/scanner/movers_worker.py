@@ -22,7 +22,7 @@ import time
 from src.alerts.telegram_alert import send_text_alert
 from src.catalysts.catalyst_alerts import CatalystAlerter
 from src.scanner.intraday_scan import is_scan_window
-from src.scanner.movers import fetch_market_movers
+from src.scanner.movers import fetch_market_movers, fetch_premarket_candidates
 from src.scanner.movers_alerts import MoversAlerter
 from src.scanner.movers_monitor import MoversMonitor
 from src.scanner.movers_state import MoversWorkerState
@@ -33,6 +33,33 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 _MIN_INTERVAL_SEC = 15.0
+
+
+def _discover_for_now(now=None) -> list:
+    """Discover from whichever source describes the CURRENT session.
+
+    Before 09:30 the regular chain answers about *yesterday* — the staleness
+    `premarket_movers` was written for, and the one `require_fresh_session`
+    refuses — so in that window it produces a list the alerter then correctly
+    throws away. This routes the pre-market window to the live extended-hours
+    tape and leaves the rest of the day on the regular chain.
+
+    Fails OVER, not open: if pre-market discovery raises or comes back empty
+    while the session is open, the regular chain is NOT substituted, because
+    substituting it is exactly how yesterday's list reached the morning window
+    in the first place. An empty pre-market list is a real answer.
+    """
+    from src.scanner import premarket_movers
+
+    if not config.MOVERS_PREMARKET_DISCOVERY_ENABLED:
+        return fetch_market_movers()
+    try:
+        in_premarket = premarket_movers.in_premarket_session(now)
+    except Exception:          # a clock/tz fault must not take discovery down
+        in_premarket = False
+    if in_premarket:
+        return fetch_premarket_candidates(now=now)
+    return fetch_market_movers()
 
 # Sentinel so callers can force "no streaming" distinctly from "use the default".
 _USE_DEFAULT = object()
@@ -68,7 +95,7 @@ def run_worker(
     fail-open — if it can't start, the worker just keeps polling. Pass
     ``stream=None`` to force it off (tests), or inject a fake PriceStream.
     """
-    discover = discover or fetch_market_movers
+    discover = discover or _discover_for_now
     alerter = alerter or MoversAlerter()
     monitor = monitor or MoversMonitor()
     if catalyst_alerter is _USE_DEFAULT:
@@ -174,7 +201,9 @@ def run_worker(
                                 if hasattr(alerter, "last_suppressed") else None),
                     # So the dashboard can tell "catalyst alerts are on and the
                     # wire is quiet" from "never enabled" — both read as 0.
-                    features={"catalyst_alerts": catalyst_alerter is not None},
+                    features={"catalyst_alerts": catalyst_alerter is not None,
+                              "premarket_discovery":
+                                  bool(config.MOVERS_PREMARKET_DISCOVERY_ENABLED)},
                 )
             except Exception:  # publishing is best-effort — never break the loop
                 pass

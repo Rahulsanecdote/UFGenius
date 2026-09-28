@@ -91,6 +91,16 @@ movers:
     dedup_ttl_sec: 3600       # don't re-alert the same story for a symbol
     max_per_run: 5            # spam guard per cycle
     suppress_halted: true     # never alert a name that is currently halted
+    # The wire attaches whatever symbols it likes, including listings the broker
+    # cannot trade. Observed 2026-09-28: it alerted TSX:SGR — the Toronto target
+    # of the Brixmor deal, and the only side of that deal which actually
+    # re-prices — on a symbol with no US intraday bars, which the outcome ledger
+    # cannot measure either. Only US-shaped symbols pass (a leading letter, up to
+    # five alphanumerics, an optional .A/-B class suffix) — the separator-bearing
+    # tokens are what it refuses; digits are allowed, since refusing a real
+    # ticker suppresses it with nothing to point at. Skips are counted in the
+    # log, never silent.
+    require_tradeable_symbol: true
     # Roundup gate. The wire attaches a story to every ticker its BODY names, so
     # a market wrap arrives tagged with a dozen symbols while its headline is
     # about one of them at most. Above this count the story cannot carry a
@@ -150,6 +160,22 @@ movers:
     require_vwap_hold: true    # invalidate on losing VWAP (price on the wrong side)
     min_score: 50             # invalidate when the enriched quality score falls below this
     alert_on_invalidation: true  # send a Telegram note when a watched signal invalidates
+  # Pre-market discovery source. During 04:00–09:30 ET the regular chain
+  # answers about YESTERDAY's session — the staleness premarket_movers exists
+  # for, and the one alerts.require_fresh_session now refuses — so the morning
+  # window produced nothing usable and silence was the correct behaviour. With
+  # this on, the worker discovers from the live extended-hours tape in that
+  # window instead, and falls back to the regular chain the rest of the day.
+  # Same scoring, same enrichment, same alert gates; only the SOURCE changes.
+  # Two limits stay, and both are disclosed rather than fixed: coverage
+  # (bounded_pool providers cannot see a name that was quiet yesterday) and
+  # VOLUME (the extended-hours tape carries little or none — Yahoo publishes
+  # none — so a candidate too thin to score is held back as no_intraday_data).
+  # Note the worker's own scan window still starts at continuous_scan.
+  # premarket_start_et (07:00), so 04:00–07:00 remains outside it.
+  premarket_discovery:
+    enabled: true
+
   # Phase 5 — always-on worker. Runs discover → alert → monitor → invalidate in a
   # loop with NO browser (bot.py --mode movers-worker, or a Render Background
   # Worker). Needs FMP_KEY + Telegram creds; set movers.alerts.enabled and

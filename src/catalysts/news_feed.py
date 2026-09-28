@@ -138,6 +138,66 @@ _WEAK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── deal context ──────────────────────────────────────────────────────────────
+# `_STRONG_RE` matches `acquir\w+` and therefore grades "X Acquires Y" and
+# "Y To Be Acquired By X" identically — it has no idea which SIDE of the deal
+# the alerted symbol is on. Observed 2026-09-28: six catalyst alerts, five of
+# them acquirers (FTAI, FIP, BRX twice, VLY) and the one target reachable only
+# as TSX:SGR, an untradeable Toronto listing. In an acquisition the target
+# re-prices toward the offer while the acquirer typically does not, so that is
+# close to an inversion of where the move is.
+#
+# Resolving the side properly needs a symbol→company map, and the batch/firehose
+# path carries symbols ONLY (NewsHeadline.symbols, no names) — the same reason
+# `headline_concerns` is unusable there. So this does not guess the side. It
+# names the DEAL and what is being bought, which a human resolves instantly,
+# and leaves the decision where it belongs.
+_DEAL_TARGET_RES = (
+    re.compile(r"\bto acquire\s+(?:a\s+)?(.{3,60}?)"
+               r"(?:\s+for\b|\s+in\b|\s+at\b|\s+from\b|[,;.]|$)", re.IGNORECASE),
+    re.compile(r"\bacquires?\s+(.{3,60}?)"
+               r"(?:\s+for\b|\s+from\b|\s+in\b|[,;.]|$)", re.IGNORECASE),
+    re.compile(r"\bacquisition of\s+(.{3,60}?)"
+               r"(?:\s+for\b|\s+by\b|\s+in\b|[,;.]|$)", re.IGNORECASE),
+    re.compile(r"\bto (?:buy|purchase)\s+(?:a\s+)?(.{3,60}?)"
+               r"(?:\s+for\b|\s+in\b|[,;.]|$)", re.IGNORECASE),
+)
+# Deliberately a SUPERSET of `_STRONG_RE`'s deal branch. `acquir\w+` does not
+# match "acquisition" (there is no `r` after "acqui"), which `_STRONG_RE` covers
+# with a separate `acquisition of` alternative — so a gate built from `acquir\w+`
+# alone graded "FIP Announces Acquisition of Port Arthur Terminal" as `strong`
+# and then declined to label it a deal. The two must not be able to disagree
+# about whether a headline is a purchase; `TestDealGateCoversTheStrongTier`
+# pins that.
+_DEAL_ANY_RE = re.compile(
+    r"\b(acquir\w+|acquisitions?|merger|buyout|takeover|to (buy|purchase))\b",
+    re.IGNORECASE,
+)
+
+
+def deal_context(title: str) -> Optional[dict]:
+    """``{"target": str|None}`` when the headline describes a purchase, else None.
+
+    Deliberately does NOT claim which side the alerted symbol is on — that needs
+    a name map this path does not have. It reports that the story is a deal and,
+    where the phrasing allows, what is being bought.
+
+    The extracted target is also a useful tell on its own: "27 Boeing 737-700
+    Aircraft" is an asset purchase by a lessor — ordinary business, not an
+    event — and reads as such the moment it is shown.
+    """
+    text = str(title or "")
+    if not _DEAL_ANY_RE.search(text):
+        return None
+    for pattern in _DEAL_TARGET_RES:
+        match = pattern.search(text)
+        if match:
+            target = " ".join(match.group(1).split()).strip(" ,;.-")
+            if target:
+                return {"target": target}
+    return {"target": None}
+
+
 _TIER_PATTERNS = (
     ("dilution", _DILUTION_RE),
     ("strong", _STRONG_RE),

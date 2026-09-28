@@ -89,6 +89,11 @@ class MoverCandidate:
     # catch that: there ARE bars, they are just the wrong day. This is what the
     # freshness gate reads. See MoversAlerter._suppression_reason.
     bars_as_of: "datetime | None" = None
+    # Why enrichment could not complete, when it could not. Empty means either
+    # "enriched" or "no attempt". The alerter names this in its suppression
+    # reason, so an unassessable candidate is disclosed as the specific thing it
+    # was missing rather than the generic "no intraday data".
+    enrich_blocked: str = ""
 
     # True when the feed's % change was extreme enough to check and the value
     # shown is our split-adjusted recomputation instead — whether that CORRECTED
@@ -458,18 +463,37 @@ def _enriched_score(direction: str, change_pct: float, rel_volume: float,
 def _last_bar_time(df) -> "datetime | None":
     """Timestamp of the frame's last bar, naive UTC, or None if unreadable.
 
-    ``fetch_intraday`` hands back a naive-UTC index (``lookahead.py`` converts
-    then strips the tz), which is the convention the freshness check assumes.
+    ``fetch_intraday`` *documents* a naive-UTC index but does not enforce one:
+    `sanitize_intraday` normalises the tz only inside its own comparisons
+    (`drop_future_bars` converts a local copy of the index and then returns
+    `df[keep]` with the original index intact), so whatever tz the provider sent
+    is what arrives. yfinance sends tz-aware `America/New_York`.
+
+    So the tz has to be *converted*, not stripped. `replace(tzinfo=None)` on a
+    tz-aware ET timestamp discards the offset and keeps the wall clock, which
+    mislabels an 08:41 ET bar as 08:41 UTC — four hours early, measured
+    2026-09-28. `_same_trading_day` then reads it as 04:41 ET and compares ET
+    calendar dates, which under EDT still lands on the right day: the gate was
+    correct by coincidence, not by construction. Under EST (UTC-5) a 04:00-04:59
+    ET pre-market bar shifts to the PREVIOUS ET date, and a live candidate would
+    be suppressed as `stale_session_data`.
+
+    Delegates to `lookahead._as_naive`, the one place that already does this
+    right, so the two cannot drift.
     """
     try:
-        ts = df.index[-1]
-        ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-        return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts
+        from src.data.lookahead import _as_naive
+        import pandas as pd
+
+        ts = _as_naive(pd.Timestamp(df.index[-1]))
+        # warn=False: a datetime cannot hold nanoseconds and a bar boundary has
+        # no use for them, so the truncation is intended, not a surprise.
+        return ts.to_pydatetime(warn=False)
     except Exception:
         return None
 
 
-def _enrich_candidate(c: "MoverCandidate") -> "MoverCandidate":
+def _enrich_candidate(c: "MoverCandidate", *, prepost: bool = False) -> "MoverCandidate":
     """Attach live intraday signals and recompute the rank. No-op on any failure.
 
     Reuses the P1.2 intraday scorer and the P1.1 VWAP helper so the metrics match
@@ -481,17 +505,52 @@ def _enrich_candidate(c: "MoverCandidate") -> "MoverCandidate":
         from src.scanner.intraday_scan import score_intraday_frame
         from src.technical.intraday_features import vwap as _vwap
 
-        df = fetch_intraday(c.ticker, interval=config.MOVERS_ENRICH_INTERVAL)
+        # `prepost` matters more than it looks during 04:00–09:30: without it the
+        # fetch returns REGULAR-session bars, which before the open are
+        # yesterday's. The metrics would then be real, `enriched` would be True,
+        # and every one of them would describe a finished session — precisely
+        # what the freshness gate exists to refuse, so the whole pre-market list
+        # would be discovered and then suppressed as `stale_session_data`.
+        df = fetch_intraday(c.ticker, interval=config.MOVERS_ENRICH_INTERVAL,
+                            prepost=prepost)
         metrics = score_intraday_frame(df)
         if metrics is None:
             return c  # too few bars — keep base score
 
+        # `vwap` returns None exactly when the current session's total volume is
+        # <= 0, so this is the one check that says "this tape published prices
+        # but no participation". Measured 2026-09-28 08:43 ET on the keyless
+        # pre-market path: 12 candidates, every extended-hours bar carrying
+        # volume 0 (KOS had 50M shares across 09-22..09-25 and exactly 0 today),
+        # so `rel_volume` came back 0.0 and VWAP None for all of them.
+        #
+        # Claiming `enriched` there is a false claim, and it is not harmless.
+        # `_enriched_score` caps at gap(28) + rvol(30) + mom(24) + vwap(12) +
+        # brk(8); with rvol and vwap both structurally 0 the ceiling is 60
+        # against an alert floor of 70, so NO candidate could ever alert however
+        # large the move. Worse, it was invisible: `last_suppressed()` only
+        # records candidates that clear the floor, and these sat below it — so
+        # the morning showed candidates discovered, zero alerts and zero
+        # suppressions, indistinguishable from a quiet tape.
+        #
+        # Unenriched, the candidate keeps its magnitude-derived base score,
+        # clears the floor on a real gap, and is held back and DISCLOSED — the
+        # same treatment ZSTK's missing bars get. Renormalising the score over
+        # the measurable components instead was rejected: that manufactures an
+        # alert out of magnitude plus momentum, and magnitude alone is the
+        # weakest thing here measures.
+        v = _vwap(df)
+        if v is None:
+            c.enrich_blocked = "no_session_volume"
+            log.debug(f"movers: {c.ticker} extended tape published no volume — "
+                      "participation unmeasurable, left unenriched")
+            return c
+
         c.rel_volume = metrics.get("rel_volume")
         c.momentum_pct = metrics.get("momentum_pct")
         c.is_breakout = bool(metrics.get("is_breakout"))
-        v = _vwap(df)
         last = metrics.get("last_price")
-        if v and last:
+        if last:
             c.vwap_pct = round((last - v) / v * 100.0, 2)
         c.enriched = True
         c.bars_as_of = _last_bar_time(df)
@@ -655,6 +714,89 @@ def fetch_market_movers(
     n_enriched = sum(1 for c in candidates if c.enriched)
     log.info(f"movers: {len(candidates)} candidates after filters "
              f"(min_price={min_price}, min_change_pct={min_change}); "
+             f"{n_enriched} intraday-enriched")
+    return candidates
+
+
+def fetch_premarket_candidates(
+    *,
+    enrich: bool | None = None,
+    limit: int | None = None,
+    now=None,
+) -> list[MoverCandidate]:
+    """Extended-hours movers as ``MoverCandidate``s, for the 04:00–09:30 window.
+
+    The regular chain answers "what moved in the REGULAR session", which before
+    09:30 is *yesterday's* — the staleness `premarket_movers` was written for and
+    the one `require_fresh_session` now refuses. So during the pre-market window
+    the worker has had nothing usable to discover: the correct behaviour was
+    silence. This is the other half — the same candidate pipeline fed from the
+    live extended-hours tape instead.
+
+    Everything downstream is deliberately unchanged: the same `_score`, the same
+    `_enrich_candidate`, the same halt annotation, and the same alerter with all
+    of its gates. Only the SOURCE of the list differs.
+
+    Two honest limits, both provider-shaped rather than fixable here:
+
+    * **Coverage.** `premarket_movers` discloses `market_wide` vs `bounded_pool`;
+      on the keyless Yahoo path a name that was quiet yesterday is structurally
+      invisible, and ranking cannot recover it. `last_discovery_info()` carries
+      which one served.
+    * **Volume.** The extended-hours tape carries little or none — Yahoo
+      publishes none at all — so `rel_volume` pre-market is weak or absent.
+      A candidate whose bars are too thin to score simply stays unenriched and
+      is held back as `no_intraday_data`, which is disclosed. That is the
+      correct outcome: participation is the thing we cannot measure, so we do
+      not claim to have measured it.
+    """
+    from src.scanner import premarket_movers
+
+    enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else bool(enrich)
+    health = _health()
+    health["attempted"].append("premarket")
+
+    try:
+        movers = premarket_movers.fetch_premarket_movers(now=now, limit=limit)
+    except Exception as exc:      # discovery must never break the worker loop
+        log.warning(f"movers: pre-market discovery failed "
+                    f"({type(exc).__name__}: {exc})")
+        health["failed"].append("premarket: discovery_error")
+        return []
+
+    info = premarket_movers.last_discovery_info()
+    served, coverage = info.get("served_by"), info.get("coverage")
+    health["succeeded"].append("premarket")
+    # Same reason the regular chain records `served_by`: a fallback changes the
+    # CHARACTER of the list, and bounded_pool cannot see a fresh gapper at all.
+    health["served_by"]["premarket"] = (
+        f"{served} ({coverage})" if served else "none")
+
+    candidates: list[MoverCandidate] = []
+    for m in movers:
+        direction = "short" if m.change_pct < 0 else "long"
+        c = MoverCandidate(
+            ticker=m.ticker, price=m.price, change_pct=m.change_pct,
+            direction=direction, sources=["premarket"],
+        )
+        c.base_score = _score(c.change_pct, len(c.sources))
+        c.score = c.base_score
+        candidates.append(c)
+
+    candidates.sort(key=lambda x: x.score, reverse=True)
+    if limit and limit > 0:
+        candidates = candidates[: int(limit)]
+
+    if enrich and candidates:
+        cap = max(0, int(config.MOVERS_ENRICH_MAX))
+        for c in candidates[:cap]:
+            _enrich_candidate(c, prepost=True)      # extended-hours bars, not RTH
+        candidates.sort(key=lambda x: x.score, reverse=True)
+
+    candidates = annotate_halts(candidates)
+    n_enriched = sum(1 for c in candidates if c.enriched)
+    log.info(f"movers: {len(candidates)} pre-market candidates "
+             f"(served_by={served or 'none'}, coverage={coverage or 'n/a'}); "
              f"{n_enriched} intraday-enriched")
     return candidates
 

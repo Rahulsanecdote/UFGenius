@@ -159,11 +159,20 @@ services:
         value: "true"                              # (no-op unless the line above is set)
       - key: MOVERS_STREAM_ENABLED                 # live Alpaca tape → faster reaction
         value: "true"
-      # Discovery walks the movers.providers chain [alpaca, polygon, fmp] and the
-      # first provider that ANSWERS serves each source. Alpaca's screener covers
-      # gainers + losers; only most_actives is FMP-only (Polygon's snapshot has
-      # no most-actives endpoint). So Alpaca alone gives you discovery, and an
-      # unconfigured provider is SKIPPED, never counted as a failure.
+      # Discovery walks the movers.providers chain [alpaca, polygon, fmp]. With
+      # movers.provider_mode: merge (the default) it queries EVERY configured
+      # provider that serves a source and UNIONS the answers — it is no longer
+      # first-wins, where the leading provider's screener universe was the whole
+      # candidate pool and a name outside it was invisible with nothing recorded.
+      # Alpaca's screener covers gainers + losers; only most_actives is FMP-only
+      # (Polygon's snapshot has no most-actives endpoint). So Alpaca alone still
+      # gives you discovery, and an unconfigured provider is SKIPPED, never
+      # counted as a failure. Merge multiplies calls per source by the providers
+      # serving it, which is what movers.worker.rediscover_every_cycles: 8 pays
+      # for — it keeps FMP inside its 250/day free tier at the cost of up to
+      # ~8 minutes before a brand-new mover is first seen. A provider failing
+      # beside a working one is a PARTIAL outage: watch source_errors
+      # (/api/movers reads `degraded`), which first-wins used to hide.
       - key: ALPACA_API_KEY            # required — discovery, intraday, stream, news
         sync: false
       - key: ALPACA_SECRET_KEY         # required

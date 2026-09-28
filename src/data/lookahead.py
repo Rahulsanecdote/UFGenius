@@ -148,6 +148,13 @@ def sanitize_intraday(
 
     Combines the guards a live intraday frame always needs before use, in the
     right order (order/dedupe first, then the future-bar clamp).
+
+    Does NOT change the index's timezone. Each guard converts a local copy of
+    the index for its comparison and returns the frame with the original index,
+    so the provider's tz survives (yfinance: tz-aware ET). That is deliberate —
+    `intraday_features.current_session_bars` takes `.date()` off this index, so
+    forcing it to UTC would re-bucket the extended session — but it means a
+    caller cannot assume naive UTC here. Use `_as_naive` on anything read out.
     """
     out = sort_dedupe(df)
     return drop_future_bars(out, now=now, tolerance_sec=future_tolerance_sec)

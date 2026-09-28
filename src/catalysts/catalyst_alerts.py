@@ -24,6 +24,7 @@ Telegram sender. Opt-in and **default OFF**.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
@@ -33,6 +34,7 @@ from src.catalysts.news_feed import (
     NewsHeadline,
     _age_hours,
     classify_headlines,
+    deal_context,
     fetch_news_batch,
 )
 from src.utils import config
@@ -117,6 +119,38 @@ def window_open(now: Optional[datetime] = None) -> bool:
         return True
 
 
+# A US equity symbol: a leading uppercase letter, up to five alphanumerics,
+# optionally a class or unit suffix (BRK.B, BRK-B). What it exists to refuse is
+# the *structurally* non-US token the wire attaches — TSX:SGR (Toronto),
+# ^GSPC (an index), BTC/USD (a pair) — each of which carries a separator no US
+# symbol has.
+#
+# Observed 2026-09-28: the wire alerted `TSX:SGR`, the TARGET of the Brixmor
+# deal and the only side of it that actually re-prices — on a listing the
+# broker cannot trade, that has no US intraday bars, and that the outcome
+# ledger therefore cannot measure either. `catalyst_alerts` iterated
+# `headline.symbols` raw, with no format check anywhere on the path.
+#
+# `_can_use_alpaca_symbol` was not reusable here: it only rejects a `^` prefix,
+# so TSX:SGR sails past it.
+#
+# Digits are ALLOWED, deliberately. A letters-only rule would be an extra claim
+# about US symbols that is not reliably true, and the cost of the two errors is
+# not symmetric: a non-equity alphanumeric token slipping through produces one
+# checkable alert, while refusing a real ticker suppresses it with nothing to
+# point at — the invisible-absence failure this whole path keeps guarding
+# against. A leading digit is refused, since that much is structural.
+_US_EQUITY_RE = re.compile(r"^[A-Z][A-Z0-9]{0,4}([.-][A-Z0-9]{1,2})?$")
+
+
+def is_tradeable_symbol(symbol: str) -> bool:
+    """True for a symbol the broker could actually act on. Never raises."""
+    try:
+        return bool(_US_EQUITY_RE.fullmatch(str(symbol or "").strip()))
+    except Exception:
+        return False
+
+
 def format_catalyst_alert(
     symbol: str, tier: str, headline: NewsHeadline,
     *, now: Optional[datetime] = None,
@@ -137,10 +171,30 @@ def format_catalyst_alert(
         stamp = headline.published.astimezone(timezone.utc).strftime("%H:%M UTC")
         when = stamp if age is None or age < 1.0 else f"{stamp} ({age:.0f}h ago)"
     source = f" ({headline.source})" if headline.source else ""
+
+    # A deal headline grades `strong` whichever side the symbol is on, and the
+    # sides move very differently: the target re-prices toward the offer, the
+    # acquirer usually does not. Which side THIS symbol is on needs a name map
+    # this path does not have, so say what the deal is and let the reader
+    # resolve it in a glance rather than guess on their behalf.
+    deal_line = ""
+    try:
+        deal = deal_context(headline.title)
+        if deal is not None:
+            what = f" Being bought: {deal['target']}." if deal.get("target") else ""
+            deal_line = (
+                f"⚠️ Deal headline.{what} In an acquisition the TARGET re-prices "
+                f"to the offer; the acquirer usually does not. Check which side "
+                f"{symbol} is on.\n"
+            )
+    except Exception:      # labelling must never cost an alert
+        deal_line = ""
+
     return (
         f"{tag} · {symbol}\n"
         f"{headline.title}\n"
         f"{when}{source}\n"
+        f"{deal_line}"
         f"Catalyst detected on the wire — NOT a trade instruction, and not a "
         f"prediction that price will follow. Verify before acting."
     )
@@ -276,6 +330,7 @@ class CatalystAlerter:
         cutoff = now_ts - max(ttl, 0.0)
         self._recent = {k: seen for k, seen in self._recent.items() if seen >= cutoff}
         fired: list[dict] = []
+        skipped_untradeable = 0
         for headline in headlines:
             if len(fired) >= cap:
                 break
@@ -317,6 +372,15 @@ class CatalystAlerter:
             for symbol in headline.symbols or []:
                 if len(fired) >= cap:
                     break
+                # After the cap, so the count means what it says: a symbol
+                # dropped for being untradeable, not one the spam guard would
+                # have stopped anyway.
+                if (config.CATALYST_ALERTS_REQUIRE_TRADEABLE
+                        and not is_tradeable_symbol(symbol)):
+                    skipped_untradeable += 1
+                    log.debug(f"catalyst-alerts: {symbol} is not a tradeable US "
+                              "equity symbol — skipped")
+                    continue
                 if allowed is not None and symbol not in allowed:
                     continue
                 if symbol in halted:
@@ -326,7 +390,10 @@ class CatalystAlerter:
                 last = self._recent.get(key)
                 if last is not None and (now_ts - last) < ttl:
                     continue
-                message = format_catalyst_alert(symbol, tier, headline)
+                # Age the headline against the POLL instant, not a second
+                # clock read — the alert's whole claim is about when this
+                # was published relative to now.
+                message = format_catalyst_alert(symbol, tier, headline, now=now)
                 sent = False
                 if send:
                     sent = bool(send_text_alert(message, context=f"catalyst {symbol}"))
@@ -343,4 +410,10 @@ class CatalystAlerter:
         if fired:
             log.info(f"catalyst alerts: {len(fired)} fired "
                      f"({sum(1 for f in fired if f['sent'])} sent)")
+        if skipped_untradeable:
+            # Counted, not silent: every misconfiguration in this module
+            # presents as "the wire was quiet", so a symbol being dropped has
+            # to be visible or it becomes indistinguishable from no news.
+            log.info(f"catalyst alerts: {skipped_untradeable} symbol(s) skipped "
+                     "as not tradeable US equities")
         return fired
