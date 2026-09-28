@@ -390,6 +390,31 @@ pytest --cov=src       # coverage
   than at the ~80 sites that interpolate an exception because the leak is a
   property of the exception text, not of any call site, and a rule that must be
   remembered 80 times gets missed on the 81st.
+- **`period="max"` is a request, not a parse failure** (`src/data/fetcher.py`,
+  `_resolve_period`): `_period_to_timedelta` returned `None` for *both* "give me
+  everything" and "unparseable", and the two callers reading that `None` guessed
+  differently — and both guessed wrong. The Alpaca gate read it as "cannot
+  serve" and skipped Alpaca **silently**, so `fetch_ohlcv(ticker,
+  period="max")` — which is what `src/backtest/engine.py` asks for on every
+  ticker — never reached the one provider whose rate limits we were *not*
+  hitting, with nothing in the log to say why. Polygon read the same `None` as
+  "default to 365 days", so a backtest asking for full history was quietly
+  handed **one year** whenever Polygon answered. Observed 2026-09-28: a
+  `--mode validate` run had every ticker fall Alpaca → Polygon (429) → yfinance
+  (429), and the only trace was `Polygon OHLCV failed … falling back to
+  yfinance`. `_resolve_period` now maps `max` to `_MAX_HISTORY` (25y —
+  deliberately longer than any provider's retention, so the API clamps instead
+  of us guessing a horizon) and returns `None` **only** for genuinely invalid
+  input. The Alpaca gate also names its skip reason rather than falling through
+  in silence, since a silent skip is indistinguishable from having tried and
+  failed, and Polygon's 365-day default now logs when it bites.
+  **Backtest prefetch:** `run_backtest` warms the cache with one
+  `fetch_ohlcv_batch` pass before the per-ticker loop, so ~500 blocking round
+  trips per walk-forward window become cache hits paid once per run. Note that
+  helper is a **parallel fan-out, not a multi-symbol request** — it threads
+  `fetch_ohlcv`, so it is still one HTTP call per ticker. Calling it a "batch"
+  would misdescribe the request volume; true multi-symbol batching against
+  Alpaca's `symbols=` parameter remains undone.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
