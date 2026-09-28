@@ -40,7 +40,11 @@ def _same_trading_day(bars_as_of: datetime | None, now: datetime) -> bool:
     the point of the gate is that metrics may only be presented as live when
     that is established, never merely unrefuted.
 
-    Both arguments are naive UTC, the convention ``fetch_intraday`` returns.
+    Both arguments are naive UTC. ``fetch_intraday`` does not itself guarantee
+    that — its index keeps the provider's tz — so ``movers._last_bar_time``
+    converts before storing ``bars_as_of``. It used to strip the tz instead,
+    which put a yfinance ET bar four hours early; under EST that moved an
+    04:00-04:59 ET pre-market bar onto the previous ET date.
     """
     if bars_as_of is None:
         return False

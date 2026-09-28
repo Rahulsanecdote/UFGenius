@@ -458,13 +458,32 @@ def _enriched_score(direction: str, change_pct: float, rel_volume: float,
 def _last_bar_time(df) -> "datetime | None":
     """Timestamp of the frame's last bar, naive UTC, or None if unreadable.
 
-    ``fetch_intraday`` hands back a naive-UTC index (``lookahead.py`` converts
-    then strips the tz), which is the convention the freshness check assumes.
+    ``fetch_intraday`` *documents* a naive-UTC index but does not enforce one:
+    `sanitize_intraday` normalises the tz only inside its own comparisons
+    (`drop_future_bars` converts a local copy of the index and then returns
+    `df[keep]` with the original index intact), so whatever tz the provider sent
+    is what arrives. yfinance sends tz-aware `America/New_York`.
+
+    So the tz has to be *converted*, not stripped. `replace(tzinfo=None)` on a
+    tz-aware ET timestamp discards the offset and keeps the wall clock, which
+    mislabels an 08:41 ET bar as 08:41 UTC — four hours early, measured
+    2026-09-28. `_same_trading_day` then reads it as 04:41 ET and compares ET
+    calendar dates, which under EDT still lands on the right day: the gate was
+    correct by coincidence, not by construction. Under EST (UTC-5) a 04:00-04:59
+    ET pre-market bar shifts to the PREVIOUS ET date, and a live candidate would
+    be suppressed as `stale_session_data`.
+
+    Delegates to `lookahead._as_naive`, the one place that already does this
+    right, so the two cannot drift.
     """
     try:
-        ts = df.index[-1]
-        ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
-        return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts
+        from src.data.lookahead import _as_naive
+        import pandas as pd
+
+        ts = _as_naive(pd.Timestamp(df.index[-1]))
+        # warn=False: a datetime cannot hold nanoseconds and a bar boundary has
+        # no use for them, so the truncation is intended, not a surprise.
+        return ts.to_pydatetime(warn=False)
     except Exception:
         return None
 

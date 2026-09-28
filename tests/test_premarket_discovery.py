@@ -138,3 +138,54 @@ def test_enrichment_requests_extended_hours_bars():
         mv.fetch_premarket_candidates(enrich=True, now=PREMARKET)
 
     assert calls.get("prepost") is True
+
+
+class TestBarsAsOfTimezone:
+    """`bars_as_of` must be naive UTC whatever tz the provider sent.
+
+    Measured 2026-09-28: `fetch_intraday` documents a naive-UTC index but does
+    not enforce one — `sanitize_intraday` converts the tz only inside its own
+    comparisons and returns the frame with the provider's index intact, and
+    yfinance sends tz-aware `America/New_York`. `_last_bar_time` stripped the tz
+    instead of converting it, so an 08:41 ET bar was stored as 08:41 UTC: four
+    hours early. `_same_trading_day` then compares ET calendar dates, which
+    under EDT still lands on the right day — correct by coincidence.
+    """
+
+    def _frame(self, index):
+        return pd.DataFrame(
+            {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0],
+             "Volume": [100]},
+            index=pd.DatetimeIndex(index),
+        )
+
+    def test_a_yfinance_eastern_index_is_converted_not_stripped(self):
+        df = self._frame(pd.to_datetime(["2026-09-28 08:41:00"]).tz_localize(
+            "America/New_York"))
+        assert mv._last_bar_time(df) == datetime(2026, 9, 28, 12, 41)
+
+    def test_a_utc_index_is_unchanged(self):
+        df = self._frame(pd.to_datetime(["2026-09-28 12:41:00"]).tz_localize("UTC"))
+        assert mv._last_bar_time(df) == datetime(2026, 9, 28, 12, 41)
+
+    def test_an_already_naive_index_passes_through(self):
+        df = self._frame(pd.to_datetime(["2026-09-28 12:41:00"]))
+        assert mv._last_bar_time(df) == datetime(2026, 9, 28, 12, 41)
+
+    def test_winter_is_the_case_that_actually_broke(self):
+        """EST is UTC-5, so a 04:00-04:59 ET pre-market bar read as UTC lands on
+        the PREVIOUS ET date, and the freshness gate suppresses a live candidate
+        as `stale_session_data`. Converting keeps it on the right day."""
+        from src.scanner.movers_alerts import _same_trading_day
+        df = self._frame(pd.to_datetime(["2027-01-11 04:30:00"]).tz_localize(
+            "America/New_York"))
+        bars_as_of = mv._last_bar_time(df)
+        now = datetime(2027, 1, 11, 13, 0)          # 08:00 EST, naive UTC
+        assert _same_trading_day(bars_as_of, now) is True
+        # What the strip produced, for contrast: the wall clock, tz discarded.
+        stripped = df.index[-1].to_pydatetime().replace(tzinfo=None)
+        assert _same_trading_day(stripped, now) is False
+
+    def test_unreadable_input_is_none_not_a_raise(self):
+        assert mv._last_bar_time(pd.DataFrame()) is None
+        assert mv._last_bar_time(None) is None
