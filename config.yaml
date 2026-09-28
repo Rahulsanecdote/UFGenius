@@ -91,6 +91,16 @@ movers:
     dedup_ttl_sec: 3600       # don't re-alert the same story for a symbol
     max_per_run: 5            # spam guard per cycle
     suppress_halted: true     # never alert a name that is currently halted
+    # The wire attaches whatever symbols it likes, including listings the broker
+    # cannot trade. Observed 2026-09-28: it alerted TSX:SGR — the Toronto target
+    # of the Brixmor deal, and the only side of that deal which actually
+    # re-prices — on a symbol with no US intraday bars, which the outcome ledger
+    # cannot measure either. Only US-shaped symbols pass (a leading letter, up to
+    # five alphanumerics, an optional .A/-B class suffix) — the separator-bearing
+    # tokens are what it refuses; digits are allowed, since refusing a real
+    # ticker suppresses it with nothing to point at. Skips are counted in the
+    # log, never silent.
+    require_tradeable_symbol: true
     # Roundup gate. The wire attaches a story to every ticker its BODY names, so
     # a market wrap arrives tagged with a dozen symbols while its headline is
     # about one of them at most. Above this count the story cannot carry a

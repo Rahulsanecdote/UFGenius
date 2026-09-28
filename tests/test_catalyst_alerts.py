@@ -430,3 +430,80 @@ class TestMisconfiguration:
             for _ in range(4):
                 _poll(alerter, [])
         assert caplog.text.count("unknown universe") == 1
+
+
+# ── the 2026-09-28 production alerts ─────────────────────────────────────────
+# Six catalyst alerts arrived that morning. Five named the ACQUIRER (FTAI, FIP,
+# BRX twice, VLY) and the one target reachable was `TSX:SGR` — an untradeable
+# Toronto listing, and the only side of that deal which actually re-prices.
+
+_FTAI = ("FTAI Aviation Acquires 27 Boeing 737-700 Aircraft From WestJet; "
+         "Financial Terms Not Disclosed")
+_BRX = ("Brixmor Property Group And Everview Partners To Acquire Slate Grocery "
+        "REIT For $13 Per Share In Cash At An EV Of ~$2.3B")
+
+
+class TestTradeableSymbolGate:
+    @pytest.mark.parametrize("symbol", ["BRX", "VLY", "FTAI", "FIP", "BRK.B", "BRK-B"])
+    def test_us_equities_pass(self, symbol):
+        assert catalyst_alerts.is_tradeable_symbol(symbol) is True
+
+    @pytest.mark.parametrize("symbol", [
+        "TSX:SGR",      # the one that actually shipped
+        "LSE:BARC",     # any exchange-qualified listing
+        "^GSPC",        # index
+        "BTC/USD",      # pair
+        "TOOLONGSYM",
+        "brx",          # the wire is uppercase; lowercase is not a symbol
+        "1COV",         # a leading digit is not a US symbol
+        "", "   ", None,
+    ])
+    def test_everything_else_is_refused(self, symbol):
+        assert catalyst_alerts.is_tradeable_symbol(symbol) is False
+
+    def test_the_gate_is_enforced_on_the_alert_path(self, monkeypatch):
+        """Not just the helper — `poll` iterated `headline.symbols` raw."""
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_REQUIRE_TRADEABLE", True)
+        fired = _poll(CatalystAlerter(), [_news(_BRX, ["BRX", "TSX:SGR"])])
+        assert [f["ticker"] for f in fired] == ["BRX"]
+
+    def test_the_gate_can_be_turned_off(self, monkeypatch):
+        monkeypatch.setattr(cfg, "CATALYST_ALERTS_REQUIRE_TRADEABLE", False)
+        fired = _poll(CatalystAlerter(), [_news(_BRX, ["BRX", "TSX:SGR"])])
+        assert sorted(f["ticker"] for f in fired) == ["BRX", "TSX:SGR"]
+
+
+class TestDealLabel:
+    def _msg(self, title, symbol="BRX"):
+        return format_catalyst_alert(symbol, "strong", _news(title, [symbol]),
+                                     now=_NOW)
+
+    def test_a_deal_headline_says_what_is_being_bought(self):
+        msg = self._msg(_BRX)
+        assert "Slate Grocery REIT" in msg
+        assert "TARGET re-prices" in msg and "BRX" in msg
+
+    def test_an_asset_purchase_names_the_assets(self):
+        """Which is itself the tell: a lessor buying aircraft, terms undisclosed,
+        is ordinary business rather than an event — and reads that way."""
+        assert "27 Boeing 737-700 Aircraft" in self._msg(_FTAI, symbol="FTAI")
+
+    def test_a_non_deal_headline_gets_no_label(self):
+        msg = self._msg("Acme Reports Q3 Earnings Beat, Raises Guidance")
+        assert "TARGET re-prices" not in msg
+
+    def test_it_does_not_claim_which_side_the_symbol_is_on(self):
+        """The batch path has symbols and no company names, so the side cannot
+        be resolved here. Asserting it would be inventing the one fact that
+        decides whether the alert is worth anything."""
+        msg = self._msg(_BRX)
+        assert "is the acquirer" not in msg.lower()
+        assert "is the target" not in msg.lower()
+        assert "Check which side" in msg
+
+    def test_labelling_never_costs_an_alert(self, monkeypatch):
+        def _boom(_title):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(catalyst_alerts, "deal_context", _boom)
+        msg = self._msg(_BRX)
+        assert "BRX" in msg and _BRX[:20] in msg

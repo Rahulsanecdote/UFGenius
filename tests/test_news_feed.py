@@ -17,6 +17,7 @@ from src.catalysts.news_feed import (
     NewsHeadline,
     catalyst_news_for,
     classify_headlines,
+    deal_context,
     fetch_headlines,
     headline_concerns,
 )
@@ -489,3 +490,89 @@ class TestDilutionPlurals:
     ])
     def test_plural_forms_are_dilution(self, title):
         assert classify_headlines([_h(title)])["tier"] == "dilution", title
+
+
+class TestDealContext:
+    """`_STRONG_RE` matches `acquir\\w+` on both sides of a deal.
+
+    The target re-prices toward the offer, the acquirer usually does not, so a
+    tier that cannot tell them apart is close to an inversion of where the move
+    is. `deal_context` does not resolve the side — the batch path has no company
+    names — it reports that the story is a deal and what is being bought.
+    """
+
+    # The four that actually shipped on 2026-09-28.
+    @pytest.mark.parametrize("title,target", [
+        ("FTAI Aviation Acquires 27 Boeing 737-700 Aircraft From WestJet; "
+         "Financial Terms Not Disclosed", "27 Boeing 737-700 Aircraft"),
+        ("Brixmor Property Group And Everview Partners To Acquire Slate Grocery "
+         "REIT For $13 Per Share In Cash At An EV Of ~$2.3B", "Slate Grocery REIT"),
+        ("Valley National Bancorp To Acquire Bluevine For $300M", "Bluevine"),
+        ("FIP Announces Acquisition of Port Arthur Terminal", "Port Arthur Terminal"),
+    ])
+    def test_it_names_what_is_being_bought(self, title, target):
+        assert deal_context(title) == {"target": target}
+
+    @pytest.mark.parametrize("title", [
+        "Acme Reports Q3 Earnings Beat, Raises Guidance",
+        "FDA approves Acme's lead drug",
+        "Acme announces $50M offering",
+    ])
+    def test_a_non_deal_headline_is_not_a_deal(self, title):
+        assert deal_context(title) is None
+
+    def test_a_deal_it_cannot_parse_is_still_a_deal(self):
+        """Losing the target must not lose the warning — the side ambiguity is
+        the point, and it applies whether or not the phrasing yields a name."""
+        assert deal_context("Acme, Beta Agree To Merger Of Equals") == {"target": None}
+
+    def test_the_passive_side_is_graded_the_same(self):
+        """Which is exactly the hole: the wire's tier is side-blind, so the label
+        has to fire on the target's phrasing too."""
+        assert deal_context("Beta Corp To Be Acquired By Acme") is not None
+
+    @pytest.mark.parametrize("title", [None, "", 123])
+    def test_junk_never_raises(self, title):
+        deal_context(title)
+
+
+class TestDealGateCoversTheStrongTier:
+    """Anything the tier grades as a deal must also label as one.
+
+    The two patterns are separate, and they drifted: `_STRONG_RE` carries an
+    explicit `acquisition of` alternative because `acquir\\w+` does not match
+    "acquisition", while `_DEAL_ANY_RE` had only the latter. The result was a
+    headline graded `strong` for being an acquisition and then told it was not
+    a deal — the side warning silently absent on exactly the phrasing the
+    2026-09-28 FIP alert used.
+
+    One-directional on purpose. The label gate is the wider of the two, which
+    costs nothing (it only ever renders under a headline that already graded
+    into a configured tier), while the reverse would be a missing warning.
+    """
+
+    @pytest.mark.parametrize("title", [
+        "Acme To Acquire Beta For $2B",
+        "Acme Acquires Beta",
+        "Acme Announces Acquisition of Beta",
+        "Acme, Beta Announce Merger",
+        "Acme Agrees To Buyout By Beta",
+        "Acme Confirms Takeover Approach",
+    ])
+    def test_every_strong_deal_phrasing_is_labelled(self, title):
+        assert classify_headlines([_h(title)])["tier"] == "strong", title
+        assert deal_context(title) is not None, title
+
+    @pytest.mark.parametrize("title", [
+        "Acme To Buy Beta's Retail Unit",
+        "Acme To Purchase Beta Holdings",
+    ])
+    def test_plain_buy_phrasings_label_but_do_not_grade_strong(self, title):
+        """And `_STRONG_RE` is left alone deliberately. "to acquire" is
+        unambiguous; "to buy" is not — "Time To Buy Acme Stock" is an opinion
+        listicle, and admitting it to `strong` would let commentary earn the
+        top catalyst tier. So these label if they ever reach the formatter,
+        and on the default `tiers: [strong]` they never do.
+        """
+        assert deal_context(title) is not None, title
+        assert classify_headlines([_h(title)])["tier"] != "strong", title

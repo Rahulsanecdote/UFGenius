@@ -544,10 +544,42 @@ pytest --cov=src       # coverage
   Explicitly **not prediction** — it reports that a catalyst was published
   sooner than a price-derived scanner can notice the consequence; the alert text
   says so. Discovery/alerting only; fail-soft everywhere.
+  **Only symbols the broker could act on are alerted**
+  (`require_tradeable_symbol`, default on): `poll()` iterated `headline.symbols`
+  raw, and the wire attaches whatever it likes. Observed 2026-09-28: it alerted
+  `TSX:SGR` — the Toronto **target** of the Brixmor deal, and the only side of
+  that deal which actually re-prices — a listing with no US intraday bars, so
+  the alert-outcome ledger could not have measured it either. `_can_use_alpaca_symbol`
+  was not reusable: it rejects only a `^` prefix, so `TSX:SGR` sails past it.
+  `is_tradeable_symbol` requires a leading letter, up to five alphanumerics and
+  an optional `.A`/`-B` class suffix; what it actually refuses is the
+  separator-bearing token (`TSX:SGR`, `^GSPC`, `BTC/USD`). **Digits are allowed
+  deliberately** — a letters-only rule is an extra claim about US symbols that
+  is not reliably true, and the two errors do not cost the same: a stray
+  alphanumeric token produces one checkable alert, while refusing a real ticker
+  suppresses it with nothing to point at. Skips are counted
+  (`skipped_untradeable`) and logged.
+  **A deal headline says what is being bought.** `_STRONG_RE` matches
+  `acquir\w+`, so it grades "X Acquires Y" and "Y To Be Acquired By X"
+  identically — and in an acquisition the **target** re-prices toward the offer
+  while the acquirer typically does not, so a side-blind `strong` is close to an
+  inversion of where the move is. Five of that morning's six alerts were
+  acquirers (FTAI, FIP, BRX twice, VLY). Resolving the side needs a
+  symbol→company map, and this path carries symbols **only** — the same reason
+  `headline_concerns` is unusable here — so `news_feed.deal_context()` does not
+  guess it: it reports that the story is a purchase and, where the phrasing
+  allows, the target, and the alert line says to check which side the symbol is
+  on. The extracted target is a tell in itself — "27 Boeing 737-700 Aircraft"
+  is a lessor's ordinary business, not an event. Its gate is a deliberate
+  **superset** of `_STRONG_RE`'s deal branch, because `acquir\w+` does not match
+  "acquisition" (no `r` after "acqui") and the two patterns had already drifted
+  apart on exactly the FIP phrasing. `to buy`/`to purchase` label but are left
+  **out** of `_STRONG_RE`: "Time To Buy Acme Stock" is commentary, and admitting
+  it would let opinion earn the top catalyst tier.
   Every knob takes an env override (`CATALYST_ALERTS_ENABLED`, `_UNIVERSE`,
   `_TIERS`, `_LOOKBACK_SEC`, `_DEDUP_TTL_SEC`, `_MAX_PER_RUN`, `_WINDOW_START_ET`,
   `_WINDOW_END_ET`, `_WEEKDAYS_ONLY`,
-  `_SUPPRESS_HALTED`) so a managed host can retune the wire without a commit +
+  `_SUPPRESS_HALTED`, `_REQUIRE_TRADEABLE`) so a managed host can retune the wire without a commit +
   redeploy. Because every misconfiguration here presents as "the wire was
   quiet", the ones that *cannot* match anything are **loud**: an unknown tier or
   universe, and the default `universe: watchlist` with no `CUSTOM_WATCHLIST`,

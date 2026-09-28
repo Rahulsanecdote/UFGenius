@@ -167,6 +167,12 @@ CATALYST_ALERTS_MAX_PER_RUN: int = env_int(
     "CATALYST_ALERTS_MAX_PER_RUN", _as_int(_CATALYST_ALERTS.get("max_per_run", 5), 5))
 CATALYST_ALERTS_SUPPRESS_HALTED: bool = env_bool(
     "CATALYST_ALERTS_SUPPRESS_HALTED", bool(_CATALYST_ALERTS.get("suppress_halted", True)))
+# Only alert symbols the broker could act on. The wire attaches whatever it
+# likes — TSX:SGR, indices, FX pairs — and those have no US bars, so the
+# outcome ledger cannot measure them either.
+CATALYST_ALERTS_REQUIRE_TRADEABLE: bool = env_bool(
+    "CATALYST_ALERTS_REQUIRE_TRADEABLE",
+    bool(_CATALYST_ALERTS.get("require_tradeable_symbol", True)))
 # Roundup gate. The wire attaches a story to every ticker its BODY names, so a
 # market wrap or movers listicle arrives tagged with a dozen symbols while its
 # headline concerns one of them at most. Above this count the story cannot
