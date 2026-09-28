@@ -226,6 +226,13 @@ MOVERS_MONITOR_MIN_SCORE: float = _as_float(_MOVERS_MONITOR.get("min_score", 50)
 MOVERS_MONITOR_ALERT_ON_INVALIDATION: bool = env_bool(
     "MOVERS_MONITOR_ALERT_ON_INVALIDATION",
     bool(_MOVERS_MONITOR.get("alert_on_invalidation", True)))
+# Pre-market discovery: use the live extended-hours tape during 04:00-09:30 ET
+# instead of the regular chain, which before 09:30 describes yesterday.
+_MOVERS_PREMARKET_DISCOVERY: dict = (
+    _MOVERS.get("premarket_discovery", {}) if isinstance(_MOVERS, dict) else {})
+MOVERS_PREMARKET_DISCOVERY_ENABLED: bool = env_bool(
+    "MOVERS_PREMARKET_DISCOVERY_ENABLED",
+    bool(_MOVERS_PREMARKET_DISCOVERY.get("enabled", True)))
 # Phase 5 — always-on worker.
 _MOVERS_WORKER: dict = _MOVERS.get("worker", {}) if isinstance(_MOVERS, dict) else {}
 MOVERS_WORKER_POLL_INTERVAL_SEC: float = _as_float(_MOVERS_WORKER.get("poll_interval_sec", 60), 60.0)

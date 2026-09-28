@@ -150,6 +150,22 @@ movers:
     require_vwap_hold: true    # invalidate on losing VWAP (price on the wrong side)
     min_score: 50             # invalidate when the enriched quality score falls below this
     alert_on_invalidation: true  # send a Telegram note when a watched signal invalidates
+  # Pre-market discovery source. During 04:00–09:30 ET the regular chain
+  # answers about YESTERDAY's session — the staleness premarket_movers exists
+  # for, and the one alerts.require_fresh_session now refuses — so the morning
+  # window produced nothing usable and silence was the correct behaviour. With
+  # this on, the worker discovers from the live extended-hours tape in that
+  # window instead, and falls back to the regular chain the rest of the day.
+  # Same scoring, same enrichment, same alert gates; only the SOURCE changes.
+  # Two limits stay, and both are disclosed rather than fixed: coverage
+  # (bounded_pool providers cannot see a name that was quiet yesterday) and
+  # VOLUME (the extended-hours tape carries little or none — Yahoo publishes
+  # none — so a candidate too thin to score is held back as no_intraday_data).
+  # Note the worker's own scan window still starts at continuous_scan.
+  # premarket_start_et (07:00), so 04:00–07:00 remains outside it.
+  premarket_discovery:
+    enabled: true
+
   # Phase 5 — always-on worker. Runs discover → alert → monitor → invalidate in a
   # loop with NO browser (bot.py --mode movers-worker, or a Render Background
   # Worker). Needs FMP_KEY + Telegram creds; set movers.alerts.enabled and

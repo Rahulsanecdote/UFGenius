@@ -586,9 +586,44 @@ pytest --cov=src       # coverage
   holidays with no market calendar. An unreadable timestamp counts as stale:
   the gate may only pass when freshness is *established*, never merely
   unrefuted. Held-back candidates are disclosed like every other reason. This
-  suppresses the 07:00–09:30 phantom alerts; making that window produce *real*
-  pre-market candidates means wiring `premarket_movers` into the worker's
-  discovery, which this does not do.
+  suppresses the 07:00–09:30 phantom alerts; **`movers.premarket_discovery`**
+  (default **on**) is what makes that window produce real candidates instead of
+  correct silence — see below.
+- **Pre-market discovery in the worker** (`movers.premarket_discovery`,
+  default **on**; `movers_worker._discover_for_now` →
+  `movers.fetch_premarket_candidates`): before 09:30 the regular chain answers
+  about **yesterday's** session — the staleness `premarket_movers` was written
+  for, and the one `require_fresh_session` refuses — so the 07:00–09:30 window
+  discovered a list the alerter then correctly threw away, and silence was the
+  right behaviour. The worker now routes that window to the live extended-hours
+  tape and falls back to the regular chain for the rest of the day. Everything
+  downstream is unchanged: same `_score`, same `_enrich_candidate`, same halt
+  annotation, same alerter and every one of its gates. **Only the source of the
+  list differs.**
+  It fails **over, not open**: an empty or failed pre-market discovery does
+  *not* substitute the regular chain, because substituting it is exactly how
+  yesterday's list reached the morning window in the first place — an empty
+  extended-hours list is a real answer. A clock/timezone fault falls back to the
+  regular chain rather than taking discovery down.
+  **`_enrich_candidate` gained `prepost`,** and that interaction is what makes
+  or breaks this: without it the enrichment fetch returns REGULAR-session bars,
+  which before the open are yesterday's, so every candidate would carry real
+  metrics describing a finished session and `require_fresh_session` would
+  suppress the whole list as `stale_session_data` — discovered and then thrown
+  away, which is worse than quiet because it reads as the gate being broken.
+  Two limits remain, both provider-shaped and both disclosed rather than fixed:
+  **coverage** (`bounded_pool` providers rank prior-session lists and are
+  structurally blind to a name that was quiet yesterday; the serving provider
+  and its class land in `served_by["premarket"]`) and **volume** (the
+  extended-hours tape carries little or none — Yahoo publishes none at all — so
+  `rel_volume` pre-market is weak or absent, and a candidate too thin to score
+  stays unenriched and is held back as `no_intraday_data`. That is correct:
+  participation is the thing we cannot measure there, so we do not claim to have
+  measured it). The worker's own scan window still starts at
+  `continuous_scan.premarket_start_et` (07:00), so **04:00–07:00 remains outside
+  it**. Surfaced as `features.premarket_discovery` in the worker snapshot, for
+  the same reason the catalyst flag exists: a quiet morning looks identical
+  whether the worker was reading the live tape or yesterday's list.
 - **Movers provider chain** (`src/scanner/movers_providers.py`, config
   `movers.providers`, default `[alpaca, polygon, fmp]`): discovery used to be
   FMP-only, so an exhausted daily quota took the intraday path down entirely.

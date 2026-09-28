@@ -469,7 +469,7 @@ def _last_bar_time(df) -> "datetime | None":
         return None
 
 
-def _enrich_candidate(c: "MoverCandidate") -> "MoverCandidate":
+def _enrich_candidate(c: "MoverCandidate", *, prepost: bool = False) -> "MoverCandidate":
     """Attach live intraday signals and recompute the rank. No-op on any failure.
 
     Reuses the P1.2 intraday scorer and the P1.1 VWAP helper so the metrics match
@@ -481,7 +481,14 @@ def _enrich_candidate(c: "MoverCandidate") -> "MoverCandidate":
         from src.scanner.intraday_scan import score_intraday_frame
         from src.technical.intraday_features import vwap as _vwap
 
-        df = fetch_intraday(c.ticker, interval=config.MOVERS_ENRICH_INTERVAL)
+        # `prepost` matters more than it looks during 04:00–09:30: without it the
+        # fetch returns REGULAR-session bars, which before the open are
+        # yesterday's. The metrics would then be real, `enriched` would be True,
+        # and every one of them would describe a finished session — precisely
+        # what the freshness gate exists to refuse, so the whole pre-market list
+        # would be discovered and then suppressed as `stale_session_data`.
+        df = fetch_intraday(c.ticker, interval=config.MOVERS_ENRICH_INTERVAL,
+                            prepost=prepost)
         metrics = score_intraday_frame(df)
         if metrics is None:
             return c  # too few bars — keep base score
@@ -655,6 +662,89 @@ def fetch_market_movers(
     n_enriched = sum(1 for c in candidates if c.enriched)
     log.info(f"movers: {len(candidates)} candidates after filters "
              f"(min_price={min_price}, min_change_pct={min_change}); "
+             f"{n_enriched} intraday-enriched")
+    return candidates
+
+
+def fetch_premarket_candidates(
+    *,
+    enrich: bool | None = None,
+    limit: int | None = None,
+    now=None,
+) -> list[MoverCandidate]:
+    """Extended-hours movers as ``MoverCandidate``s, for the 04:00–09:30 window.
+
+    The regular chain answers "what moved in the REGULAR session", which before
+    09:30 is *yesterday's* — the staleness `premarket_movers` was written for and
+    the one `require_fresh_session` now refuses. So during the pre-market window
+    the worker has had nothing usable to discover: the correct behaviour was
+    silence. This is the other half — the same candidate pipeline fed from the
+    live extended-hours tape instead.
+
+    Everything downstream is deliberately unchanged: the same `_score`, the same
+    `_enrich_candidate`, the same halt annotation, and the same alerter with all
+    of its gates. Only the SOURCE of the list differs.
+
+    Two honest limits, both provider-shaped rather than fixable here:
+
+    * **Coverage.** `premarket_movers` discloses `market_wide` vs `bounded_pool`;
+      on the keyless Yahoo path a name that was quiet yesterday is structurally
+      invisible, and ranking cannot recover it. `last_discovery_info()` carries
+      which one served.
+    * **Volume.** The extended-hours tape carries little or none — Yahoo
+      publishes none at all — so `rel_volume` pre-market is weak or absent.
+      A candidate whose bars are too thin to score simply stays unenriched and
+      is held back as `no_intraday_data`, which is disclosed. That is the
+      correct outcome: participation is the thing we cannot measure, so we do
+      not claim to have measured it.
+    """
+    from src.scanner import premarket_movers
+
+    enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else bool(enrich)
+    health = _health()
+    health["attempted"].append("premarket")
+
+    try:
+        movers = premarket_movers.fetch_premarket_movers(now=now, limit=limit)
+    except Exception as exc:      # discovery must never break the worker loop
+        log.warning(f"movers: pre-market discovery failed "
+                    f"({type(exc).__name__}: {exc})")
+        health["failed"].append("premarket: discovery_error")
+        return []
+
+    info = premarket_movers.last_discovery_info()
+    served, coverage = info.get("served_by"), info.get("coverage")
+    health["succeeded"].append("premarket")
+    # Same reason the regular chain records `served_by`: a fallback changes the
+    # CHARACTER of the list, and bounded_pool cannot see a fresh gapper at all.
+    health["served_by"]["premarket"] = (
+        f"{served} ({coverage})" if served else "none")
+
+    candidates: list[MoverCandidate] = []
+    for m in movers:
+        direction = "short" if m.change_pct < 0 else "long"
+        c = MoverCandidate(
+            ticker=m.ticker, price=m.price, change_pct=m.change_pct,
+            direction=direction, sources=["premarket"],
+        )
+        c.base_score = _score(c.change_pct, len(c.sources))
+        c.score = c.base_score
+        candidates.append(c)
+
+    candidates.sort(key=lambda x: x.score, reverse=True)
+    if limit and limit > 0:
+        candidates = candidates[: int(limit)]
+
+    if enrich and candidates:
+        cap = max(0, int(config.MOVERS_ENRICH_MAX))
+        for c in candidates[:cap]:
+            _enrich_candidate(c, prepost=True)      # extended-hours bars, not RTH
+        candidates.sort(key=lambda x: x.score, reverse=True)
+
+    candidates = annotate_halts(candidates)
+    n_enriched = sum(1 for c in candidates if c.enriched)
+    log.info(f"movers: {len(candidates)} pre-market candidates "
+             f"(served_by={served or 'none'}, coverage={coverage or 'n/a'}); "
              f"{n_enriched} intraday-enriched")
     return candidates
 

@@ -336,8 +336,29 @@ def test_published_features_reflect_whether_catalyst_alerts_run():
     finally:
         for p in ctx:
             p.stop()
-    assert on["state"].publishes[-1]["features"] == {"catalyst_alerts": True}
-    assert off["state"].publishes[-1]["features"] == {"catalyst_alerts": False}
+    # Assert the FLAG, not the whole dict: `features` is the registry of which
+    # opt-in layers are running, so pinning it exactly made this test a tripwire
+    # for every future flag rather than a check on this one.
+    assert on["state"].publishes[-1]["features"]["catalyst_alerts"] is True
+    assert off["state"].publishes[-1]["features"]["catalyst_alerts"] is False
+
+
+def test_published_features_report_the_premarket_discovery_source():
+    """Same reason: a morning with no alerts looks identical whether the worker
+    was discovering from the extended-hours tape or from yesterday's list."""
+    ctx = _cfg()
+    for p in ctx:
+        p.start()
+    try:
+        with patch.object(cfg, "MOVERS_PREMARKET_DISCOVERY_ENABLED", True):
+            _, _, on = _run(max_cycles=1)
+        with patch.object(cfg, "MOVERS_PREMARKET_DISCOVERY_ENABLED", False):
+            _, _, off = _run(max_cycles=1)
+    finally:
+        for p in ctx:
+            p.stop()
+    assert on["state"].publishes[-1]["features"]["premarket_discovery"] is True
+    assert off["state"].publishes[-1]["features"]["premarket_discovery"] is False
 
 
 # ── alert-outcome ledger wiring: fired alerts become measured evidence ────────
