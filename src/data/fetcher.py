@@ -185,6 +185,32 @@ def _period_to_timedelta(period: str) -> timedelta | None:
     return None
 
 
+# "max" is a MEANINGFUL request ("everything you have"), not a malformed one —
+# but `_period_to_timedelta` returns None for both, and every caller that reads
+# that None has to guess which it meant. They guessed differently and both
+# guessed wrong:
+#
+#   * the Alpaca gate treated None as "cannot serve" and skipped Alpaca SILENTLY,
+#     so `fetch_ohlcv(ticker, period="max")` — what the backtest asks for on
+#     every ticker — never reached the one provider whose rate limits we are not
+#     hitting, and nothing in the log said so;
+#   * Polygon treated None as "default to 365 days", so a backtest requesting
+#     full history was quietly handed ONE YEAR whenever Polygon answered.
+#
+# Bounding "max" fixes both. The window is deliberately far longer than any
+# provider's retention (Alpaca's equity bars start in 2016), so it asks for
+# everything and lets the API clamp, while still being a finite range the
+# request builders can express.
+_MAX_HISTORY = timedelta(days=365 * 25)
+
+
+def _resolve_period(period: str) -> timedelta | None:
+    """Period as a bounded window: `_MAX_HISTORY` for "max", None only if INVALID."""
+    if str(period or "").strip().lower() == "max":
+        return _MAX_HISTORY
+    return _period_to_timedelta(period)
+
+
 def _iso_z(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -331,7 +357,7 @@ def _download_ohlcv_via_alpaca(
     if timeframe is None:
         raise ValueError(f"Unsupported Alpaca interval: {interval}")
 
-    delta = _period_to_timedelta(period)
+    delta = _resolve_period(period)
     if delta is None:
         raise ValueError(f"Unsupported Alpaca period: {period}")
 
@@ -402,8 +428,12 @@ def _download_ohlcv_via_polygon(
         raise RuntimeError("Polygon API key is not configured")
 
     # Map period to date range
-    delta = _period_to_timedelta(period)
+    delta = _resolve_period(period)
     if delta is None:
+        # Genuinely unparseable. Still serve something, but SAY so — this
+        # default silently handed one year to callers asking for more.
+        log.warning(f"{symbol}: unreadable period {period!r} for Polygon — "
+                    "defaulting to 365 days")
         delta = timedelta(days=365)
 
     end_date = datetime.now(timezone.utc).date()
@@ -517,12 +547,21 @@ def _download_ohlcv_once(
     consumers see.
     """
     # 1. Alpaca (primary for NYSE/NASDAQ listed equities)
-    can_try_alpaca = (
-        _alpaca_credentials_configured()
-        and _can_use_alpaca_symbol(symbol)
-        and str(interval).lower() in _ALPACA_TIMEFRAME_MAP
-        and _period_to_timedelta(period) is not None
-    )
+    alpaca_skip = None
+    if not _alpaca_credentials_configured():
+        alpaca_skip = "no credentials"
+    elif not _can_use_alpaca_symbol(symbol):
+        alpaca_skip = "symbol format unsupported"
+    elif str(interval).lower() not in _ALPACA_TIMEFRAME_MAP:
+        alpaca_skip = f"interval {interval!r} unsupported"
+    elif _resolve_period(period) is None:
+        alpaca_skip = f"period {period!r} unreadable"
+    can_try_alpaca = alpaca_skip is None
+    if alpaca_skip is not None:
+        # Say WHY. A silent skip here is indistinguishable from Alpaca having
+        # been tried and failed, which is exactly how `period="max"` kept the
+        # backtest off Alpaca for so long without leaving a trace.
+        log.debug(f"{symbol}: Alpaca skipped ({alpaca_skip}) — trying Polygon")
     if can_try_alpaca:
         try:
             df = _download_ohlcv_via_alpaca(symbol, period=period, interval=interval)

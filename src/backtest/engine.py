@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.universe_history import UniverseHistory, load_universe_history
-from src.data.fetcher import fetch_ohlcv
+from src.data.fetcher import fetch_ohlcv, fetch_ohlcv_batch
 from src.utils import config
 from src.utils.logger import get_logger
 
@@ -186,6 +186,25 @@ def backtest_signal_system(
     end_ts = pd.Timestamp(end_date)
     if end_ts < start_ts:
         return {"error": "end_date must be >= start_date"}
+
+    # Warm the cache in ONE pass before the per-ticker loop. Each
+    # `_prepare_ticker_history` below calls `fetch_ohlcv(..., period="max")`,
+    # and serially that is one blocking HTTP round trip per ticker — ~500 of
+    # them for the S&P, repeated for every walk-forward window. Prefetching
+    # populates the same TTL cache those calls read, so they become cache hits
+    # and the network cost is paid once for the whole run rather than per
+    # ticker per window.
+    #
+    # Note this is a PARALLEL fan-out, not a single multi-symbol request:
+    # `fetch_ohlcv_batch` threads `fetch_ohlcv`, so it is still one HTTP call
+    # per ticker. That is fine against Alpaca's limits and is why the
+    # `period="max"` fix above matters more than this — but it is NOT a true
+    # batch, and calling it one would misdescribe the request volume.
+    try:
+        fetch_ohlcv_batch([t.upper() for t in tickers], period="max", interval="1d")
+    except Exception as exc:      # prefetch is an optimisation, never required
+        log.debug(f"backtest: history prefetch failed ({type(exc).__name__}: {exc}) "
+                  "— falling back to per-ticker fetches")
 
     histories = {
         t.upper(): _prepare_ticker_history(t.upper(), start_ts, end_ts)

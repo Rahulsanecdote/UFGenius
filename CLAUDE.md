@@ -281,6 +281,71 @@ pytest --cov=src       # coverage
   (`src/backtest/intraday_engine.py`); still judge it on paper via
   `/api/paper-scorecard` + `/api/attribution` before real money. See
   `docs/SWEEP_RECLAIM.md`.
+- **Pre-expansion detection (spike precursor)** (`src/signals/precursor.py`,
+  config `precursor:`, **default off**): the third angle on the movers path
+  being structurally late. Discovery reacts to magnitude *after* a name reaches
+  a gainers list; the catalyst wire attacks that from the news side; this
+  attacks it from **price structure** — the state a tape is in *before* the
+  vertical part of a move. Four features, one or two parameters each: range
+  **compression** (coil ATR vs a non-overlapping baseline ATR), **volume
+  dry-up** during the coil (what separates a coil from a tape that merely went
+  quiet), an **expansion trigger** (the newest bar clearing the coil high with
+  both range and volume behind it), and **upper-range position + VWAP** (so the
+  resolution being looked for is upward). Three non-overlapping windows —
+  trigger / coil / baseline — because a coil window containing the trigger
+  looks widest exactly when it fires, and a baseline containing the coil is a
+  reference dragged toward the thing it measures. The stop hint is the **coil
+  low**, an absolute level: back inside the range and the premise is false.
+  **Not prediction** — contraction precedes expansion only in the weak sense
+  that expansion has to come out of something; it says nothing about direction,
+  and most coils resolve into noise. A coil alone is a **watch** state and
+  never an entry, for the same reason. Deliberately *not* a candlestick-pattern
+  library: individual candle shapes on 1m/5m microcap bars are mostly
+  microstructure, and "every pattern × every parameter" is the search space
+  that produces something beautiful in-sample and worthless out of it — the
+  thing `--mode optimize`'s overfitting haircut and `candidate_ranking: rotate`
+  exist to fight.
+  **The binding constraint is warm-up, not any threshold.** `warmup_bars()` is
+  coil + baseline + 2 = 28 at the defaults: 28 minutes on 1m bars, **140 on
+  5m**. Replaying MSGY (2026-09-25, $2.13 → $5.95 between 09:30 and 11:07) at
+  5m produced *nothing*, because the detector had no history to have an opinion
+  with until after the move ended. **It is a 1-minute tool**; on 5m it is quiet
+  through exactly the window morning momentum happens in.
+  **Cost floor** (`precursor.min_risk_cost_multiple`, default 2.0, 0 disables):
+  the stop must sit at least that multiple of modelled round-trip friction away
+  from price. The coil low is close to price *by construction*, so on a
+  high-priced name the entire risk unit can be smaller than the cost of getting
+  in and out — losing arithmetic before the signal has any say. Measured
+  2026-09-26 on 50 S&P names (1m, 09-21→25) *without* the floor: 127 trades,
+  win rate 18.9%, **profit factor 0.06**, average loss **−2.83R**. Pulling one
+  trade apart: $0.625/share of risk on a $339 stock (0.184% of price) against
+  $1.356 of modelled round-trip cost (0.400%) — friction **2.17× the whole risk
+  unit**, so a perfect entry stopping exactly at its stop still loses ~2R and a
+  2R target nets nothing. At multiple N a loss costs ~(1 + 1/N)R and a 2R
+  target nets ~(2 − 1/N)R, so N=2 is ~1.5R against 1.5R. Derived from
+  `backtest_commission_pct` + `backtest_slippage_pct`, **not fitted to
+  returns** — the distinction that separates it from the curve-fitting this
+  module exists to avoid. It lives in the evaluator rather than the harness so
+  the backtest and the live path cannot disagree about what a trade is.
+  A/B on identical cached bars (15 frames, 5,619 bars, floor off then on)
+  refused **10 of 10** entries, and shows why: the risk/cost ratio has a median
+  of **0.20×** and **99.6% of bars sit below the 2× floor**. On 1m mega-cap
+  bars the coil-low stop is routinely a *fifth* of the round-trip cost. The
+  floor therefore makes the detector arithmetically inapplicable to that
+  regime rather than blocking it by a hardcoded price filter — and it adapts:
+  give it a cost model that matches the instrument and the same setups pass.
+  Which is the other half of the lesson, since 0.4% round-trip is far too
+  punitive for a name whose real spread is a basis point or two. The guard is
+  only ever as right as the cost model it reads.
+  That run is **not a fair test of the idea**, and both reasons are worth
+  keeping: S&P mega-caps are the wrong regime (a 6-bar 1m coil on a $339 stock
+  spans 0.18% of price; on a $3 microcap the same structure spans several
+  percent), and the default cost model charges an illiquid-name spread on a
+  name whose real round trip is a basis point or two. The microcap re-run that
+  would settle it was rate-limited by yfinance and still owes an answer.
+  Registered as a third entry in the intraday backtest
+  (`--mode intraday-backtest --entry precursor --interval 1m`) so it is
+  measurable out-of-sample *before* it is allowed to alert anywhere.
 - **Intraday backtest harness (`--mode intraday-backtest`):** the out-of-sample
   check for the intraday entries (`src/backtest/intraday_engine.py`,
   `backtest_intraday`, config `intraday_backtest:`). Replays the breakout /
@@ -306,6 +371,50 @@ pytest --cov=src       # coverage
   firewalled from the money path. `screen()` passes Finviz's own filter string
   through untouched. Note their terms restrict automated access; enabling it is
   deliberately an operator decision.
+- **Logs are redacted at the logger** (`src/utils/logger.py`, `redact()` +
+  `_RedactFilter`): `requests` and most provider SDKs put the **full request
+  URL** into their exception text, and Polygon / Alpha Vantage / FMP
+  authenticate by **query string**, so the ordinary idiom
+  `log.warning(f"{symbol}: Polygon OHLCV failed ({exc})")` writes a live API key
+  into `logs/bot.log` and into whatever the operator redirected stdout to.
+  Observed 2026-09-28: a `--mode validate` run leaked a Polygon key into
+  `data/validate.log` on the first HTTP 429, and from there into a terminal
+  paste. The filter sits on the **logger**, not a handler (a handler filter is
+  bypassed by any handler a caller attaches later) and redacts the **formatted**
+  message, so printf-style `log.warning("%s failed (%s)", sym, exc)` is covered
+  too. It masks `key=value` / `"key": "value"` for api-key/token/secret/password
+  names, `Bearer`/`Basic` credentials (which carry the value after a space, so
+  the key=value pattern cannot see them), and the literal secret *values* read
+  from config — catching one logged outside a URL. Only the value is masked, so
+  the rest of the URL stays debuggable. Never raises. This lives here rather
+  than at the ~80 sites that interpolate an exception because the leak is a
+  property of the exception text, not of any call site, and a rule that must be
+  remembered 80 times gets missed on the 81st.
+- **`period="max"` is a request, not a parse failure** (`src/data/fetcher.py`,
+  `_resolve_period`): `_period_to_timedelta` returned `None` for *both* "give me
+  everything" and "unparseable", and the two callers reading that `None` guessed
+  differently — and both guessed wrong. The Alpaca gate read it as "cannot
+  serve" and skipped Alpaca **silently**, so `fetch_ohlcv(ticker,
+  period="max")` — which is what `src/backtest/engine.py` asks for on every
+  ticker — never reached the one provider whose rate limits we were *not*
+  hitting, with nothing in the log to say why. Polygon read the same `None` as
+  "default to 365 days", so a backtest asking for full history was quietly
+  handed **one year** whenever Polygon answered. Observed 2026-09-28: a
+  `--mode validate` run had every ticker fall Alpaca → Polygon (429) → yfinance
+  (429), and the only trace was `Polygon OHLCV failed … falling back to
+  yfinance`. `_resolve_period` now maps `max` to `_MAX_HISTORY` (25y —
+  deliberately longer than any provider's retention, so the API clamps instead
+  of us guessing a horizon) and returns `None` **only** for genuinely invalid
+  input. The Alpaca gate also names its skip reason rather than falling through
+  in silence, since a silent skip is indistinguishable from having tried and
+  failed, and Polygon's 365-day default now logs when it bites.
+  **Backtest prefetch:** `run_backtest` warms the cache with one
+  `fetch_ohlcv_batch` pass before the per-ticker loop, so ~500 blocking round
+  trips per walk-forward window become cache hits paid once per run. Note that
+  helper is a **parallel fan-out, not a multi-symbol request** — it threads
+  `fetch_ohlcv`, so it is still one HTTP call per ticker. Calling it a "batch"
+  would misdescribe the request volume; true multi-symbol batching against
+  Alpaca's `symbols=` parameter remains undone.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
