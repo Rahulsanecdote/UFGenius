@@ -348,6 +348,87 @@ def cmd_backtest(args) -> None:
         _print_json(result)
 
 
+def cmd_forecast_coverage(args) -> None:
+    """Score a forecast interval's calibration against naive baselines.
+
+    Answers the question the Kronos repository never asks: does a 90% band
+    contain the realised close 90% of the time, and is it worth more than the
+    band you get for free from trailing volatility? Reports coverage, width and
+    the Winkler interval score for every forecaster on identical windows —
+    coverage alone can be gamed by widening, so the three are read together.
+
+    Measurement only. Nothing here places or plans a trade.
+    """
+    import json
+
+    from src.data.fetcher import fetch_ohlcv
+    from src.research.interval_calibration import (
+        compare_forecasters, naive_empirical, naive_gaussian,
+    )
+
+    horizon = int(args.horizon or 5)
+    level = float(args.level or 0.90)
+    tickers = ([args.ticker.upper()] if args.ticker
+               else get_universe(args.universe or config.SCAN_UNIVERSE)[:10])
+
+    forecasters = {
+        "naive_gaussian": naive_gaussian,
+        "naive_empirical": naive_empirical,
+    }
+    # Kronos is optional: absent torch/weights must degrade to "baselines only"
+    # with a stated reason, never to a traceback.
+    if args.kronos_path:
+        from src.research.kronos_forecaster import (
+            KronosUnavailable, load_kronos, make_kronos_forecaster,
+        )
+        try:
+            predictor = load_kronos(
+                kronos_path=args.kronos_path,
+                model_name=args.kronos_model or "NeoQuasar/Kronos-small",
+            )
+            forecasters["kronos"] = make_kronos_forecaster(
+                predictor, n_paths=int(args.paths or 200),
+            )
+        except KronosUnavailable as exc:
+            log.warning(f"Kronos unavailable, measuring baselines only: {exc}")
+
+    last = None
+    print(f"\nForecast interval calibration — horizon={horizon} bars, "
+          f"level={level:.0%}, {len(forecasters)} forecaster(s)")
+    print("=" * 78)
+    for ticker in tickers:
+        bars = fetch_ohlcv(ticker, period="max", interval="1d")
+        if bars is None or bars.empty:
+            print(f"{ticker}: no bars")
+            continue
+        out = compare_forecasters(bars, forecasters, horizon=horizon, level=level)
+        print(f"\n{ticker}  ({len(bars)} daily bars)")
+        print(f"  {'forecaster':18}{'n':>6}{'coverage':>11}{'95% CI':>17}"
+              f"{'width%':>9}{'score%':>9}")
+        for name in forecasters:
+            r = out["results"][name]
+            if r.get("coverage") is None:
+                print(f"  {name:18}{'-':>6}  {r.get('error', 'no windows')}")
+                continue
+            lo, hi = r["coverage_ci95"]
+            flag = "" if lo <= level <= hi else "  <- MISCALIBRATED"
+            print(f"  {name:18}{r['n_windows']:>6}{r['coverage']:>10.1%}"
+                  f"{f'{lo:.2f}-{hi:.2f}':>17}{r['mean_width_pct']:>9.2f}"
+                  f"{r['mean_interval_score_pct']:>9.3f}{flag}")
+        if out["ranked_by_interval_score"]:
+            print(f"  best interval score: {out['ranked_by_interval_score'][0]}")
+        if not out["common_n"]:
+            print("  NOTE: forecasters did not answer the same window count — "
+                  "the comparison is not apples to apples")
+        if args.json:
+            print(json.dumps(out, indent=2, default=str))
+        last = out
+    if last is not None:
+        print("\n" + last["how_to_read"])
+    else:
+        print("\nNo ticker produced enough bars to measure. Nothing is claimed.")
+
+
 def cmd_intraday_backtest(args) -> None:
     """Backtest an intraday entry (breakout / sweep-reclaim) on historical bars.
 
@@ -1174,7 +1255,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream", "premarket-scan", "alert-test"],
+        "--mode", choices=["scan", "screen", "paper", "live", "backtest", "intraday-backtest", "validate", "optimize", "portfolio", "intraday-scan", "earnings-calendar", "movers", "movers-monitor", "movers-worker", "stream", "premarket-scan", "alert-test", "forecast-coverage"],
         default="scan", help="Operating mode (default: scan)",
     )
     parser.add_argument("--ticker",       help="Single ticker to analyse")
@@ -1185,6 +1266,11 @@ Examples:
     parser.add_argument("--universe",     choices=["SP500", "RUSSELL1000", "CUSTOM", "WATCHLIST", "MOVERS", "PREMARKET"], help="Ticker universe (CUSTOM/WATCHLIST read the custom watchlist; MOVERS = the prior regular session's movers; PREMARKET = the CURRENT extended-hours session)")
     parser.add_argument("--preset",       help="Screener preset name (for --mode screen), e.g. oversold-bounce")
     parser.add_argument("--entry",        choices=["breakout", "sweep_reclaim", "precursor"], help="Intraday entry to backtest (for --mode intraday-backtest)")
+    parser.add_argument("--horizon",      type=int, help="Forecast horizon in bars (--mode forecast-coverage; default 5)")
+    parser.add_argument("--level",        type=float, help="Interval confidence level, e.g. 0.90 (--mode forecast-coverage)")
+    parser.add_argument("--paths",        type=int, help="Sampled paths per Kronos forecast (default 200; fewer makes the tail quantiles unreliable)")
+    parser.add_argument("--kronos-path",  help="Local clone of github.com/shiyu-coder/Kronos; omit to measure the naive baselines only")
+    parser.add_argument("--kronos-model", help="Kronos weights (default NeoQuasar/Kronos-small)")
     parser.add_argument("--interval",     help="Intraday bar size for --mode intraday-backtest (e.g. 5m, 1m; default INTRADAY_DEFAULT_INTERVAL)")
     parser.add_argument("--start",        help="Backtest start date YYYY-MM-DD")
     parser.add_argument("--end",          help="Backtest end date YYYY-MM-DD")
@@ -1285,6 +1371,8 @@ Examples:
         cmd_backtest(args)
     elif args.mode == "intraday-backtest":
         cmd_intraday_backtest(args)
+    elif args.mode == "forecast-coverage":
+        cmd_forecast_coverage(args)
     elif args.mode == "validate":
         cmd_validate(args)
     elif args.mode == "optimize":

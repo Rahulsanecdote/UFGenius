@@ -81,6 +81,7 @@ python bot.py --mode live --live-execute        # + REAL-MONEY orders (needs ALP
 python bot.py --mode live --execute --dry-run   # preview orders, submit nothing
 python bot.py --mode backtest --start 2022-01-01 --end 2023-12-31
 python bot.py --mode intraday-backtest --entry breakout --interval 5m  # OOS check for the intraday entries (breakout / sweep_reclaim)
+python bot.py --mode forecast-coverage --ticker AAPL --horizon 5  # is a forecast INTERVAL calibrated, and worth more than trailing vol?
 python bot.py --mode validate --start 2022-01-01 --end 2023-12-31  # walk-forward + OOS + bootstrap edge check (P0.1)
 python bot.py --mode validate --save-baseline   # + persist the OOS metrics as the paper-vs-backtest reference
 python bot.py --mode optimize --start 2022-01-01 --end 2023-12-31  # in-sample grid search + overfitting haircut + OOS confirm (P0.2)
@@ -492,6 +493,57 @@ pytest --cov=src       # coverage
   `/api/alert-outcomes` and a per-source hit-rate/avg-move line in the
   dashboard worker strip. This is the evidence base for "are the alerts any
   good" — the automated version of hand-checking prices after the fact.
+- **Forecast-interval calibration** (`src/research/interval_calibration.py`,
+  `--mode forecast-coverage`, `docs/KRONOS_EVALUATION.md`): measurement only —
+  `src/research/` may not import the executor or the broker, and a test asserts
+  it. Written to evaluate **Kronos** (github.com/shiyu-coder/Kronos, MIT, AAAI
+  2026) but forecaster-agnostic: anything answering "given bars to today, where
+  is the close in `h` bars at this confidence" is scorable.
+  **Coverage is necessary and nowhere near sufficient.** A 90% band should
+  contain the realised close 90% of the time, but coverage cannot *rank*
+  forecasters — widen the band and it is perfect and useless. So every run
+  reports coverage **plus** width **plus** the Winkler **interval score**, the
+  proper scoring rule that trades them off (widening costs width every window;
+  missing costs `2/α` × the shortfall, 20× at the 90% level). Reading any one
+  alone is the mistake.
+  **And there is always a baseline**, because the upstream repo has none: it
+  reports directional accuracy, MAE, a "<5% error" rate, correlation and a
+  Sharpe against nothing, and two of those are actively misleading on price
+  series (correlation of predicted vs actual *levels* is ~1 for any method
+  including "tomorrow equals today"; a <5% one-day error is met by the naive
+  forecast nearly always). `naive_gaussian` and `naive_empirical` are scored on
+  the identical windows.
+  **The harness is self-tested on synthetic data whose answer is known** — a
+  measurement tool only ever pointed at real data has not been tested, it has
+  been used, and a bug in it looks exactly like a finding. The tests assert that
+  a correct band recovers nominal at 50/80/90/95%, that a band a third too
+  narrow is caught with nominal *excluded* from the CI, that widening to
+  guarantee coverage **and** narrowing to look sharp both lose on score, that no
+  forecaster sees a bar past the origin, and that a forecaster declining the
+  hard windows is counted rather than flattered.
+  **The number that matters**: on a Gaussian random walk the *true process*
+  scores 18.631 against `naive_empirical`'s 19.131 — a **2.6% edge for a
+  forecaster that cannot be beaten**. The free baseline is within 3% of optimal,
+  so the bar is not "is it calibrated" (trailing vol already is); it is whether
+  real prices are predictable enough to clear that, and the entire available
+  headroom is small.
+  Origins are spaced `stride` (default `horizon`) so windows do **not** overlap —
+  overlapping windows share most of their path, which makes hits correlated and
+  the coverage CI far too narrow; `windows_overlap` is reported when overridden.
+  Kronos itself is an **optional** dependency (`src/research/kronos_forecaster.py`,
+  lazy torch import, `KronosUnavailable` with a stated reason, never a
+  traceback). Three departures from the popular walkthrough, each verified in the
+  repo source: `top_p=1.0` not 0.9 (nucleus truncation clips the tail and the
+  clipped percentiles are then sold as uncertainty), 200 paths not 20 (at n=20
+  the 5th/95th percentiles are the sample min/max), and one batched
+  `predict_batch` call with `sample_count=1` — because `model/kronos.py:467` does
+  `preds = np.mean(preds, axis=1)`, so `sample_count>1` averages the paths into a
+  single line and destroys the distribution the whole exercise is about.
+  **A pass licenses nothing about direction.** What a calibrated, sharper-than-naive
+  band earns is a role in **stop distance and sizing** — where this system is
+  weakest (both come from ATR alone) and where `docs/COST_MODEL.md` showed the
+  binding constraint already lives: risk-unit versus friction is a range
+  question, not a direction one.
 - **Explainability (P3.1):** `src/explain/narrative.py` is an *optional* LLM
   layer that turns the **verified quant snapshot** into a plain-English bull/bear
   read for the dashboard/alerts. It is **advisory only** — no import of the
