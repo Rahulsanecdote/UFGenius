@@ -39,7 +39,21 @@ movers:
   # failure the chain was built for — so watch /api/movers `source_errors`, and
   # fall back to first_wins or lengthen the cadence further if it still bites.
   provider_mode: merge
-  min_price: 1.0            # drop sub-$1 names (penny/liquidity guard); lower at your own risk
+  # Discovery floor, NOT a money-path guard: the movers worker only discovers
+  # and alerts — it cannot place an order, and RiskGuard, signals/filters.py and
+  # the penny rails are untouched by this. It was $1.00, which is why NIVF
+  # (2026-09-30: $0.072 -> $0.25, +244%) never entered the pipeline. $0.05 sits
+  # below NIVF's whole run, including its $0.0636 low the day before.
+  # WHAT MADE THIS SAFE TO LOWER is exclude_derivatives below: without it the
+  # sub-$1 list is mostly warrants and rights (of the lowest 25 sub-$1 names
+  # measured that morning, three were stock), and they took 19 of 40 watch
+  # slots. Also note sub-$1 names are where production's IEX bars are thinnest
+  # (see CLAUDE.md), so expect many to be held back as no_intraday_data.
+  min_price: 0.05           # discovery floor ($); see above
+  # Drop warrants, rights and units — identified by Alpaca's asset NAME, with a
+  # ticker-suffix fallback when the asset list is unavailable. Count and method
+  # land in /api/movers (excluded_derivatives, derivative_filter).
+  exclude_derivatives: true
   max_price: 0              # 0 = no upper cap
   min_change_pct: 3.0       # only consider names moving at least this % (absolute)
   # Corporate-action guard. The FMP lists report an UNADJUSTED quote change, so
@@ -596,7 +610,10 @@ screener:
 premarket_movers:
   providers: [polygon, yahoo]     # first that answers wins; order = preference
   limit: 50                       # max tickers handed to the screener
-  min_price: 1.0                  # below this the extended-hours tape is noise
+  # Lowered with movers.min_price, for the same reason: this is what the worker
+  # discovers from 07:00-09:30. Warrants/rights/units are excluded by
+  # movers.exclude_derivatives here too.
+  min_price: 0.05                 # discovery floor ($)
   min_change_pct: 4.0             # matches premarket.min_gap_pct — both directions
   yahoo_screeners: [day_gainers, day_losers, most_actives,
                     small_cap_gainers, aggressive_small_caps]

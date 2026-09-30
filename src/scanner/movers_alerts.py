@@ -88,12 +88,26 @@ def build_reasons(c) -> list[str]:
     return reasons
 
 
+def fmt_price(price: float) -> str:
+    """$1,234.56 at a dollar and up; $0.2477 below.
+
+    Sub-$1 stocks quote in $0.0001 increments (Reg NMS Rule 612), and discovery
+    now reaches them. Two decimals would alert NIVF at $0.2477 as "$0.25" and a
+    $0.0636 name as "$0.06" — a 6% misstatement of the price you act on.
+    """
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return "$--"
+    return f"${p:.4f}" if abs(p) < 1 else f"${p:,.2f}"
+
+
 def format_alert(c) -> str:
     """The screener alert message for one candidate."""
     tag = "🟢 LONG" if c.direction == "long" else "🔴 SHORT"
     why = " · ".join(build_reasons(c))
     return (
-        f"{tag} · {c.ticker}  ${c.price:,.2f}  ({c.change_pct:+.1f}%)\n"
+        f"{tag} · {c.ticker}  {fmt_price(c.price)}  ({c.change_pct:+.1f}%)\n"
         f"Confidence: {_confidence_label(c.score)} ({c.score:.0f}/100)\n"
         f"Why: {why}\n"
         f"NOT financial advice — screener signal, not a trade instruction."

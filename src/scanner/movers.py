@@ -52,7 +52,7 @@ _MAX_WITHHELD = 8
 
 def _blank_health() -> dict:
     return {"attempted": [], "succeeded": [], "failed": [], "served_by": {},
-            "withheld": []}
+            "withheld": [], "excluded_derivatives": [], "derivative_filter": None}
 
 
 def _health() -> dict:
@@ -158,7 +158,11 @@ def last_source_health() -> dict:
     def _copy(value):
         if isinstance(value, dict):
             return dict(value)
-        return [dict(v) if isinstance(v, dict) else v for v in value]
+        if isinstance(value, (list, tuple)):
+            return [dict(v) if isinstance(v, dict) else v for v in value]
+        # Scalars (derivative_filter is None or a string) pass through: a
+        # string is iterable, and list-copying one returns its characters.
+        return value
 
     return {key: _copy(value) for key, value in _health().items()}
 
@@ -626,7 +630,21 @@ def fetch_market_movers(
     candidates: list[MoverCandidate] = []
     suspect = float(config.MOVERS_SUSPECT_CHANGE_PCT)
     agree_tol = float(config.MOVERS_SUSPECT_AGREEMENT_PCT) / 100.0
+    exclude_derivatives = bool(config.MOVERS_EXCLUDE_DERIVATIVES)
+    if exclude_derivatives:
+        from src.data import security_type
     for c in merged.values():
+        # Warrants, rights and units are not stock, and below $1 they are most
+        # of what the lists contain: with the price floor removed on 2026-09-30,
+        # 19 of the 40 top-scoring slots went to sub-$1 names, mostly
+        # derivatives — a $0.004 warrant moving -59% scores the maximum, so
+        # NIVFW rode in beside NIVF and real movers were pushed out. First in
+        # the loop so the corporate-action guard never spends a fetch verifying
+        # one. Recorded, never silent: an excluded name is still a name someone
+        # may go looking for.
+        if exclude_derivatives and security_type.is_derivative(c.ticker):
+            _health()["excluded_derivatives"].append(c.ticker)
+            continue
         # Corporate-action guard, BEFORE the magnitude/direction filters so the
         # corrected number flows through all of them. A move past `suspect` is
         # more often a reverse-split artifact than a real session — but not
@@ -712,9 +730,17 @@ def fetch_market_movers(
     candidates = annotate_halts(candidates)
 
     n_enriched = sum(1 for c in candidates if c.enriched)
+    excluded = _health()["excluded_derivatives"]
+    if exclude_derivatives:
+        # By name when the asset list was available, by ticker suffix when not —
+        # two different strengths of claim, so the difference is recorded.
+        _health()["derivative_filter"] = (
+            "asset_names" if security_type.last_fetch_ok() else "symbol_suffix")
     log.info(f"movers: {len(candidates)} candidates after filters "
              f"(min_price={min_price}, min_change_pct={min_change}); "
-             f"{n_enriched} intraday-enriched")
+             f"{n_enriched} intraday-enriched"
+             + (f"; {len(excluded)} warrants/rights/units excluded "
+                f"[{_health()['derivative_filter']}]" if excluded else ""))
     return candidates
 
 

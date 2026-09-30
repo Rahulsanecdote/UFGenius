@@ -2672,7 +2672,10 @@ HTML = '''
     function formatPrice(value) {
       const amount = Number(value);
       if (!Number.isFinite(amount)) return '--';
-      return `$${amount.toFixed(2)}`;
+      // Sub-$1 stocks quote in $0.0001 increments (Reg NMS Rule 612), so two
+      // decimals misstate them: $0.2477 would read $0.25 and a $0.2421 stop
+      // $0.24 — a 1-6% error on the number you would act on.
+      return Math.abs(amount) < 1 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(2)}`;
     }
 
     function formatPercent(value, digits = 1) {
@@ -3822,7 +3825,7 @@ HTML = '''
         return `<tr>
           <td class="movers-rank">${i + 1}</td>
           <td class="movers-sym">${escapeHtml(m.ticker)}${halt}</td>
-          <td class="num">$${Number(m.price).toFixed(2)}</td>
+          <td class="num">${formatPrice(m.price)}</td>
           <td class="num ${chgCls}">${m.change_pct >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(1)}%${adj}</td>
           <td><span class="movers-dir ${dir}">${dir.toUpperCase()}</span></td>
           <td class="num movers-score">${Math.round(m.score)}</td>
@@ -3911,7 +3914,7 @@ HTML = '''
             const rv = (w.rel_volume === null || w.rel_volume === undefined) ? '' : ` · ${Number(w.rel_volume).toFixed(1)}x`;
             // Phase 8: live streamed price (only when a fresh tick is present).
             const live = (w.live_price !== null && w.live_price !== undefined && w.live_fresh)
-              ? `<span class="mw-live-px" title="Live streamed price">$${Number(w.live_price).toFixed(2)}</span>` : '';
+              ? `<span class="mw-live-px" title="Live streamed price">${formatPrice(w.live_price)}</span>` : '';
             return `<span class="mw-chip"><span class="mw-tk ${dir}">${arrow} ${w.ticker}</span>`
                  + `${live}<span class="mw-sc">${Number(w.score).toFixed(0)}${rv}</span></span>`;
           }).join('')
