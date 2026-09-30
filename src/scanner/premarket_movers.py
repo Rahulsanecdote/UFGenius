@@ -339,6 +339,23 @@ def fetch_premarket_movers(
         if movers is None:
             continue
         info["pool_size"] = len(movers)
+        # Same rule and reason as regular-session discovery (movers.py): below
+        # $1 the lists are mostly warrants/rights/units, and this is the 07:00-
+        # 09:30 window the worker actually discovers from — NIVF did most of its
+        # 2026-09-30 run before the open.
+        excluded: list[str] = []
+        if config.MOVERS_EXCLUDE_DERIVATIVES:
+            from src.data import security_type
+            stock_only = []
+            for m in movers:
+                if security_type.is_derivative(m.ticker):
+                    excluded.append(m.ticker)
+                else:
+                    stock_only.append(m)
+            movers = stock_only
+            info["derivative_filter"] = (
+                "asset_names" if security_type.last_fetch_ok() else "symbol_suffix")
+        info["excluded_derivatives"] = excluded
         kept = [m for m in movers
                 if m.price >= min_price and abs(m.change_pct) >= min_change]
         kept.sort(key=lambda m: (-abs(m.change_pct), m.ticker))

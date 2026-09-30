@@ -881,6 +881,43 @@ pytest --cov=src       # coverage
   IEX), the serving provider is recorded per source in `served_by` and named in
   the dashboard — a fallback changes the character of the list, so it is
   disclosed rather than swapped silently.
+- **Sub-$1 discovery, stocks only** (`movers.min_price` / `premarket_movers.
+  min_price` **$0.05**, `movers.exclude_derivatives` default **on**,
+  `src/data/security_type.py`): the floor was $1.00, which is why NIVF
+  ($0.072 → $0.25, +244% on 2026-09-30) never entered the pipeline. Both
+  floors came down, because the worker discovers 07:00–09:30 from
+  `premarket_movers` and NIVF did most of its run before the open. **The floor
+  alone would have made discovery worse**: with it removed, 19 of the 40
+  top-scoring watch slots went to sub-$1 names — mostly warrants and rights,
+  since a $0.004 warrant moving −59% scores the discovery maximum — and NIVFW
+  rode in beside NIVF, pushing real movers out. So derivatives are excluded in
+  both paths, first in the candidate loop so the corporate-action guard never
+  spends a fetch verifying one, and every exclusion is recorded
+  (`excluded_derivatives`, plus `derivative_filter`: `asset_names` or
+  `symbol_suffix`) rather than dropped silently. Live on 2026-09-30 at 09:57:
+  73 candidates, 27 derivatives excluded by name, 11 sub-$1 **stocks** found,
+  7 of 40 watch slots sub-$1.
+  **Classified by Alpaca's asset NAME, not the ticker.** A W/R/U suffix rule
+  misses OPENZ ("Series Z Warrants") and would flag SNOW. And a naive name rule
+  was wrong too: `\bunits?\b` flagged every partnership, because an MLP's
+  *common units are its equity* — Energy Transfer is "Energy Transfer LP Common
+  Units representing limited partner interests", and Plains All American,
+  Alliance Resource, CrossAmerica, UNG and the Grayscale trusts read the same
+  way. An audit of all 14,389 asset names caught it before it shipped; units now
+  count as derivatives only when they are not partnership/trust equity (the SPAC
+  "Unit 1 CL A & 1/3 WT" bundles). The suffix rule is a fallback for when the
+  asset list is unavailable, and on the 8,840 listed assets it wrongly drops one
+  stock (PSNYW, a Polestar ADS) and misses 26 derivatives — erring toward
+  admitting a stray warrant, the visible error, over hiding a stock, the
+  invisible one. Credentials are checked **before** the disk cache, so a
+  keyless caller (every unit test) never reads a map a live run left in
+  `data/`. Sub-$1 prices are shown to **four decimals** (Reg NMS Rule 612 tick)
+  in the Telegram alert and the dashboard's `formatPrice` — two decimals stated
+  NIVF's $0.2477 as $0.25 and a $0.0636 name as $0.06. This is **discovery and
+  alerting only**: RiskGuard, `signals/filters.py` and the penny rails are
+  unchanged, and the worker cannot place an order. Expect many sub-$1 names to
+  be held back as `no_intraday_data` — they are where production's IEX bars are
+  thinnest (see the IEX note above).
 - **Discovery-source health** (`movers.last_source_errors()`): every fetcher
   fails soft to `[]`, so a dead FMP key or an exhausted quota used to render
   identically to a quiet market ("no movers cleared the filters"). Failures are

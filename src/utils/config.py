@@ -123,6 +123,12 @@ MOVERS_PROVIDERS: list = list(_MOVERS.get("providers", ["alpaca", "polygon", "fm
 MOVERS_PROVIDER_MODE: str = env(
     "MOVERS_PROVIDER_MODE", str(_MOVERS.get("provider_mode", "merge")))
 MOVERS_MIN_PRICE: float = _as_float(_MOVERS.get("min_price", 1.0), 1.0)
+# Drop warrants/rights/units from discovery (src/data/security_type.py). On by
+# default: below $1 the movers lists are mostly derivatives, and lowering
+# min_price without this floods the watch set with them. Env-overridable so a
+# managed host can turn it off without a commit + redeploy.
+MOVERS_EXCLUDE_DERIVATIVES: bool = env_bool(
+    "MOVERS_EXCLUDE_DERIVATIVES", bool(_MOVERS.get("exclude_derivatives", True)))
 MOVERS_MAX_PRICE: float = _as_float(_MOVERS.get("max_price", 0), 0.0)
 MOVERS_MIN_CHANGE_PCT: float = _as_float(_MOVERS.get("min_change_pct", 3.0), 3.0)
 _suspect_change_pct = _as_float(_MOVERS.get("suspect_change_pct", 300.0), 300.0)
