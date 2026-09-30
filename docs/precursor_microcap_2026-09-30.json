@@ -1,0 +1,128 @@
+{
+  "question": "Does the spike precursor have an edge on low-priced names, where the 2026-09-26 mega-cap run said the regime was wrong?",
+  "run_at": "2026-09-30",
+  "data": {
+    "feed": "sip (consolidated) via Alpaca free tier, query ends >=15 min ago",
+    "why_not_iex": "IEX carries ~3.2% of consolidated volume and emits no bar for a minute with no IEX print (SRFM: 98 of 390 minutes on IEX vs 389 on SIP); the precursor counts in bars",
+    "interval": "1m",
+    "session": "regular only, 13:30-20:00 UTC",
+    "window": [
+      "2026-09-21T13:30:00Z",
+      "2026-09-29T20:00:00Z"
+    ]
+  },
+  "universe": {
+    "method": "every listed NASDAQ/NYSE/AMEX common stock, priced at the cutoff close BEFORE the window, filtered, then a fixed-seed random draw \u2014 not selected on having moved",
+    "cutoff": "2026-09-18",
+    "pool_size": 8286,
+    "price_band": [
+      1.0,
+      12.0
+    ],
+    "min_dollar_volume": 3000000,
+    "n_eligible": 815,
+    "seed": 20260918,
+    "symbols": [
+      "SMR",
+      "ITUB",
+      "INFY",
+      "GRAB",
+      "HLN",
+      "PLTD",
+      "VISN",
+      "JBS",
+      "CX",
+      "RZLV",
+      "FSM",
+      "SDOT",
+      "SBS",
+      "ALMS",
+      "NXE",
+      "STUB",
+      "SOC",
+      "BFLY",
+      "BW",
+      "SUNE",
+      "MBC",
+      "ENVX",
+      "GEMI",
+      "WTI",
+      "AQST",
+      "CRBP",
+      "TENX",
+      "JPC",
+      "SWVL",
+      "BKKT",
+      "LADR",
+      "RSKD",
+      "EVC",
+      "PSEC",
+      "EDIT",
+      "CLVT",
+      "NWCL",
+      "DC",
+      "HYT",
+      "AMCX",
+      "BUR",
+      "CGNT",
+      "SFIX",
+      "MOMO",
+      "FATE",
+      "BRCB",
+      "OPRT",
+      "CLNE",
+      "RNXT",
+      "PML"
+    ]
+  },
+  "cost_sweep_floor_and_cost_together": {
+    "0.1000": {
+      "trades": 188,
+      "win_rate": 0.2979,
+      "expectancy_r": -0.3002,
+      "profit_factor": 0.6346,
+      "sum_r": -56.45
+    },
+    "0.2000": {
+      "trades": 114,
+      "win_rate": 0.2544,
+      "expectancy_r": -0.502,
+      "profit_factor": 0.4556,
+      "sum_r": -57.22
+    },
+    "0.4000": {
+      "trades": 49,
+      "win_rate": 0.3265,
+      "expectancy_r": -0.4157,
+      "profit_factor": 0.5165,
+      "sum_r": -20.37
+    },
+    "0.8000": {
+      "trades": 9,
+      "win_rate": 0.3333,
+      "expectancy_r": -0.4079,
+      "profit_factor": 0.5049,
+      "sum_r": -3.67
+    },
+    "1.6155": {
+      "trades": 3,
+      "win_rate": 0.0,
+      "expectancy_r": -1.256,
+      "profit_factor": 0.0,
+      "sum_r": -3.77
+    }
+  },
+  "gross_edge": {
+    "expectancy_r": -0.041,
+    "ci95_r": [
+      -0.253,
+      0.175
+    ],
+    "p_positive": 0.348,
+    "trades": 188,
+    "clusters": 123,
+    "method": "0.1% RT run with its cost added back; bootstrap resamples ticker-day clusters, 10k draws, seed 7"
+  },
+  "median_stop_distance_pct_of_price": 0.464,
+  "verdict": "No edge. Gross expectancy is indistinguishable from zero and more likely negative; even the top of its 95% CI (+0.175R) nets -3.30R per trade at this cohort's measured friction (1.6155% round trip = 3.48R at the median stop)."
+}
