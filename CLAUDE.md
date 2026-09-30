@@ -217,8 +217,12 @@ pytest --cov=src       # coverage
   host-local time, and Render runs UTC — every slot fired four hours early
   under EDT (the 09:25 open scan at 05:25 ET). Needs `pytz`, now pinned. Two
   properties of `_schedule_scan` to know before running it unattended: it
-  **scans once immediately at startup** (so a redeploy triggers a scan at
-  whatever time it lands), and the 11:00/14:00 slots rarely pass anything,
+  **scans once immediately at startup** unless `SCHEDULE_RUN_ON_STARTUP=false`
+  (config `schedule_run_on_startup`, default true) — off on the Render
+  **`ufgenius-paper-trader`** worker (`--mode live --execute`, `ALPACA_PAPER`
+  pinned `"true"`, `data/` on a persistent disk), since under autoDeploy every
+  merge restarts it and a startup scan would place orders at whatever time the
+  deploy landed — and the 11:00/14:00 slots rarely pass anything,
   because the pre-filter's `RVOL >= 1.3` is computed on today's **partial**
   daily bar — measured 10:35 ET 2026-09-30: AAPL 0.38, MSFT 0.46, JPM 0.09,
   XOM 0.15, and 0 of 503 passed.

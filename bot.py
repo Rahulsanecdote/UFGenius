@@ -1191,8 +1191,13 @@ def _schedule_scan(args) -> None:
     log.info(f"Scheduled scans (weekdays, {_SCHEDULE_TZ}): {', '.join(wired) or 'none'}")
     log.info(f"Running in {'PAPER' if args.mode == 'paper' else 'LIVE'} mode. Press Ctrl+C to stop.")
 
-    # Run immediately on startup
-    _run()
+    # Run immediately on startup — unless disabled, which an unattended executor
+    # should be: under autoDeploy every merge restarts it, and a startup scan
+    # would place orders at whatever time the deploy happened to land.
+    if config.SCHEDULE_RUN_ON_STARTUP:
+        _run()
+    else:
+        log.info("Startup scan skipped (SCHEDULE_RUN_ON_STARTUP=false) — waiting for the first slot")
 
     while True:
         schedule.run_pending()

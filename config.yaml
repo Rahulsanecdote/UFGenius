@@ -502,6 +502,13 @@ portfolio:
   max_drawdown_halt_pct: 15.0    # peak-to-trough equity drawdown that vetoes NEW entries (0 disables)
   peak_equity_path: "data/portfolio_peak_equity.json"  # persisted equity high-water mark for the drawdown halt
 
+# Scan once immediately when a scheduled process starts (--mode paper/live),
+# before waiting for the first slot below. Handy at a terminal; wrong for an
+# unattended executor under autoDeploy, where every merge to main restarts the
+# process and would trigger an off-schedule scan that can place orders at
+# whatever time the deploy lands. Env: SCHEDULE_RUN_ON_STARTUP.
+schedule_run_on_startup: true
+
 schedule:
   pre_market: "06:00"
   market_open: "09:25"

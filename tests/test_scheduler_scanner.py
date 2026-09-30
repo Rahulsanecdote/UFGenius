@@ -79,6 +79,45 @@ def test_a_real_job_lands_on_the_new_york_wall_clock():
     assert (ny.hour, ny.minute) == (9, 25)
 
 
+class _StopLoop(Exception):
+    pass
+
+
+def _run_schedule_once(monkeypatch, run_on_startup: bool) -> list:
+    """Drive _schedule_scan up to its first sleep, recording scans."""
+    scans: list = []
+    _mock_schedule(monkeypatch)
+    monkeypatch.setattr(bot.config, "SCHEDULE_RUN_ON_STARTUP", run_on_startup)
+    monkeypatch.setattr(bot, "_is_trading_day", lambda now=None: True)
+    monkeypatch.setattr(bot, "cmd_scan", lambda args: scans.append(args))
+
+    def _stop(_s):
+        raise _StopLoop
+
+    monkeypatch.setattr(bot.time, "sleep", _stop)
+    args = MagicMock(execute=False, live_execute=False, mode="live")
+    try:
+        bot._schedule_scan(args)
+    except _StopLoop:
+        pass
+    return scans
+
+
+def test_startup_scan_runs_by_default(monkeypatch):
+    assert len(_run_schedule_once(monkeypatch, True)) == 1
+
+
+def test_startup_scan_can_be_disabled_for_an_unattended_executor(monkeypatch):
+    """Under autoDeploy every merge restarts the worker; with this off, a
+    redeploy restarts the monitor without trading off-schedule."""
+    assert _run_schedule_once(monkeypatch, False) == []
+
+
+def test_the_shipped_default_keeps_terminal_behaviour():
+    import src.utils.config as live
+    assert live.SCHEDULE_RUN_ON_STARTUP is True
+
+
 # ── L4: weekend gate ─────────────────────────────────────────────────────────
 
 def test_weekend_is_not_a_trading_day():
