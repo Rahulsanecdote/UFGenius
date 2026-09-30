@@ -94,6 +94,21 @@ class LivePosition:
     composite_score: float = 0.0  # composite score at entry (per-signal attribution)
     realized_pnl: float = 0.0   # running sum of booked exit P&L for this position
 
+    # How the exits are held at the broker. "" = legacy (one full-size stop plus
+    # separate target limit sells — which Alpaca rejects, since the stop has
+    # already reserved every share); "oco" = one OCO per tranche, where
+    # t{n}_order_id is the take-profit parent and t{n}_stop_id its stop leg.
+    # Trailing defaults keep older records loadable, and they keep the legacy
+    # path, so a record written before the change is still monitored the way it
+    # was placed.
+    exit_mode: str = ""
+    t1_stop_id: Optional[str] = None
+    t2_stop_id: Optional[str] = None
+    t3_stop_id: Optional[str] = None
+    t1_stopped: bool = False    # tranche exited at its stop leg
+    t2_stopped: bool = False
+    t3_stopped: bool = False
+
 
 def _coerce_daily_entries(raw: dict) -> dict[str, int]:
     """Keep only str->non-negative-int pairs; drop anything unreadable.
@@ -468,9 +483,13 @@ class PositionTracker:
         return pos
 
     def mark_entry_filled(
-        self, ticker: str, fill_price: float, shares: int
+        self, ticker: str, fill_price: float, shares: int, exit_mode: str = ""
     ) -> None:
-        """Record actual fill price/qty and transition status to 'active'."""
+        """Record actual fill price/qty and transition status to 'active'.
+
+        ``exit_mode`` is recorded in the same save, so a crash between the fill
+        and the exit orders still leaves the record on the path that retries
+        them."""
         with self._lock:
             pos = self._require(ticker)
             pos.fill_price = fill_price
@@ -478,6 +497,7 @@ class PositionTracker:
             pos.shares_open = shares
             # Recompute tranche sizes against the actual fill qty
             pos.t1_shares, pos.t2_shares, pos.t3_shares = _allocate_exit_tranches(shares)
+            pos.exit_mode = exit_mode
             pos.status = "active"
             self.save()
         log.info(f"{ticker}: entry filled @ ${fill_price:.2f} x{shares}")
@@ -508,6 +528,70 @@ class PositionTracker:
         with self._lock:
             pos = self._require(ticker)
             setattr(pos, f"{level}_order_id", order_id)
+            self.save()
+
+    def mark_oco_placed(
+        self,
+        ticker: str,
+        level: Literal["t1", "t2", "t3"],
+        order_id: Optional[str],
+        stop_id: Optional[str],
+    ) -> None:
+        """Record a tranche's OCO exit: the take-profit parent and its stop leg.
+
+        Pass ``None`` for both to record that the tranche has no live exit, so
+        the monitor re-places it on its next cycle.
+        """
+        with self._lock:
+            pos = self._require(ticker)
+            setattr(pos, f"{level}_order_id", order_id)
+            setattr(pos, f"{level}_stop_id", stop_id if order_id else None)
+            self.save()
+
+    def mark_tranche_stopped(
+        self,
+        ticker: str,
+        level: Literal["t1", "t2", "t3"],
+        realized_pnl: Optional[float] = None,
+    ) -> None:
+        """Record that a tranche exited at its OCO stop leg.
+
+        The stop-side twin of ``mark_target_hit``: same share accounting, same
+        single-save ledger booking.
+        """
+        with self._lock:
+            pos = self._require(ticker)
+            sold = int(getattr(pos, f"{level}_shares"))
+            pos.shares_open = max(0, pos.shares_open - sold)
+            setattr(pos, f"{level}_stopped", True)
+            remaining = pos.shares_open
+            self._append_realized_locked(ticker, realized_pnl)
+            self.save()
+        log.info(
+            f"{ticker}: {level.upper()} tranche stopped out — {sold} shares sold,"
+            f" {remaining} remaining"
+        )
+
+    def resize_tranche(
+        self,
+        ticker: str,
+        level: Literal["t1", "t2", "t3"],
+        shares: int,
+        realized_pnl: Optional[float] = None,
+    ) -> None:
+        """Shrink a tranche to ``shares`` after part of it exited, booking what did.
+
+        For the rare OCO that part-filled its take-profit and was then cancelled
+        with shares still held: the replacement must cover only what remains,
+        or it would sell shares the account no longer has.
+        """
+        with self._lock:
+            pos = self._require(ticker)
+            old = int(getattr(pos, f"{level}_shares"))
+            new = max(0, min(old, int(shares)))
+            setattr(pos, f"{level}_shares", new)
+            pos.shares_open = max(0, pos.shares_open - (old - new))
+            self._append_realized_locked(ticker, realized_pnl)
             self.save()
 
     def mark_target_hit(

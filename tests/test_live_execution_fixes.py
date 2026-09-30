@@ -115,17 +115,16 @@ def test_partial_fill_cancels_remainder_and_sizes_protection(tracker):
 
     with patch("src.alpaca.executor.get_order", side_effect=lambda oid: seq.pop(0)):
         with patch("src.alpaca.executor.cancel_order", return_value=True) as mock_cancel:
-            with patch("src.alpaca.executor.place_stop_order",
-                       return_value=MagicMock(id="s")) as mock_stop:
-                with patch("src.alpaca.executor.place_limit_sell",
-                           return_value=MagicMock(id="t")):
-                    _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
+            with patch("src.alpaca.executor.place_oco_exit",
+                       return_value=MagicMock(id="t", legs=[])) as mock_oco:
+                _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
 
     pos = tracker.get("AAPL")
     assert pos.status == "active"
     assert pos.shares_initial == 6           # only the filled qty
     mock_cancel.assert_called_once()          # unfilled remainder cancelled
-    assert mock_stop.call_args[0][1] == 6     # stop sized to filled shares
+    # Protection sized to the filled shares: the tranches cover exactly 6.
+    assert sum(c.args[1] for c in mock_oco.call_args_list) == 6
 
 
 def test_partial_fill_defers_when_refetch_fails(tracker):

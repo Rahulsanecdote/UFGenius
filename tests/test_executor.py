@@ -368,53 +368,45 @@ class TestCheckEntryFill:
         mock_order.filled_qty = "10"
 
         with patch("src.alpaca.executor.get_order", return_value=mock_order):
-            with patch("src.alpaca.executor.place_stop_order", return_value=MagicMock(id="stop-id")):
-                with patch("src.alpaca.executor.place_limit_sell", return_value=MagicMock(id="tgt-id")):
-                    _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
+            with patch("src.alpaca.executor.place_oco_exit", return_value=MagicMock(id="tp", legs=[])):
+                _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
 
         pos = tracker.get("AAPL")
         assert pos.status == "active"
         assert pos.fill_price == 189.50
 
-    def test_filled_entry_places_stop_order(self, tracker):
+    def test_filled_entry_protects_every_share_with_one_oco_per_tranche(self, tracker):
+        """Each tranche gets its own take-profit + stop, and together they cover
+        exactly the filled shares — never a full-size stop PLUS target sells,
+        which Alpaca rejects because the stop has already reserved the shares."""
         self._add_pending(tracker)
         mock_order = MagicMock()
         mock_order.status = "filled"
         mock_order.filled_avg_price = "189.50"
         mock_order.filled_qty = "10"
 
-        with patch("src.alpaca.executor.get_order", return_value=mock_order):
-            with patch(
-                "src.alpaca.executor.place_stop_order",
-                return_value=MagicMock(id="stop-id"),
-            ) as mock_stop:
-                with patch(
-                    "src.alpaca.executor.place_limit_sell",
-                    return_value=MagicMock(id="tgt"),
-                ):
-                    _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
+        placed = []
 
-        mock_stop.assert_called_once()
-
-    def test_filled_entry_places_three_target_orders(self, tracker):
-        self._add_pending(tracker)
-        mock_order = MagicMock()
-        mock_order.status = "filled"
-        mock_order.filled_avg_price = "189.50"
-        mock_order.filled_qty = "10"
-
-        placed_sells = []
-
-        def capture_sell(symbol, shares, price):
-            placed_sells.append((symbol, shares, price))
-            return MagicMock(id=f"t-{len(placed_sells)}")
+        def capture_oco(symbol, shares, take_profit, stop_price):
+            placed.append((symbol, shares, take_profit, stop_price))
+            n = len(placed)
+            return MagicMock(id=f"tp-{n}", legs=[MagicMock(id=f"sl-{n}", stop_price=stop_price)])
 
         with patch("src.alpaca.executor.get_order", return_value=mock_order):
-            with patch("src.alpaca.executor.place_stop_order", return_value=MagicMock(id="s")):
-                with patch("src.alpaca.executor.place_limit_sell", side_effect=capture_sell):
-                    _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
+            with patch("src.alpaca.executor.place_oco_exit", side_effect=capture_oco):
+                with patch("src.alpaca.executor.place_stop_order") as mock_stop:
+                    with patch("src.alpaca.executor.place_limit_sell") as mock_sell:
+                        _check_entry_fill("AAPL", tracker.get("AAPL"), tracker)
 
-        assert len(placed_sells) == 3
+        assert [(s, tp) for _, s, tp, _ in placed] == [(3, 191.69), (4, 196.07), (3, 203.84)]
+        assert sum(s for _, s, _, _ in placed) == 10
+        assert {sp for *_, sp in placed} == {186.35}
+        mock_stop.assert_not_called()
+        mock_sell.assert_not_called()
+        pos = tracker.get("AAPL")
+        assert pos.exit_mode == "oco"
+        assert (pos.t1_order_id, pos.t1_stop_id) == ("tp-1", "sl-1")
+        assert (pos.t3_order_id, pos.t3_stop_id) == ("tp-3", "sl-3")
 
     def test_expired_entry_marks_closed(self, tracker):
         self._add_pending(tracker)
