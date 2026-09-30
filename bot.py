@@ -1140,6 +1140,17 @@ def _is_trading_day(now: datetime | None = None) -> bool:
     return now.weekday() < 5
 
 
+# `schedule:` slots are US-market wall-clock times ("market_open: 09:25" means
+# five minutes before the 09:30 ET open), so they are wired IN that timezone.
+# `schedule` otherwise reads them as process-local time, and a Render container
+# runs UTC: every slot fired four hours early under EDT and five under EST — the
+# 09:25 open scan at 05:25 ET, the 14:00 scan at 10:00. The weekday gate and
+# the executor's monitor already anchor to America/New_York; this makes the
+# schedule agree with them. `schedule` resolves the zone per run, so a
+# long-running process stays right across the DST change.
+_SCHEDULE_TZ = "America/New_York"
+
+
 def _wire_schedule(sched: dict, run_fn) -> list[str]:
     """Wire EVERY configured `schedule:` slot (audit M12) — previously only
     four hardcoded slots were scheduled and intraday_1/intraday_2 were
@@ -1154,7 +1165,7 @@ def _wire_schedule(sched: dict, run_fn) -> list[str]:
                 "(expected HH:MM 24h); skipping"
             )
             continue
-        schedule.every().day.at(time_str).do(run_fn)
+        schedule.every().day.at(time_str, _SCHEDULE_TZ).do(run_fn)
         wired.append(f"{slot}={time_str}")
     return wired
 
@@ -1177,7 +1188,7 @@ def _schedule_scan(args) -> None:
         cmd_scan(args)
 
     wired = _wire_schedule(sched, _run)
-    log.info(f"Scheduled scans (weekdays): {', '.join(wired) or 'none'}")
+    log.info(f"Scheduled scans (weekdays, {_SCHEDULE_TZ}): {', '.join(wired) or 'none'}")
     log.info(f"Running in {'PAPER' if args.mode == 'paper' else 'LIVE'} mode. Press Ctrl+C to stop.")
 
     # Run immediately on startup

@@ -12,6 +12,10 @@ requests
 python-dotenv
 PyYAML
 schedule
+# `schedule` needs pytz to run slots in a named timezone (bot._SCHEDULE_TZ);
+# it is not a declared dependency of schedule, so without this the scheduler
+# works only while pandas happens to pull it in transitively.
+pytz
 matplotlib
 scikit-learn
 fredapi

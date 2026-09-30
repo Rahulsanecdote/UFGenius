@@ -14,12 +14,14 @@ from src.scanner import gap_scanner
 
 # ── M12: every configured slot is wired ──────────────────────────────────────
 
-def _mock_schedule(monkeypatch):
+def _mock_schedule(monkeypatch, zones: list | None = None):
     at_times: list[str] = []
     mock = MagicMock()
 
-    def _at(time_str):
+    def _at(time_str, tz=None):
         at_times.append(time_str)
+        if zones is not None:
+            zones.append(tz)
         return MagicMock()
 
     mock.every.return_value.day.at.side_effect = _at
@@ -51,6 +53,30 @@ def test_empty_schedule_falls_back_to_defaults(monkeypatch):
     wired = bot._wire_schedule({}, lambda: None)
     assert len(wired) == 4
     assert "06:00" in at_times
+
+
+def test_slots_are_wired_in_market_time_not_host_time(monkeypatch):
+    """`market_open: 09:25` means 09:25 in New York. Read as host-local time on
+    a UTC container, every slot fired four hours early under EDT."""
+    zones: list = []
+    _mock_schedule(monkeypatch, zones)
+    bot._wire_schedule({"market_open": "09:25", "intraday_2": "14:00"}, lambda: None)
+    assert zones == ["America/New_York", "America/New_York"]
+
+
+def test_a_real_job_lands_on_the_new_york_wall_clock():
+    """Against the real `schedule` library, not a mock: the next run of a
+    09:25 slot is 09:25 in New York whatever timezone the host is in."""
+    import schedule as real
+    from zoneinfo import ZoneInfo
+
+    sched = real.Scheduler()
+    job = sched.every().day.at("09:25", bot._SCHEDULE_TZ).do(lambda: None)
+    nxt = job.next_run
+    # next_run is naive host-local time; pin it to the host zone, then convert.
+    local = nxt.astimezone() if nxt.tzinfo else nxt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    ny = local.astimezone(ZoneInfo("America/New_York"))
+    assert (ny.hour, ny.minute) == (9, 25)
 
 
 # ── L4: weekend gate ─────────────────────────────────────────────────────────
