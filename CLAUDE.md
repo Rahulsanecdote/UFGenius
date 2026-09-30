@@ -198,8 +198,18 @@ pytest --cov=src       # coverage
   practice because the paper account had never placed an order.
   `tests/test_broker_contract.py` runs the lifecycle against a fake that returns
   real alpaca-py `Order` objects and enforces the reservation rule; putting the
-  old comparison back fails 13 of its tests. Still unverified against the live
-  paper broker. **Residual gap:** protection exists only once the monitor
+  old comparison back fails 13 of its tests. **Probed on the paper account**
+  (2026-09-30 11:06 ET, 3 × F, flattened after): the real fill came back as
+  `<OrderStatus.FILLED: 'filled'>`, whose `str()` is `OrderStatus.FILLED`; the
+  monitor recognised it and placed three 1-share OCOs, all accepted (parents
+  `new`, stop legs `held`, leg ids returned on submit and matching the
+  tracker's); the position read qty 3 / `qty_available` 0, so an OCO reserves
+  once, not per leg; a second cycle changed nothing; and a further 1-share
+  sell was refused `40310000 insufficient qty available … held_for_orders: 3`
+  — bug 2's mechanism, on the real broker. **Not yet seen live:** a
+  take-profit or stop leg actually filling and the monitor booking it. (Same
+  enum trap in the client's base URL: `str()` gives `BaseURL.TRADING_PAPER`,
+  not the URL — read `.value`.) **Residual gap:** protection exists only once the monitor
   (every `MONITOR_INTERVAL_MIN`, market hours) has seen the fill, so a dead
   monitor thread still means an unprotected position.
 - **Scheduled scans run in New York time** (`bot._SCHEDULE_TZ`): `schedule:`
