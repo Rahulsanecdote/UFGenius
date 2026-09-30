@@ -16,12 +16,13 @@ services:
     # Auto-deploy on push to the default branch. This REVERSES audit L10, which
     # required manual deploys on the grounds that the service "fronts a
     # real-money trading bot" — deliberately, and the reason it is acceptable is
-    # narrower than "we decided to": NEITHER deployed service can place an
-    # order. This one runs `gunicorn wsgi:app` (dashboard + read-only API) and
-    # the worker runs `--mode movers-worker` (discovery/alerting only). The
-    # money path needs `--mode live --execute`, which nothing here starts, and
-    # real money additionally needs `--live-execute` plus ALPACA_PAPER=false.
-    # Adding an executing service to this file puts L10 back in force.
+    # narrower than "we decided to": NO service here can place a REAL-MONEY
+    # order. This one runs `gunicorn wsgi:app` (dashboard + read-only API), the
+    # movers worker runs `--mode movers-worker` (discovery/alerting only), and
+    # the paper trader runs `--execute`, which refuses to start unless
+    # ALPACA_PAPER=true — pinned below as a value, not a dashboard secret. Real
+    # money needs `--live-execute` plus ALPACA_PAPER=false. A `--live-execute`
+    # service must set `autoDeploy: false`: that is where L10 is back in force.
     #
     # Two things this does NOT give you, worth knowing before relying on it:
     # autoDeploy fires on PUSH, not on green CI — unless "Wait for CI checks to
@@ -225,6 +226,61 @@ services:
       #   value: "5"
       # - key: CATALYST_ALERTS_SUPPRESS_HALTED  # never alert a halted name
       #   value: "true"
+
+  # ── Paper-trading executor ──────────────────────────────────────────────
+  #   Runs `bot.py --mode live --execute`: the six `schedule:` scans (New York
+  #   time) → RiskGuard → entry orders on the Alpaca PAPER account, plus the
+  #   position monitor, which places one OCO exit (take-profit + stop) per
+  #   tranche once an entry fills. This is what fills /api/paper-scorecard and
+  #   the P0.4 trade ledger, which the live-trading graduation gate reads.
+  #
+  #   It must be a Background Worker, not the free web service: the monitor
+  #   thread is what protects a filled entry, and a web instance that sleeps
+  #   after ~15 idle minutes would leave a fill unprotected until it woke.
+  #   PAID (~$7/mo Starter) + the disk below (~$0.25/GB/mo).
+  #
+  #   The disk is not optional. data/ holds the position tracker
+  #   (live_positions.json), the realized-P&L and per-trade ledgers, the
+  #   execution-quality ledger and the circuit-breaker state. Without it a
+  #   restart forgets every open position's order ids — the OCOs stay live at
+  #   the broker, but nothing books their exits.
+  #
+  #   Paper results inherit two production distortions, so read them as such:
+  #   volume thresholds run ~31x stricter than written because Alpaca serves
+  #   IEX volume (see CLAUDE.md), and a 500-ticker scan exceeds Alpaca's
+  #   200 requests/min, so part of each scan falls back to yfinance. The scans
+  #   share that limit with every other service using the same keys.
+  - type: worker
+    name: ufgenius-paper-trader
+    env: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install --upgrade pip && pip install -r requirements.lock
+    startCommand: python bot.py --mode live --execute
+    # Paper-only, so autoDeploy is acceptable (see the note on the web service).
+    # Set "Auto-Deploy: After CI Checks Pass" in the dashboard as for the others.
+    autoDeploy: true
+    disk:
+      name: ufgenius-paper-trader-state
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.2"
+      - key: ALPACA_PAPER               # --execute refuses to start unless "true"
+        value: "true"
+      - key: SCHEDULE_RUN_ON_STARTUP    # a redeploy restarts the monitor; it must
+        value: "false"                  # not trigger an off-schedule scan
+      - key: ALPACA_API_KEY             # required — the PAPER account's keys
+        sync: false
+      - key: ALPACA_SECRET_KEY          # required
+        sync: false
+      # Optional: `--mode live` also sends each BUY/STRONG_BUY plan and a scan
+      # digest to Telegram when these are set (six digests a weekday).
+      # - key: TELEGRAM_BOT_TOKEN
+      #   sync: false
+      # - key: TELEGRAM_CHAT_ID
+      #   sync: false
 
   # ── Optional: persistent disk for market-data cache (paid plans only) ───
   #   Without this, the data/ cache is wiped on every deploy/restart.

@@ -686,6 +686,11 @@ LIVE_POSITION_STORE_PATH: str = env(
     str(_ROOT / "data" / "live_positions.json"),
 )
 
+# Scan once at process start before the first `schedule:` slot. Off for an
+# unattended executor: a redeploy must restart the monitor, not trade.
+SCHEDULE_RUN_ON_STARTUP: bool = env_bool(
+    "SCHEDULE_RUN_ON_STARTUP", bool(get("schedule_run_on_startup", True)))
+
 # Position-monitor poll interval in minutes (used by src/alpaca/executor.py).
 # Clamped to a positive floor at use; declared here so it is actually configurable.
 MONITOR_INTERVAL_MIN: int = env_int(
