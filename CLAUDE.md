@@ -115,6 +115,14 @@ auth; behind a trusted proxy set `DASHBOARD_TRUST_PROXY=true`.
 
 ### Tests
 
+Unit tests run with **every credential blanked** (`tests/conftest.py`,
+`_no_ambient_credentials`), whatever your shell exports — so a unit test can
+never reach a live provider, broker or Telegram chat by accident, and results
+match CI's keyless environment. A test that needs a key sets its own.
+`tests/test_credential_isolation.py` fails if a credential is added to
+`config.py` without being added to that list. `integration`-marked tests are
+exempt.
+
 ```bash
 pytest                 # unit tests (integration/network tests excluded by default)
 pytest -m integration  # opt into the network-hitting tests
@@ -383,8 +391,33 @@ pytest --cov=src       # coverage
   keeping: S&P mega-caps are the wrong regime (a 6-bar 1m coil on a $339 stock
   spans 0.18% of price; on a $3 microcap the same structure spans several
   percent), and the default cost model charges an illiquid-name spread on a
-  name whose real round trip is a basis point or two. The microcap re-run that
-  would settle it was rate-limited by yfinance and still owes an answer.
+  name whose real round trip is a basis point or two.
+  **The microcap re-run has now been done, and it settles the question: no
+  edge** (`docs/precursor_microcap_2026-09-30.json`). 50 names drawn at random
+  from the 815 listed common stocks priced $1–12 with ≥ $3M/day consolidated
+  dollar volume **at the 2026-09-18 close** — before the window opens, so not
+  selected on having moved — run on 1m **SIP** bars over seven sessions
+  (09-21 → 09-29). The regime half of the hypothesis held: the median coil-low
+  stop is 0.464% of price (vs 0.184% on the $339 name) and the average loss is
+  −1.2R (vs −2.83R). That changes how fast it loses, not whether. **Gross
+  expectancy before any friction is −0.041R, 95% CI [−0.253, +0.175]R**
+  (bootstrap over 123 ticker-day clusters, since same-name-same-day trades
+  share a tape), with P(> 0) = 34.8% and gross PF 0.94. And even the **top** of
+  that interval nets **−3.30R per trade** at this cohort's measured friction —
+  1.6155% round trip is 3.48R at a 0.464% stop. Every point of the cost sweep
+  is negative, including 0.1% round trip (188 trades, −0.30R). The same 188
+  entries re-priced from 0.1% to 1.6155% go from −0.30R to −4.24R, which is the
+  whole story: the coil-low stop is structurally close to price, so the thinner
+  the book, the larger a share of the risk unit the spread consumes — exactly
+  the names where the coil is widest. There is no cost level at which this
+  cohort's stops and its real spreads coexist profitably.
+  **Run on SIP, never IEX, and that caveat is load-bearing.** Alpaca's default
+  `iex` feed emits no bar for a minute with no IEX print, so thin names arrive
+  mostly missing (SRFM: 98 of 390 regular-session minutes on IEX, 389 on SIP;
+  FLX: 18 vs 139). The precursor counts in *bars*, so on IEX its 28-bar
+  warm-up spans hours and its "volume dry-up" would describe IEX's sampling
+  rather than the stock. Limits: one seven-session regime (late September),
+  and 27% of trades in six names.
   Registered as a third entry in the intraday backtest
   (`--mode intraday-backtest --entry precursor --interval 1m`) so it is
   measurable out-of-sample *before* it is allowed to alert anywhere.
@@ -457,6 +490,37 @@ pytest --cov=src       # coverage
   `fetch_ohlcv`, so it is still one HTTP call per ticker. Calling it a "batch"
   would misdescribe the request volume; true multi-symbol batching against
   Alpaca's `symbols=` parameter remains undone.
+- **Production volume is IEX volume — ~3% of the tape. OPEN, not fixed.**
+  `ALPACA_DATA_FEED` defaults to `iex` (`src/data/fetcher.py:101`) and
+  `render.yaml` does not set it, so wherever Alpaca serves bars — which is
+  first in the chain whenever its keys are present, i.e. in production — every
+  bar's `Volume` is the IEX venue's share only. Measured 2026-09-30 against
+  consolidated 30-day averages: AAPL 2.8%, NVDA 2.5%, CDE 3.4%, HL 3.2%,
+  KOS 7.1% — **median 3.2%, ~31× too small**. So every **absolute** volume
+  threshold in `config.yaml` runs ~31× stricter in production than written:
+  `filter_min_avg_volume` (100k — `signals/filters.py` reads
+  `df["Volume"].tail(20).mean()` straight off the bars, so `ILLIQUID` rejects
+  names with anything up to ~3.1M real shares/day), penny mode's
+  `min_dollar_volume` ($3M → effectively ~$93M, i.e. almost no penny stock
+  passes the penny rail), the screener presets' `min_avg_volume`, and
+  `premarket.min_pm_dollar_volume`. Seen directly: at a $3M/day floor,
+  IEX-priced selection admitted **6 of 604** names; the same floor on
+  consolidated volume admitted **815 of 8,286**. Ratios (`rel_volume`, the
+  precursor's dry-up) mostly cancel the capture fraction, but it varies
+  2.5–7.1% by name, so they are noisier, not unbiased. And it is an
+  **evaluator-vs-harness disagreement**: a backtest served by yfinance reads
+  consolidated volume for the same bar production reads at 3%. Worse on
+  **intraday**: IEX emits *no bar at all* for a minute without an IEX print,
+  so thin names' 1m tapes arrive mostly missing (SRFM 98/390 minutes, FLX
+  18/390) — the movers enrichment runs on exactly those tapes.
+  **The fix is free for anything that does not need the last 15 minutes**: the
+  free key reads `feed=sip` (consolidated; 99.5–105.7% of the tape) for any
+  query ending ≥ 15 min ago, which covers daily bars and every backtest.
+  Real-time intraday **cannot** use SIP on the free tier — that needs Alpaca's
+  paid plan or another consolidated source. Deliberately **not** applied yet:
+  correcting it makes production's *effective* filters looser — back to the
+  values written in `config.yaml` — and admits many more names, which is an
+  operator decision rather than a silent bug fix.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`
@@ -891,7 +955,7 @@ accessor in `src/utils/config.py`, and read it at the point of use.
 | GET | `/api/alert-outcomes` | Measured forward outcomes of fired alerts (movers/catalyst): per source+horizon hit rate, avg/median in-direction move, pending/unresolved counts |
 | GET | `/api/explain?ticker=AAPL` | Optional AI bull/bear narrative for a ticker's verified signal — advisory only (P3.1) |
 | GET | `/api/portfolio-risk` | Advisory portfolio-level risk snapshot: gross leverage / heat / per-name weights vs limits (roadmap Phase 4; `available:false` when disabled) |
-| GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `withheld` lists candidates the corporate-action guard refused to publish, with the feed's claim and the reason. `available:false` without an FMP key |
+| GET | `/api/movers` | Ranked market-wide movers (MOVERS discovery); `?enrich=true` adds early-momentum ranking. `withheld` lists candidates the corporate-action guard refused to publish, with the feed's claim and the reason. `available:false` only when **no** provider in `movers.providers` is configured or answers — Alpaca keys alone are enough, since the chain became `[alpaca, polygon, fmp]` |
 | GET | `/api/movers-worker` | Live state of the always-on movers worker: heartbeat, cycle stats, watch set, recent alerts/invalidations, `features` (which opt-in layers are running), and `suppressed` (qualifying candidates held back, with the reason) (Phase 7 shared state; `available:false` when the worker isn't running) |
 | GET | `/api/breaker-state` | Circuit-breaker / kill-switch state (P0.3) |
 | POST | `/api/breaker` | Flip the global halt switch (`{"action":"halt"\|"resume"}`) |

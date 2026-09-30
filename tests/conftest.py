@@ -7,6 +7,39 @@ import pytest
 import src.utils.config as cfg
 
 
+# Every credential config.py reads. A unit test must never reach a real
+# provider, broker or Telegram chat because the developer's shell happened to
+# have keys in it — and "happened to" is exactly how it was discovered:
+# tests/test_movers.py::test_no_key_returns_empty blanked FMP_KEY alone, from
+# when discovery was FMP-only. Once the chain became [alpaca, polygon, fmp], a
+# shell with Alpaca keys made that "no key" test call the live Alpaca screener
+# and fail, while CI — which has no keys — kept passing it. The test was
+# asserting its premise, not testing it.
+#
+# Blanking here reproduces CI's conditions for every unit test. Tests that need
+# a key still set one (monkeypatch / patch.object run after this fixture), and
+# `integration`-marked tests are exempt, since reaching the network is their
+# job. Covering it once here rather than per test is the same call the logger
+# makes about redaction: a rule that must be remembered N times is missed on
+# the N+1th.
+_CREDENTIALS = (
+    "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "POLYGON_KEY", "FMP_KEY",
+    "ALPHA_VANTAGE_KEY", "FINNHUB_KEY", "NEWSAPI_KEY", "FRED_API_KEY",
+    "REDDIT_CLIENT_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+    "EMAIL_PASSWORD", "EXPLAIN_API_KEY", "DASHBOARD_API_KEY", "DASHBOARD_API_KEYS",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_credentials(request, monkeypatch):
+    """Blank every credential for unit tests, whatever the shell exports."""
+    if request.node.get_closest_marker("integration"):
+        return
+    for name in _CREDENTIALS:
+        if hasattr(cfg, name):
+            monkeypatch.setattr(cfg, name, "")
+
+
 @pytest.fixture(autouse=True)
 def _isolate_circuit_breaker_state(tmp_path, monkeypatch):
     """Point the P0.3 circuit-breaker state file at a per-test temp path.
