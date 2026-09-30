@@ -22,6 +22,7 @@ praw==7.8.1
 pyarrow==17.0.0
 pytest==8.3.4
 python-dotenv==1.0.1
+pytz==2026.4
 PyYAML==6.0.2
 requests==2.32.3
 schedule==1.2.2

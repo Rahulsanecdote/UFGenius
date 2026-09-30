@@ -22,6 +22,25 @@ class OrderError(Exception):
     """Raised when an Alpaca order operation fails."""
 
 
+def order_status(order) -> str:
+    """An order's status as a bare lowercase string: "filled", "canceled", ...
+
+    alpaca-py returns ``OrderStatus``, a ``(str, Enum)``, and ``str()`` of one
+    is ``"OrderStatus.FILLED"`` — not ``"filled"`` — on every Python from 3.11
+    on. The monitor compared ``str(order.status).lower() == "filled"``, which a
+    real broker response can therefore never satisfy: a filled entry stayed
+    ``pending_fill`` forever and its stop was never placed. The unit tests
+    passed only because their mocks carry plain strings. Read ``.value`` when
+    there is one, so both shapes compare the same way. Never raises.
+    """
+    try:
+        raw = getattr(order, "status", None)
+        raw = getattr(raw, "value", raw)
+        return str(raw or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _get_client():
     """Return a cached TradingClient. Raises OrderError if credentials missing."""
     global _client
@@ -195,6 +214,68 @@ def place_limit_sell(symbol: str, shares: int, limit_price: float):
         raise OrderError(f"Failed to submit limit sell for {symbol}: {exc}") from exc
 
 
+def place_oco_exit(symbol: str, shares: int, take_profit: float, stop_price: float):
+    """
+    Submit a GTC OCO sell exit: a take-profit LIMIT and a protective STOP for
+    the same shares, where whichever fills first cancels the other.
+
+    Why not a stop plus separate limit sells: Alpaca RESERVES the shares of an
+    open sell order until it fills or is cancelled, and rejects a second sell
+    for them with HTTP 403 "insufficient qty available for order". So a
+    full-size stop followed by T1/T2/T3 limit sells — what the executor used to
+    submit — gets every target rejected, and the trade can then only ever exit
+    at its stop. An OCO reserves its quantity once. One OCO per tranche, each
+    carrying the plan's stop, keeps the remaining shares protected after any
+    tranche takes profit, with nothing to resize. Alpaca files the take-profit
+    as the parent order and the stop as its child leg (``order.legs``).
+
+    Returns:
+        alpaca Order object (the take-profit parent).
+
+    Raises:
+        OrderError: On validation failure or Alpaca API error.
+    """
+    if shares <= 0:
+        raise OrderError(f"shares must be positive, got {shares}")
+    if stop_price <= 0:
+        raise OrderError(f"stop_price must be positive, got {stop_price}")
+    if take_profit <= stop_price:
+        raise OrderError(
+            f"take_profit ${take_profit} must be above stop ${stop_price} for a long exit"
+        )
+
+    try:
+        from alpaca.trading.requests import (
+            LimitOrderRequest,
+            StopLossRequest,
+            TakeProfitRequest,
+        )
+        from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+    except ImportError as exc:
+        raise OrderError("alpaca-py not installed") from exc
+
+    req = LimitOrderRequest(
+        symbol=symbol,
+        qty=shares,
+        side=OrderSide.SELL,
+        time_in_force=TimeInForce.GTC,
+        order_class=OrderClass.OCO,
+        take_profit=TakeProfitRequest(limit_price=round(take_profit, 2)),
+        stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+    )
+    try:
+        order = _get_client().submit_order(req)
+        log.info(
+            f"OCO exit submitted: {symbol} x{shares} TP @ ${take_profit:.2f}"
+            f" / STOP @ ${stop_price:.2f} — id={order.id}"
+        )
+        return order
+    except OrderError:
+        raise
+    except Exception as exc:
+        raise OrderError(f"Failed to submit OCO exit for {symbol}: {exc}") from exc
+
+
 def cancel_order(order_id: str) -> bool:
     """
     Cancel an order by ID.
@@ -221,9 +302,14 @@ def cancel_order(order_id: str) -> bool:
         raise OrderError(f"Failed to cancel order {order_id}: {exc}") from exc
 
 
-def get_order(order_id: str):
+def get_order(order_id: str, nested: bool = False):
     """
     Fetch current state of an order.
+
+    Args:
+        nested: Also return the order's child legs under ``legs`` — how an OCO
+            exit's stop leg is read, since Alpaca files the take-profit as the
+            parent and the stop as its child.
 
     Returns:
         alpaca Order object.
@@ -232,6 +318,11 @@ def get_order(order_id: str):
         OrderError: On API failure.
     """
     try:
+        if nested:
+            from alpaca.trading.requests import GetOrderByIdRequest
+            return _get_client().get_order_by_id(
+                order_id, filter=GetOrderByIdRequest(nested=True)
+            )
         return _get_client().get_order_by_id(order_id)
     except OrderError:
         raise

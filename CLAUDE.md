@@ -174,6 +174,54 @@ pytest --cov=src       # coverage
   default off) prices the entry as a marketable limit crossing the market by an
   offset tuned to that measured slippage. Live trading needs an explicit flag +
   `ALPACA_PAPER=false`.
+- **Exits are one OCO per tranche** (`orders.place_oco_exit`, executor
+  `_finalize_entry_fill` / `_check_exits_oco`): once the monitor sees the entry
+  fill, each of T1/T2/T3 gets its own GTC OCO — take-profit limit (the parent)
+  plus a stop leg at the plan's stop — sized to that tranche, so together they
+  cover exactly the filled shares. It used to place a full-size stop and then
+  three target limit sells, which **cannot work on Alpaca**: an open sell order
+  reserves its shares, and a second sell for them is refused with HTTP 403
+  "insufficient qty available for order" (Alpaca's own error guide, #26). Every
+  target would have been rejected and a trade could only ever exit at its stop,
+  so the paper scorecard would have measured a stop-only strategy the backtest
+  never modelled. With OCOs a target fill leaves the remaining tranches guarded
+  by their own stop legs — nothing to resize, no unprotected window. Records
+  opened before the change keep the legacy path (`exit_mode` "").
+  **Order status is an enum** — `orders.order_status()` reads `.value`. alpaca-py
+  returns `OrderStatus`, a `(str, Enum)`, and `str()` of it is
+  `"OrderStatus.FILLED"` on 3.11–3.13, so the monitor's
+  `str(order.status).lower() == "filled"` could **never** match a real broker
+  response: a filled entry stayed `pending_fill`, no stop was ever placed, and an
+  expired entry was never cleaned up (so it held a `max_positions` slot
+  forever). Both bugs were invisible to the suite because every mock carried
+  plain strings and no mock modelled share reservation, and invisible in
+  practice because the paper account had never placed an order.
+  `tests/test_broker_contract.py` runs the lifecycle against a fake that returns
+  real alpaca-py `Order` objects and enforces the reservation rule; putting the
+  old comparison back fails 13 of its tests. **Probed on the paper account**
+  (2026-09-30 11:06 ET, 3 × F, flattened after): the real fill came back as
+  `<OrderStatus.FILLED: 'filled'>`, whose `str()` is `OrderStatus.FILLED`; the
+  monitor recognised it and placed three 1-share OCOs, all accepted (parents
+  `new`, stop legs `held`, leg ids returned on submit and matching the
+  tracker's); the position read qty 3 / `qty_available` 0, so an OCO reserves
+  once, not per leg; a second cycle changed nothing; and a further 1-share
+  sell was refused `40310000 insufficient qty available … held_for_orders: 3`
+  — bug 2's mechanism, on the real broker. **Not yet seen live:** a
+  take-profit or stop leg actually filling and the monitor booking it. (Same
+  enum trap in the client's base URL: `str()` gives `BaseURL.TRADING_PAPER`,
+  not the URL — read `.value`.) **Residual gap:** protection exists only once the monitor
+  (every `MONITOR_INTERVAL_MIN`, market hours) has seen the fill, so a dead
+  monitor thread still means an unprotected position.
+- **Scheduled scans run in New York time** (`bot._SCHEDULE_TZ`): `schedule:`
+  slots are market wall-clock times, but the `schedule` library reads them as
+  host-local time, and Render runs UTC — every slot fired four hours early
+  under EDT (the 09:25 open scan at 05:25 ET). Needs `pytz`, now pinned. Two
+  properties of `_schedule_scan` to know before running it unattended: it
+  **scans once immediately at startup** (so a redeploy triggers a scan at
+  whatever time it lands), and the 11:00/14:00 slots rarely pass anything,
+  because the pre-filter's `RVOL >= 1.3` is computed on today's **partial**
+  daily bar — measured 10:35 ET 2026-09-30: AAPL 0.38, MSFT 0.46, JPM 0.09,
+  XOM 0.15, and 0 of 503 passed.
 - **Intraday data (P1.1):** `fetch_intraday()` (`src/data/fetcher.py`) is the
   entry point for 1m/5m/… bars — same provider abstraction as daily, but with a
   **boundary-aligned** intraday cache TTL (`intraday.cache_boundary_align`,

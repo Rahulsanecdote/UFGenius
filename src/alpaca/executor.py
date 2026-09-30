@@ -31,8 +31,10 @@ from src.alpaca.orders import (
     OrderError,
     cancel_order,
     get_order,
+    order_status,
     place_entry_order,
     place_limit_sell,
+    place_oco_exit,
     place_stop_order,
 )
 from src.alpaca.circuit_breaker import CircuitBreaker
@@ -598,13 +600,15 @@ def monitor_positions(tracker: PositionTracker) -> None:
     Called on a schedule (every MONITOR_INTERVAL_MIN minutes during market hours).
 
     For each pending_fill position:
-      - If entry order filled → transition to active, place stop + T1/T2/T3 orders.
+      - If entry order filled → transition to active, place one OCO exit
+        (take-profit + stop) per T1/T2/T3 tranche.
       - If entry order expired/cancelled → mark closed.
 
     For each active position:
-      - If stop filled → cancel remaining target orders → mark closed.
-      - If any target filled → mark hit, reduce shares_open.
-      - If all shares gone → mark closed.
+      - A tranche whose take-profit filled → target hit, reduce shares_open.
+      - A tranche whose stop leg filled → stopped out, reduce shares_open.
+      - All tranches resolved → mark closed.
+    (Records opened before OCO exits keep the legacy stop + targets handling.)
     """
     open_positions = tracker.get_open()
     if not open_positions:
@@ -642,7 +646,7 @@ def _order_fill_price(order, default: float) -> float:
 def _check_entry_fill(ticker: str, pos, tracker: PositionTracker) -> None:
     """Drive a pending_fill entry to its next state.
 
-    A fully ``filled`` entry is protected with a stop + target orders. A
+    A fully ``filled`` entry is protected with one OCO exit per tranche. A
     ``partially_filled`` entry is NOT treated as complete (audit finding [10]):
     the unfilled remainder is cancelled so no shares stay untracked, then only
     the shares that actually filled are protected. Terminal states with no fill
@@ -654,7 +658,7 @@ def _check_entry_fill(ticker: str, pos, tracker: PositionTracker) -> None:
         log.warning(f"{ticker}: could not fetch entry order: {exc}")
         return
 
-    status = str(order.status).lower()
+    status = order_status(order)
     log.debug(f"{ticker}: entry order status={status}")
 
     if status == "filled":
@@ -693,7 +697,13 @@ def _check_entry_fill(ticker: str, pos, tracker: PositionTracker) -> None:
 
 
 def _finalize_entry_fill(ticker: str, order, tracker: PositionTracker) -> None:
-    """Record the fill and place the protective stop + target sell orders."""
+    """Record the fill and place one OCO exit (take-profit + stop) per tranche.
+
+    Not a full-size stop followed by target limit sells: Alpaca reserves the
+    shares of an open sell order, so every target submitted after that stop was
+    rejected ("insufficient qty available") and the trade could only ever exit
+    at its stop. See ``orders.place_oco_exit``.
+    """
     pos = tracker.get(ticker)
     if pos is None:
         return
@@ -705,41 +715,77 @@ def _finalize_entry_fill(ticker: str, order, tracker: PositionTracker) -> None:
 
     # Execution quality: expected = the planned entry limit, realized = the fill.
     _record_execution_quality(ticker, "buy", "entry", pos.entry_price, fill_price, filled_qty, order)
-    tracker.mark_entry_filled(ticker, fill_price, filled_qty)
+    tracker.mark_entry_filled(ticker, fill_price, filled_qty, exit_mode="oco")
     pos = tracker.get(ticker)  # Reload after mutation
     if pos is None:
         log.error(f"{ticker}: record vanished after fill — cannot place protection")
         return
 
-    # Place the stop-loss sized to the shares actually held.
-    try:
-        stop_order = place_stop_order(ticker, pos.shares_open, pos.stop_price)
-        tracker.mark_stop_placed(ticker, str(stop_order.id), pos.shares_open)
-    except OrderError as exc:
-        log.error(f"{ticker}: failed to place stop order: {exc}", exc_info=True)
+    for level in _TRANCHES:
+        _place_tranche_oco(ticker, level, tracker)
 
-    # Place limit sell orders at each target tranche.
-    for level, price, shares in [
-        ("t1", pos.t1_price, pos.t1_shares),
-        ("t2", pos.t2_price, pos.t2_shares),
-        ("t3", pos.t3_price, pos.t3_shares),
-    ]:
-        if shares <= 0:
-            continue
-        try:
-            tgt_order = place_limit_sell(ticker, shares, price)
-            tracker.mark_target_placed(ticker, level, str(tgt_order.id))
-        except OrderError as exc:
-            log.error(
-                f"{ticker}: failed to place {level.upper()} order: {exc}",
-                exc_info=True,
-            )
+
+_TRANCHES = ("t1", "t2", "t3")
+# An exit group that ended without its shares leaving: nothing protects them.
+_DEAD_EXIT_STATUSES = frozenset({"canceled", "expired", "rejected"})
+
+
+def _stop_leg(order, stop_id: str | None = None):
+    """The stop leg of an OCO parent: the recorded id if given, else the leg
+    carrying a stop price. None when the response has no legs."""
+    legs = getattr(order, "legs", None) or []
+    if stop_id:
+        for leg in legs:
+            if str(getattr(leg, "id", "")) == str(stop_id):
+                return leg
+    for leg in legs:
+        if getattr(leg, "stop_price", None) is not None:
+            return leg
+    return legs[0] if legs else None
+
+
+def _add_pnl(a, b):
+    """Sum two P&L legs where either may be None (not computable)."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a + b
+
+
+def _place_tranche_oco(ticker: str, level: str, tracker: PositionTracker) -> bool:
+    """Place (or re-place) one tranche's OCO exit. True when it is live."""
+    pos = tracker.get(ticker)
+    if pos is None or pos.status == "closed":
+        return False
+    shares = int(getattr(pos, f"{level}_shares"))
+    if shares <= 0:
+        return True
+    try:
+        oco = place_oco_exit(ticker, shares, getattr(pos, f"{level}_price"), pos.stop_price)
+    except OrderError as exc:
+        log.error(
+            f"{ticker}: failed to place {level.upper()} OCO exit — {shares} share(s)"
+            f" UNPROTECTED until the next monitor cycle retries: {exc}",
+            exc_info=True,
+        )
+        return False
+    leg = _stop_leg(oco)
+    tracker.mark_oco_placed(
+        ticker, level, str(oco.id), str(leg.id) if leg is not None else None
+    )
+    return True
 
 
 def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
     """Check stop and target order fills; update tracker accordingly."""
     if pos is None:
         return
+    if getattr(pos, "exit_mode", "") == "oco":
+        _check_exits_oco(ticker, tracker)
+        return
+    # Legacy record (placed before OCO exits): one full-size stop + target
+    # limits. Kept so a position opened under it is still monitored as placed.
 
     # Stop has the highest priority — check it first
     stop_order = _filled_order(pos.stop_order_id, ticker, "stop") if pos.stop_order_id else None
@@ -810,6 +856,88 @@ def _check_exits(ticker: str, pos, tracker: PositionTracker) -> None:
         _resize_stop(ticker, pos, tracker)
 
 
+def _check_exits_oco(ticker: str, tracker: PositionTracker) -> None:
+    """Resolve each tranche's OCO exit from broker state; close when all are done.
+
+    Per tranche, one nested fetch returns the take-profit parent and its stop
+    leg. Take-profit filled ⇒ target hit. Stop leg filled ⇒ tranche stopped out
+    (plus any take-profit shares that part-filled first — Alpaca shrinks the
+    stop to the remainder). Group cancelled/expired/rejected with shares still
+    held ⇒ nothing protects them, so book any partial exit and re-place. A
+    tranche with no exit recorded (placement failed) is retried here.
+    """
+    for level in _TRANCHES:
+        pos = tracker.get(ticker)
+        if pos is None or pos.status == "closed":
+            return
+        shares = int(getattr(pos, f"{level}_shares"))
+        if shares <= 0 or getattr(pos, f"{level}_hit") or getattr(pos, f"{level}_stopped"):
+            continue
+        parent_id = getattr(pos, f"{level}_order_id")
+        if not parent_id:
+            _place_tranche_oco(ticker, level, tracker)
+            continue
+        try:
+            parent = get_order(parent_id, nested=True)
+        except OrderError as exc:
+            log.warning(f"{ticker}: could not check {level.upper()} OCO exit: {exc}")
+            continue
+
+        target_px = getattr(pos, f"{level}_price")
+        leg = _stop_leg(parent, getattr(pos, f"{level}_stop_id"))
+        tp_status, tp_qty = order_status(parent), _order_filled_qty(parent)
+        leg_status = order_status(leg) if leg is not None else ""
+        leg_qty = _order_filled_qty(leg) if leg is not None else 0
+
+        if tp_status == "filled":
+            tp_fill = _order_fill_price(parent, target_px)
+            qty = tp_qty or shares
+            _record_execution_quality(ticker, "sell", "target", target_px, tp_fill, qty, parent)
+            if leg_qty > 0:
+                # Alpaca: "in extremely volatile and fast market conditions,
+                # both orders may fill before the cancellation occurs".
+                log.error(
+                    f"{ticker}: {level.upper()} OCO filled BOTH legs — {qty} at target and"
+                    f" {leg_qty} at stop; the account is now SHORT {leg_qty} share(s)."
+                    " Flatten it by hand."
+                )
+            tracker.mark_target_hit(ticker, level, realized_pnl=_exit_pnl(ticker, pos, tp_fill, qty))
+        elif leg_status == "filled":
+            stop_fill = _order_fill_price(leg, pos.stop_price)
+            qty = leg_qty or max(0, shares - tp_qty)
+            _record_execution_quality(ticker, "sell", "stop", pos.stop_price, stop_fill, qty, leg)
+            pnl = _exit_pnl(ticker, pos, stop_fill, qty)
+            if tp_qty > 0:
+                pnl = _add_pnl(pnl, _exit_pnl(ticker, pos, _order_fill_price(parent, target_px), tp_qty))
+            tracker.mark_tranche_stopped(ticker, level, realized_pnl=pnl)
+        elif tp_status in _DEAD_EXIT_STATUSES and (leg is None or leg_status in _DEAD_EXIT_STATUSES):
+            remaining = max(0, shares - tp_qty)
+            log.error(
+                f"{ticker}: {level.upper()} OCO exit ended '{tp_status}' with {remaining}"
+                " share(s) still held and unprotected — re-placing"
+            )
+            if tp_qty > 0:
+                tracker.resize_tranche(
+                    ticker, level, remaining,
+                    realized_pnl=_exit_pnl(ticker, pos, _order_fill_price(parent, target_px), tp_qty),
+                )
+            tracker.mark_oco_placed(ticker, level, None, None)
+            if remaining > 0:
+                _place_tranche_oco(ticker, level, tracker)
+
+    pos = tracker.get(ticker)
+    if pos is None or pos.status == "closed":
+        return
+    open_tranches = [
+        lv for lv in _TRANCHES
+        if int(getattr(pos, f"{lv}_shares")) > 0
+        and not getattr(pos, f"{lv}_hit") and not getattr(pos, f"{lv}_stopped")
+    ]
+    if not open_tranches:
+        stopped = any(getattr(pos, f"{lv}_stopped") for lv in _TRANCHES)
+        tracker.mark_closed(ticker, "STOP" if stopped else "ALL_TARGETS")
+
+
 def _resize_stop(ticker: str, pos, tracker: PositionTracker) -> None:
     """Cancel-replace the protective stop to cover only the remaining shares."""
     try:
@@ -847,7 +975,7 @@ def _filled_order(order_id: str, ticker: str, label: str):
     except OrderError as exc:
         log.warning(f"{ticker}: could not check {label} order {order_id}: {exc}")
         return None
-    return order if str(order.status).lower() == "filled" else None
+    return order if order_status(order) == "filled" else None
 
 
 def _ensure_stop(ticker: str, tracker: PositionTracker) -> None:
@@ -872,7 +1000,7 @@ def _is_filled(order_id: str, ticker: str, label: str) -> bool:
     """Return True if the given order is in 'filled' status."""
     try:
         order = get_order(order_id)
-        return str(order.status).lower() == "filled"
+        return order_status(order) == "filled"
     except OrderError as exc:
         log.warning(f"{ticker}: could not check {label} order {order_id}: {exc}")
         return False
