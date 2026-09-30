@@ -13,10 +13,23 @@ services:
     # --threads 4:   handle concurrent API + UI requests within one worker
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 wsgi:app
     healthCheckPath: /healthz
-    # Manual deploys only (audit L10): this service fronts a real-money trading
-    # bot, so a push to the default branch should not auto-ship to production.
-    # Trigger deploys deliberately from the Render dashboard after review.
-    autoDeploy: false
+    # Auto-deploy on push to the default branch. This REVERSES audit L10, which
+    # required manual deploys on the grounds that the service "fronts a
+    # real-money trading bot" — deliberately, and the reason it is acceptable is
+    # narrower than "we decided to": NEITHER deployed service can place an
+    # order. This one runs `gunicorn wsgi:app` (dashboard + read-only API) and
+    # the worker runs `--mode movers-worker` (discovery/alerting only). The
+    # money path needs `--mode live --execute`, which nothing here starts, and
+    # real money additionally needs `--live-execute` plus ALPACA_PAPER=false.
+    # Adding an executing service to this file puts L10 back in force.
+    #
+    # Two things this does NOT give you, worth knowing before relying on it:
+    # autoDeploy fires on PUSH, not on green CI — unless "Wait for CI checks to
+    # pass" is also enabled for the service in the Render dashboard, a merge
+    # with a failing test suite still ships. And a deploy restarts the worker,
+    # which resets its in-memory state (the alerter's dedup map, the movers
+    # watch set); the ledgers survive because they are on the persistent disk.
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.2"
@@ -137,7 +150,10 @@ services:
     region: oregon
     buildCommand: pip install --upgrade pip && pip install -r requirements.lock
     startCommand: python bot.py --mode movers-worker
-    autoDeploy: false
+    # Auto-deploy on push — see the note on the web service above for why this
+    # reverses audit L10 and what it does not guarantee. Discovery and alerting
+    # only: this command cannot place an order.
+    autoDeploy: true
     # Persist data/ across deploys and restarts. Without this the ALERT OUTCOME
     # LEDGER (src/observability/alert_outcomes.py — default on) resets every
     # time the service restarts, so the per-source hit rate never accumulates
