@@ -120,6 +120,10 @@ SCAN_CANDIDATE_RANKING: str = (
 )
 if SCAN_CANDIDATE_RANKING not in ("rvol", "universe"):
     SCAN_CANDIDATE_RANKING = "rvol"
+# Each scan refetches the daily bars it reads instead of reusing the 24h cache
+# (see fetcher.require_daily_bars_fetched_since).
+SCAN_REFRESH_DAILY_BARS: bool = env_bool(
+    "SCAN_REFRESH_DAILY_BARS", bool(get("scan_refresh_daily_bars", True)))
 
 # Market-movers discovery (MOVERS universe / --mode movers).
 _MOVERS: dict = get("movers", {})

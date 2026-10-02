@@ -226,6 +226,20 @@ pytest --cov=src       # coverage
   because the pre-filter's `RVOL >= 1.3` is computed on today's **partial**
   daily bar — measured 10:35 ET 2026-09-30: AAPL 0.38, MSFT 0.46, JPM 0.09,
   XOM 0.15, and 0 of 503 passed.
+- **Each scan reads daily bars fetched during that scan**
+  (`fetcher.require_daily_bars_fetched_since`, config `scan_refresh_daily_bars`,
+  default on). The daily cache lives 24h, so every scheduled scan after the
+  first of the day re-read the first fetch: on 2026-10-02 the paper trader's
+  16:30 ET scan made no data request and judged bars ending 13:44 ET, and a
+  Monday 06:00 fetch would have served Friday's close to every Monday scan.
+  `run_daily_scan` raises a process-wide floor to its own start before the
+  regime read; cached daily frames carry `attrs["fetched_at"]` and anything
+  older (or untagged) is refetched — ~16 multi-symbol Alpaca requests per S&P
+  scan. The floor is 0 until a scan runs, so backtests and dashboard reads keep
+  the 24h cache (a backtest re-reads per ticker for minutes; a blanket shorter
+  TTL would have refetched mid-run). Keyless setups pay a yfinance call per
+  ticker per scan and may want it off. `tests/conftest.py` resets the floor per
+  test.
 - **The paper trader's first scheduled scan traded nothing, for two reasons
   that would have made every scan trade nothing** (2026-10-01 21:00 ET; 90 of
   503 passed the pre-filter). Both are fixed:
