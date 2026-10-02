@@ -164,6 +164,24 @@ def _can_use_alpaca_symbol(symbol: str) -> bool:
     return bool(symbol) and not str(symbol).startswith("^")
 
 
+def _alpaca_symbol(symbol: str) -> str:
+    """Alpaca's spelling of a share-class ticker.
+
+    The S&P constituent list (Wikipedia) and Yahoo write classes with a hyphen —
+    BRK-B, BF-B — and Alpaca with a dot. Sent as-is, every request for them was
+    a 400 ("BRK-B: Alpaca OHLCV failed (400 Client Error: Bad Request …)") that
+    fell through to the rate-limited yfinance path.
+    """
+    return str(symbol).strip().upper().replace("-", ".")
+
+
+# Symbols per multi-symbol bars request. Alpaca pages the combined result at
+# `limit` bars, so request count is ≈ total bars / 10,000 + chunks either way;
+# the chunk only bounds URL length and how much one failed request costs.
+_ALPACA_BATCH_SYMBOLS = 100
+_ALPACA_BATCH_MAX_PAGES = 500
+
+
 def _period_to_timedelta(period: str) -> timedelta | None:
     period_value = str(period or "").strip().lower()
     if not period_value or period_value == "max":
@@ -363,7 +381,7 @@ def _download_ohlcv_via_alpaca(
 
     end_ts = datetime.now(timezone.utc)
     start_ts = end_ts - delta
-    url = f"{_ALPACA_DATA_BASE_URL}/v2/stocks/{symbol}/bars"
+    url = f"{_ALPACA_DATA_BASE_URL}/v2/stocks/{_alpaca_symbol(symbol)}/bars"
     params = {
         "timeframe": timeframe,
         "start": _iso_z(start_ts),
@@ -384,6 +402,15 @@ def _download_ohlcv_via_alpaca(
         response.raise_for_status()
         payload = response.json()
     bars = payload.get("bars") if isinstance(payload, dict) else None
+    return _alpaca_bars_to_frame(bars)
+
+
+def _alpaca_bars_to_frame(bars) -> pd.DataFrame:
+    """Alpaca bar records → the OHLCV frame every provider path returns.
+
+    Shared by the per-symbol and multi-symbol paths so the two cannot drift
+    apart in column names, index type or timezone handling.
+    """
     if not isinstance(bars, list) or not bars:
         return pd.DataFrame()
 
@@ -411,6 +438,101 @@ def _download_ohlcv_via_alpaca(
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert(None)
     return df
+
+
+def _download_ohlcv_batch_via_alpaca(
+    symbols: list[str],
+    *,
+    period: str,
+    interval: str,
+) -> Dict[str, pd.DataFrame]:
+    """Bars for many symbols from Alpaca's multi-symbol endpoint.
+
+    ``fetch_ohlcv_batch`` used to fan out one request per ticker — 503 for the
+    S&P scan — against a 200 requests/minute limit. On the paper trader's first
+    scheduled scan that produced 46 HTTP 429s in its first minute alone, each
+    falling through to yfinance, which was rate-limited too, so some names were
+    scanned on no data at all. ``/v2/stocks/bars?symbols=…`` returns every
+    symbol in one paged response: about 19 requests for a year of S&P dailies.
+
+    Returns frames only for the symbols Alpaca answered. Anything missing — not
+    on Alpaca, empty on this feed, or in a chunk whose request failed — is left
+    for the caller's per-symbol path, so this can only ever remove requests.
+    A chunk that fails part-way is discarded whole: its pages are ordered by
+    symbol, and a symbol cut off mid-history must not pass as complete.
+    Never raises.
+    """
+    timeframe = _ALPACA_TIMEFRAME_MAP.get(str(interval).lower())
+    delta = _resolve_period(period)
+    if not _alpaca_credentials_configured() or timeframe is None or delta is None:
+        return {}
+    usable = [s for s in symbols if _can_use_alpaca_symbol(s)]
+    if not usable:
+        return {}
+    original = {_alpaca_symbol(s): s for s in usable}
+
+    end_ts = datetime.now(timezone.utc)
+    start_ts = end_ts - delta
+    url = f"{_ALPACA_DATA_BASE_URL}/v2/stocks/bars"
+    out: Dict[str, pd.DataFrame] = {}
+    requests_made = failed_chunks = 0
+    alpaca_syms = list(original)
+    for i in range(0, len(alpaca_syms), _ALPACA_BATCH_SYMBOLS):
+        chunk = alpaca_syms[i:i + _ALPACA_BATCH_SYMBOLS]
+        rows_by_symbol: Dict[str, list] = {}
+        token = None
+        try:
+            for _page in range(_ALPACA_BATCH_MAX_PAGES):
+                params = {
+                    "symbols": ",".join(chunk),
+                    "timeframe": timeframe,
+                    "start": _iso_z(start_ts),
+                    "end": _iso_z(end_ts),
+                    "adjustment": "all",
+                    "limit": 10_000,
+                    "sort": "asc",
+                    "feed": _ALPACA_DATA_FEED,
+                }
+                if token:
+                    params["page_token"] = token
+                with _UPSTREAM_FETCH_SEMAPHORE:
+                    response = get_retry_session().get(
+                        url,
+                        headers=_alpaca_headers(),
+                        params=params,
+                        timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+                    )
+                    requests_made += 1
+                    response.raise_for_status()
+                    payload = response.json()
+                bars = payload.get("bars") if isinstance(payload, dict) else None
+                for sym, rows in (bars or {}).items():
+                    if isinstance(rows, list):
+                        rows_by_symbol.setdefault(str(sym).upper(), []).extend(rows)
+                token = payload.get("next_page_token") if isinstance(payload, dict) else None
+                if not token:
+                    break
+            else:
+                raise RuntimeError(f"more than {_ALPACA_BATCH_MAX_PAGES} pages")
+        except Exception as exc:
+            failed_chunks += 1
+            log.warning(
+                f"Alpaca batch bars failed for {len(chunk)} symbols ({exc}) — "
+                "they fall back to per-symbol fetches"
+            )
+            continue
+        for asym, rows in rows_by_symbol.items():
+            sym = original.get(asym)
+            if sym is None:
+                continue
+            frame = _alpaca_bars_to_frame(rows)
+            if not frame.empty:
+                out[sym] = frame
+    log.info(
+        f"Alpaca batch bars: {len(out)}/{len(usable)} symbols in {requests_made} requests"
+        + (f" ({failed_chunks} chunk(s) failed)" if failed_chunks else "")
+    )
+    return out
 
 
 def _download_ohlcv_via_polygon(
@@ -661,10 +783,11 @@ def _fetch_ticker_info_via_alpaca_once(ticker: str) -> dict:
     if not _can_use_alpaca_symbol(symbol):
         raise ValueError("Alpaca does not support this symbol format")
 
+    asym = _alpaca_symbol(symbol)
     with _UPSTREAM_FETCH_SEMAPHORE:
         session = get_retry_session()
         asset_resp = session.get(
-            f"{_alpaca_trading_base_url()}/v2/assets/{symbol}",
+            f"{_alpaca_trading_base_url()}/v2/assets/{asym}",
             headers=_alpaca_headers(),
             timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
         )
@@ -692,13 +815,13 @@ def _fetch_ticker_info_via_alpaca_once(ticker: str) -> dict:
             snapshot_resp = session.get(
                 f"{_ALPACA_DATA_BASE_URL}/v2/stocks/snapshots",
                 headers=_alpaca_headers(),
-                params={"symbols": symbol, "feed": _ALPACA_DATA_FEED},
+                params={"symbols": asym, "feed": _ALPACA_DATA_FEED},
                 timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
             )
             if snapshot_resp.ok:
                 payload = snapshot_resp.json()
                 snapshots = payload.get("snapshots") if isinstance(payload, dict) else None
-                snapshot = snapshots.get(symbol) if isinstance(snapshots, dict) else None
+                snapshot = snapshots.get(asym) if isinstance(snapshots, dict) else None
                 if isinstance(snapshot, dict):
                     latest_trade = snapshot.get("latestTrade") if isinstance(snapshot.get("latestTrade"), dict) else {}
                     daily_bar = snapshot.get("dailyBar") if isinstance(snapshot.get("dailyBar"), dict) else {}
@@ -1040,6 +1163,21 @@ def fetch_ohlcv_batch(
                 continue
         need_fetch.append(ticker)
 
+    if not need_fetch:
+        return results
+
+    # One multi-symbol request per ~100 names instead of one per name; whatever
+    # it does not answer goes through the per-ticker chain below as before.
+    for ticker, df in _download_ohlcv_batch_via_alpaca(
+        need_fetch, period=period, interval=interval
+    ).items():
+        cleaned, _reason = _validate_ohlcv_frame(df)
+        if cleaned.empty:
+            continue
+        results[ticker] = cleaned
+        if use_cache:
+            cache.set(f"ohlcv:{ticker}:{period}:{interval}", cleaned, ttl=_ttl_for_interval(interval))
+    need_fetch = [t for t in need_fetch if t not in results]
     if not need_fetch:
         return results
 

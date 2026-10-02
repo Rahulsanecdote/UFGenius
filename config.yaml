@@ -2,6 +2,14 @@ account_size: 10000
 risk_per_trade: 0.01
 max_position_pct: 0.10
 scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM | MOVERS
+# Which pre-filter survivors get the full analysis when more pass than the scan
+# analyses (run_daily_scan max_signals, 15). `rvol`: strongest relative volume
+# first — the pre-filter's own qualifying measure. `universe`: universe order,
+# which for SP500 is alphabetical — the old behaviour, under which the
+# 2026-10-01 21:00 ET scan passed 90 names and analysed only A…BLK, so ticker
+# NAME decided which stocks could ever trade (audit B2's bias, in the live scan).
+# Env SCAN_CANDIDATE_RANKING.
+scan_candidate_ranking: rvol
 
 # Market-movers discovery (the MOVERS universe / `bot.py --mode movers`). Surfaces
 # the day's actual market-wide movers — top gainers, losers, most-actives (FMP) —
@@ -541,6 +549,19 @@ filter_min_avg_volume: 100000      # Minimum 20-day average daily volume (liquid
 filter_min_market_cap: 100000000   # Minimum market cap $100M (nano-cap trap floor)
 filter_max_5day_gain_pct: 50.0     # Maximum 5-day gain % before flagging as chaser trap
 filter_bankruptcy_z: 1.0           # Altman Z-Score below this = bankruptcy risk
+
+# Where the UNKNOWN_MARKET_CAP disqualifier gets its number. It fails closed —
+# rightly — but on the Render paper trader it rejected EVERY candidate: with
+# Alpaca keys set, ticker info comes from Alpaca's asset record, which has no
+# market cap, so yfinance is never asked; FMP needs a key; Finviz is off. Behind
+# those, src/fundamental/market_cap.py adds a last-known value on disk and a
+# keyless SEC EDGAR estimate (shares outstanding × price). The estimate only has
+# to answer a size FLOOR (filter_min_market_cap above), which every S&P 500 name
+# clears by orders of magnitude; its source is recorded as market_cap_source.
+market_cap:
+  cache_hours: 72        # keep the last known value this long (data/ — the worker's persistent disk)
+  sec_fallback: true     # env SEC_MARKET_CAP_FALLBACK
+  sec_user_agent: ""     # env SEC_USER_AGENT. SEC asks for "Name contact@example.com"; blank uses the repo UA
 
 # Penny-stock mode (OPT-IN, default OFF). Enabling this does NOT disable
 # protection — it swaps the standard disqualifiers for penny-specific HARD RAILS.

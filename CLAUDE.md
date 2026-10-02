@@ -226,6 +226,32 @@ pytest --cov=src       # coverage
   because the pre-filter's `RVOL >= 1.3` is computed on today's **partial**
   daily bar — measured 10:35 ET 2026-09-30: AAPL 0.38, MSFT 0.46, JPM 0.09,
   XOM 0.15, and 0 of 503 passed.
+- **The paper trader's first scheduled scan traded nothing, for two reasons
+  that would have made every scan trade nothing** (2026-10-01 21:00 ET; 90 of
+  503 passed the pre-filter). Both are fixed:
+  **(1) UNKNOWN_MARKET_CAP rejected every candidate.** With Alpaca keys set,
+  `fetch_ticker_info` returns Alpaca's asset record, which has *no* market-cap
+  field, so yfinance is never asked; the only fallbacks were FMP (no key on the
+  worker) and Finviz (off). A fail-closed filter that rejects everything is an
+  outage that looks like a quiet market. `src/fundamental/market_cap.py` adds,
+  behind ticker info, a **last-known value on disk** (`market_cap.cache_hours`,
+  72h — `data/` is the worker's persistent disk) and a **keyless SEC EDGAR
+  estimate, shares × price** — cover-page `dei:EntityCommonStockSharesOutstanding`,
+  else the `us-gaap` diluted weighted average (multi-class issuers report
+  cover-page shares per class, as dimensional facts the companyconcept API
+  omits: Alphabet 404s on the first and answers the second). Chain: ticker info
+  → last known → FMP → SEC → Finviz; the answer's provenance is
+  `market_cap_source`. The estimate only has to clear a $100M floor that every
+  S&P name clears by orders of magnitude, and a ticker no source can answer
+  still fails closed. SEC asks for a contact in the User-Agent —
+  `SEC_USER_AGENT` (blank uses the repo UA; a 403 pauses SEC lookups 30 min and
+  says so). Unit tests keep SEC and the disk cache off (`conftest.py`).
+  **(2) Ticker name decided what was analysed.** The pre-filter returned
+  survivors in universe order — alphabetical — and the scan analyses only the
+  first `max_signals` (15): that night A…BLK, never the other 75. Survivors are
+  now ranked by RVOL, the pre-filter's own measure (`scan_candidate_ranking`,
+  `universe` restores the old order), and the log says how many were left out.
+  Audit B2 found the same bias in the backtest.
 - **Intraday data (P1.1):** `fetch_intraday()` (`src/data/fetcher.py`) is the
   entry point for 1m/5m/… bars — same provider abstraction as daily, but with a
   **boundary-aligned** intraday cache TTL (`intraday.cache_boundary_align`,
@@ -540,8 +566,18 @@ pytest --cov=src       # coverage
   trips per walk-forward window become cache hits paid once per run. Note that
   helper is a **parallel fan-out, not a multi-symbol request** — it threads
   `fetch_ohlcv`, so it is still one HTTP call per ticker. Calling it a "batch"
-  would misdescribe the request volume; true multi-symbol batching against
-  Alpaca's `symbols=` parameter remains undone.
+  would misdescribe the request volume. **Multi-symbol batching is now done**
+  (`_download_ohlcv_batch_via_alpaca`): `fetch_ohlcv_batch` first asks
+  `/v2/stocks/bars?symbols=…` in chunks of 100, paged, and only what that does
+  not answer goes through the per-ticker chain — so it can only remove requests.
+  Measured live 2026-10-02: the S&P 500 (503 names, 1y daily) in **16 requests
+  and 9.8s**, 503/503 answered, where the per-ticker fan-out made 503 against a
+  200/min limit and the paper trader's first scan logged 46 HTTP 429s in its
+  first minute, each falling to rate-limited yfinance. A chunk failing part-way
+  is discarded whole (pages are ordered by symbol, so a symbol cut off
+  mid-history must not pass as complete). Both Alpaca paths now send share
+  classes as `BRK.B` (`_alpaca_symbol`) — the Wikipedia/Yahoo `BRK-B` spelling
+  was a 400 on every request.
 - **Production volume is IEX volume — ~3% of the tape. OPEN, not fixed.**
   `ALPACA_DATA_FEED` defaults to `iex` (`src/data/fetcher.py:101`) and
   `render.yaml` does not set it, so wherever Alpaca serves bars — which is

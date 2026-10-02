@@ -59,8 +59,10 @@ _PREFILTER_WORKERS = 8
 _SIGNAL_WORKERS = 4
 
 
-def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[str, pd.DataFrame] | None:
-    """Evaluate one ticker for pre-filter and return (ticker, df) on pass."""
+def _prefilter_ticker(
+    ticker: str, df_cache: dict[str, pd.DataFrame]
+) -> tuple[str, pd.DataFrame, float] | None:
+    """Evaluate one ticker for pre-filter and return (ticker, df, rvol) on pass."""
     try:
         df = df_cache.get(ticker)
         if df is None:
@@ -81,7 +83,7 @@ def _prefilter_ticker(ticker: str, df_cache: dict[str, pd.DataFrame]) -> tuple[s
             return None
 
         if 35 <= rsi_val <= 72 and rvol_val >= 1.3:
-            return ticker, df
+            return ticker, df, rvol_val
 
     except Exception as e:
         log.debug(f"{ticker}: pre-filter error: {e}")
@@ -107,7 +109,7 @@ def technical_pre_filter(tickers: list[str], progress=None) -> list[tuple[str, p
         progress("fetching", 0, len(tickers))
     df_cache = fetch_ohlcv_batch(tickers, period="1y", max_workers=_PREFILTER_WORKERS)
 
-    passed: list[tuple[str, pd.DataFrame]] = []
+    passed: list[tuple[str, pd.DataFrame, float]] = []
     with ThreadPoolExecutor(max_workers=_PREFILTER_WORKERS) as executor:
         futures = {
             executor.submit(_prefilter_ticker, ticker, df_cache): ticker
@@ -120,11 +122,20 @@ def technical_pre_filter(tickers: list[str], progress=None) -> list[tuple[str, p
             if progress:
                 progress("prefilter", done, len(tickers))
 
+    # Order matters because run_daily_scan analyses only the first max_signals.
+    # Universe order is alphabetical for SP500, so ranking by it let a ticker's
+    # NAME decide whether it could ever trade: on 2026-10-01 90 names passed and
+    # only A…BLK were analysed. Rank by the pre-filter's own measure instead,
+    # ticker as a tiebreak only so equal RVOLs order deterministically.
     order = {ticker: idx for idx, ticker in enumerate(tickers)}
-    passed.sort(key=lambda item: order.get(item[0], 999999))
+    ranking = config.SCAN_CANDIDATE_RANKING
+    if ranking == "universe":
+        passed.sort(key=lambda item: order.get(item[0], 999999))
+    else:
+        passed.sort(key=lambda item: (-item[2], item[0]))
 
-    log.info(f"Pre-filter: {len(tickers)} -> {len(passed)} candidates")
-    return passed
+    log.info(f"Pre-filter: {len(tickers)} -> {len(passed)} candidates (ranked by {ranking})")
+    return [(ticker, df) for ticker, df, _rvol in passed]
 
 
 def _analyze_ticker(
@@ -226,8 +237,14 @@ def run_daily_scan(
     else:
         candidates = [(ticker, None) for ticker in universe]
 
+    n_passed = len(candidates)
     candidates = candidates[:max_signals]
-    log.info(f"Running full analysis on {len(candidates)} candidates ...")
+    left_out = n_passed - len(candidates)
+    log.info(
+        f"Running full analysis on {len(candidates)} of {n_passed} candidates"
+        + (f" ({left_out} not analysed — max_signals={max_signals})" if left_out > 0 else "")
+        + " ..."
+    )
 
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=_SIGNAL_WORKERS) as executor:
