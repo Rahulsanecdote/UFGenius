@@ -227,6 +227,11 @@ movers:
     feed: iex                  # iex (free) | sip (paid)
     stale_sec: 10              # a tick older than this = quiet tape
     max_symbols: 30            # cap on concurrently-subscribed symbols
+    # A refused/dropped connection is retried after reconnect_backoff_sec,
+    # doubling to reconnect_backoff_max_sec. Alpaca's free data plan allows ONE
+    # websocket per account; a second client gets "connection limit exceeded".
+    reconnect_backoff_sec: 2
+    reconnect_backoff_max_sec: 300
 
 safety_rules:
   max_positions: 5

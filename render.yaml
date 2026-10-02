@@ -64,6 +64,10 @@ services:
       #   so it never double-sends the alerts the worker service handles.
       - key: RUN_WORKER_IN_PROCESS
         value: "true"
+      # Alpaca's free data plan allows ONE market-data websocket per account. If
+      # the ufgenius-movers-worker below also runs on these keys, turn the
+      # stream off on one of them — the other is refused "connection limit
+      # exceeded" (it backs off and retries; see docs/STREAMING.md).
       - key: MOVERS_STREAM_ENABLED     # live Alpaca tape → dashboard live prices
         value: "true"
       # Needs FMP_KEY (discovery) and ALPACA_API_KEY/SECRET (intraday + stream),
