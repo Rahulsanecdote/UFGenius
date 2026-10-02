@@ -578,7 +578,7 @@ pytest --cov=src       # coverage
   mid-history must not pass as complete). Both Alpaca paths now send share
   classes as `BRK.B` (`_alpaca_symbol`) — the Wikipedia/Yahoo `BRK-B` spelling
   was a 400 on every request.
-- **Production volume is IEX volume — ~3% of the tape. OPEN, not fixed.**
+- **Production volume WAS IEX volume — ~3–5% of the tape. FIXED for daily bars (2026-10-02); intraday still IEX.**
   `ALPACA_DATA_FEED` defaults to `iex` (`src/data/fetcher.py:101`) and
   `render.yaml` does not set it, so wherever Alpaca serves bars — which is
   first in the chain whenever its keys are present, i.e. in production — every
@@ -605,10 +605,22 @@ pytest --cov=src       # coverage
   free key reads `feed=sip` (consolidated; 99.5–105.7% of the tape) for any
   query ending ≥ 15 min ago, which covers daily bars and every backtest.
   Real-time intraday **cannot** use SIP on the free tier — that needs Alpaca's
-  paid plan or another consolidated source. Deliberately **not** applied yet:
-  correcting it makes production's *effective* filters looser — back to the
-  values written in `config.yaml` — and admits many more names, which is an
-  operator decision rather than a silent bug fix.
+  paid plan or another consolidated source. **Now applied, at the operator's decision (2026-10-02):** daily bars ask
+  Alpaca for `feed=sip`, ending `alpaca_data.sip_delay_min` (16) minutes early —
+  the free plan answers a SIP request ending now with HTTP 403 "subscription
+  does not permit querying recent SIP data" and serves it 16 minutes back — and
+  a 403 still falls back to IEX for that request, saying so once. Measured on
+  the S&P 500, 20-day average volume: **187 of 503 names failed the 100K
+  ILLIQUID floor on IEX, 1 on SIP** (NVR, a genuinely thin ~40K-share name);
+  IEX carried a median 4.8% of consolidated volume (p10 3.6%, p90 6.4%); BLK
+  27,857 → 509,024. The filters now mean what config.yaml says, and backtests
+  and live read the same volume. Frames carry their provenance
+  (`attrs["volume_feed"]`: sip / iex / iex-fallback / consolidated) and a
+  cached daily frame from the IEX era is refetched, not served, so the 24h
+  daily cache cannot mix the two. **Still IEX:** every intraday bar
+  (`ALPACA_DATA_FEED`) and the live price stream — real-time SIP needs a paid
+  plan — so the movers enrichment, the precursor and the pre-market screener
+  keep the intraday caveats above.
 - **All network fetches** go through `src/utils/http.py` (timeouts + bounded
   retry), including the constituent-list fetches in `src/data/universe.py`
   (tables/headers are located by content, not position). `src/data/cache.py`

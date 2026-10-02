@@ -182,6 +182,58 @@ _ALPACA_BATCH_SYMBOLS = 100
 _ALPACA_BATCH_MAX_PAGES = 500
 
 
+def _alpaca_bars_feed(interval: str) -> tuple[str, float]:
+    """(feed, seconds to end the request early) for an Alpaca bars request.
+
+    Daily bars use the consolidated SIP tape (config ``alpaca_data.daily_feed``).
+    IEX — the old default — is one venue: measured 2026-10-02 it carried 3.0% of
+    AAPL's daily volume and 4.7% of BLK's, so every absolute volume threshold
+    ran ~25-30x stricter than written and BLK failed ILLIQUID at 28,514 shares.
+    The free plan serves SIP only for data at least 15 minutes old, hence the
+    early end. Intraday stays on ``ALPACA_DATA_FEED``: real-time SIP is paid.
+    """
+    if str(interval).lower() == "1d" and config.ALPACA_DAILY_FEED == "sip":
+        return "sip", max(0.0, float(config.ALPACA_SIP_DELAY_MIN)) * 60.0
+    return _ALPACA_DATA_FEED, 0.0
+
+
+_SIP_REFUSAL_WARNED = threading.Event()
+
+
+def _note_sip_refused(response) -> None:
+    """Say — once, loudly — that daily volume fell back to IEX."""
+    detail = ""
+    try:
+        detail = str(response.text)[:160]
+    except Exception:
+        pass
+    if not _SIP_REFUSAL_WARNED.is_set():
+        _SIP_REFUSAL_WARNED.set()
+        log.warning(
+            f"Alpaca refused SIP daily bars (HTTP {response.status_code}: {detail}) — "
+            "falling back to IEX volume, about 3% of the tape, so absolute volume "
+            "filters run far stricter than written. Raise ALPACA_SIP_DELAY_MIN, or "
+            "set ALPACA_DAILY_FEED=iex to make this the declared behaviour."
+        )
+    else:
+        log.debug(f"Alpaca refused SIP daily bars again (HTTP {response.status_code})")
+
+
+# Daily frames whose Volume can be trusted once the daily feed is SIP: SIP itself,
+# a consolidated provider (Polygon, yfinance), or IEX taken only because SIP was
+# refused. An untagged cached frame predates the switch, and an "iex" one was
+# fetched while the daily feed was IEX — both would mix ~3%-of-tape volumes into
+# a scan for up to the 24h daily cache TTL, so they are refetched instead.
+_TRUSTED_DAILY_VOLUME = frozenset({"sip", "consolidated", "iex-fallback"})
+
+
+def _cached_frame_usable(frame, interval: str) -> bool:
+    if str(interval).lower() != "1d" or config.ALPACA_DAILY_FEED != "sip":
+        return True
+    attrs = getattr(frame, "attrs", None) or {}
+    return attrs.get("volume_feed") in _TRUSTED_DAILY_VOLUME
+
+
 def _period_to_timedelta(period: str) -> timedelta | None:
     period_value = str(period or "").strip().lower()
     if not period_value or period_value == "max":
@@ -381,28 +433,33 @@ def _download_ohlcv_via_alpaca(
 
     end_ts = datetime.now(timezone.utc)
     start_ts = end_ts - delta
+    feed, end_delay = _alpaca_bars_feed(interval)
     url = f"{_ALPACA_DATA_BASE_URL}/v2/stocks/{_alpaca_symbol(symbol)}/bars"
     params = {
         "timeframe": timeframe,
         "start": _iso_z(start_ts),
-        "end": _iso_z(end_ts),
+        "end": _iso_z(end_ts - timedelta(seconds=end_delay)),
         "adjustment": "all",
         "limit": 10_000,
         "sort": "asc",
-        "feed": _ALPACA_DATA_FEED,
+        "feed": feed,
     }
+    timeout = (config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC)
 
     with _UPSTREAM_FETCH_SEMAPHORE:
-        response = get_retry_session().get(
-            url,
-            headers=_alpaca_headers(),
-            params=params,
-            timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
-        )
+        session = get_retry_session()
+        response = session.get(url, headers=_alpaca_headers(), params=params, timeout=timeout)
+        if response.status_code == 403 and feed == "sip":
+            _note_sip_refused(response)
+            feed = "iex-fallback"
+            params.update(feed="iex", end=_iso_z(end_ts))
+            response = session.get(url, headers=_alpaca_headers(), params=params, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
     bars = payload.get("bars") if isinstance(payload, dict) else None
-    return _alpaca_bars_to_frame(bars)
+    frame = _alpaca_bars_to_frame(bars)
+    frame.attrs["volume_feed"] = feed
+    return frame
 
 
 def _alpaca_bars_to_frame(bars) -> pd.DataFrame:
@@ -474,46 +531,59 @@ def _download_ohlcv_batch_via_alpaca(
     end_ts = datetime.now(timezone.utc)
     start_ts = end_ts - delta
     url = f"{_ALPACA_DATA_BASE_URL}/v2/stocks/bars"
+    first_feed, end_delay = _alpaca_bars_feed(interval)
     out: Dict[str, pd.DataFrame] = {}
     requests_made = failed_chunks = 0
     alpaca_syms = list(original)
-    for i in range(0, len(alpaca_syms), _ALPACA_BATCH_SYMBOLS):
-        chunk = alpaca_syms[i:i + _ALPACA_BATCH_SYMBOLS]
+
+    def _fetch_chunk(chunk: list[str], feed: str):
+        """Merged rows for one chunk, "refused" on a SIP 403, or None on failure."""
+        nonlocal requests_made
         rows_by_symbol: Dict[str, list] = {}
         token = None
+        for _page in range(_ALPACA_BATCH_MAX_PAGES):
+            params = {
+                "symbols": ",".join(chunk),
+                "timeframe": timeframe,
+                "start": _iso_z(start_ts),
+                "end": _iso_z(end_ts - timedelta(seconds=end_delay if feed == "sip" else 0)),
+                "adjustment": "all",
+                "limit": 10_000,
+                "sort": "asc",
+                "feed": "iex" if feed == "iex-fallback" else feed,
+            }
+            if token:
+                params["page_token"] = token
+            with _UPSTREAM_FETCH_SEMAPHORE:
+                response = get_retry_session().get(
+                    url,
+                    headers=_alpaca_headers(),
+                    params=params,
+                    timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
+                )
+                requests_made += 1
+                if response.status_code == 403 and feed == "sip":
+                    _note_sip_refused(response)
+                    return "refused"
+                response.raise_for_status()
+                payload = response.json()
+            bars = payload.get("bars") if isinstance(payload, dict) else None
+            for sym, rows in (bars or {}).items():
+                if isinstance(rows, list):
+                    rows_by_symbol.setdefault(str(sym).upper(), []).extend(rows)
+            token = payload.get("next_page_token") if isinstance(payload, dict) else None
+            if not token:
+                return rows_by_symbol
+        raise RuntimeError(f"more than {_ALPACA_BATCH_MAX_PAGES} pages")
+
+    for i in range(0, len(alpaca_syms), _ALPACA_BATCH_SYMBOLS):
+        chunk = alpaca_syms[i:i + _ALPACA_BATCH_SYMBOLS]
+        feed = first_feed
         try:
-            for _page in range(_ALPACA_BATCH_MAX_PAGES):
-                params = {
-                    "symbols": ",".join(chunk),
-                    "timeframe": timeframe,
-                    "start": _iso_z(start_ts),
-                    "end": _iso_z(end_ts),
-                    "adjustment": "all",
-                    "limit": 10_000,
-                    "sort": "asc",
-                    "feed": _ALPACA_DATA_FEED,
-                }
-                if token:
-                    params["page_token"] = token
-                with _UPSTREAM_FETCH_SEMAPHORE:
-                    response = get_retry_session().get(
-                        url,
-                        headers=_alpaca_headers(),
-                        params=params,
-                        timeout=(config.REQUEST_CONNECT_TIMEOUT_SEC, config.REQUEST_TIMEOUT_SEC),
-                    )
-                    requests_made += 1
-                    response.raise_for_status()
-                    payload = response.json()
-                bars = payload.get("bars") if isinstance(payload, dict) else None
-                for sym, rows in (bars or {}).items():
-                    if isinstance(rows, list):
-                        rows_by_symbol.setdefault(str(sym).upper(), []).extend(rows)
-                token = payload.get("next_page_token") if isinstance(payload, dict) else None
-                if not token:
-                    break
-            else:
-                raise RuntimeError(f"more than {_ALPACA_BATCH_MAX_PAGES} pages")
+            rows_by_symbol = _fetch_chunk(chunk, feed)
+            if rows_by_symbol == "refused":
+                feed = "iex-fallback"
+                rows_by_symbol = _fetch_chunk(chunk, feed)
         except Exception as exc:
             failed_chunks += 1
             log.warning(
@@ -527,6 +597,7 @@ def _download_ohlcv_batch_via_alpaca(
                 continue
             frame = _alpaca_bars_to_frame(rows)
             if not frame.empty:
+                frame.attrs["volume_feed"] = feed
                 out[sym] = frame
     log.info(
         f"Alpaca batch bars: {len(out)}/{len(usable)} symbols in {requests_made} requests"
@@ -1096,7 +1167,7 @@ def fetch_ohlcv(
 
     if use_cache:
         cached = cache.get(cache_key)
-        if cached is not None:
+        if cached is not None and _cached_frame_usable(cached, interval):
             return cached
 
     try:
@@ -1118,7 +1189,12 @@ def fetch_ohlcv(
         stale = _fallback_to_stale_cache(cache_key, symbol=symbol, label="OHLCV")
         return stale if isinstance(stale, pd.DataFrame) else pd.DataFrame()
 
+    # Where the Volume came from. Alpaca paths tag their frames; every other
+    # provider (Polygon, yfinance) reports the consolidated tape.
+    volume_feed = (getattr(df, "attrs", None) or {}).get("volume_feed", "consolidated")
     cleaned, invalid_reason = _validate_ohlcv_frame(df)
+    if not cleaned.empty:
+        cleaned.attrs["volume_feed"] = volume_feed
     if cleaned.empty:
         if invalid_reason == "EMPTY_PAYLOAD":
             log.warning(f"{symbol}: empty OHLCV response from providers")
@@ -1158,7 +1234,7 @@ def fetch_ohlcv_batch(
         cache_key = f"ohlcv:{ticker}:{period}:{interval}"
         if use_cache:
             cached = cache.get(cache_key)
-            if cached is not None:
+            if cached is not None and _cached_frame_usable(cached, interval):
                 results[ticker] = cached
                 continue
         need_fetch.append(ticker)
@@ -1174,6 +1250,7 @@ def fetch_ohlcv_batch(
         cleaned, _reason = _validate_ohlcv_frame(df)
         if cleaned.empty:
             continue
+        cleaned.attrs["volume_feed"] = df.attrs.get("volume_feed", "consolidated")
         results[ticker] = cleaned
         if use_cache:
             cache.set(f"ohlcv:{ticker}:{period}:{interval}", cleaned, ttl=_ttl_for_interval(interval))
