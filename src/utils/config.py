@@ -750,6 +750,18 @@ CONSTITUENT_FETCH_USER_AGENT: str = (
     or "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"
 )
 
+# Alpaca feed for daily bars (src/data/fetcher.py). See `alpaca_data:` in
+# config.yaml: "sip" = consolidated volume, "iex" = one venue's ~3% share.
+_ALPACA_DATA: dict = get("alpaca_data", {}) or {}
+ALPACA_DAILY_FEED: str = (
+    env("ALPACA_DAILY_FEED", "").strip().lower()
+    or str(_ALPACA_DATA.get("daily_feed", "sip")).strip().lower()
+)
+if ALPACA_DAILY_FEED not in ("sip", "iex"):
+    ALPACA_DAILY_FEED = "sip"
+ALPACA_SIP_DELAY_MIN: float = env_float(
+    "ALPACA_SIP_DELAY_MIN", _as_float(_ALPACA_DATA.get("sip_delay_min"), 16.0))
+
 # Market-cap resolution behind the providers (src/fundamental/market_cap.py):
 # a last-known value on disk, then keyless SEC EDGAR shares × price. See the
 # `market_cap:` block in config.yaml for why the providers alone are not enough.

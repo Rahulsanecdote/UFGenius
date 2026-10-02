@@ -550,6 +550,22 @@ filter_min_market_cap: 100000000   # Minimum market cap $100M (nano-cap trap flo
 filter_max_5day_gain_pct: 50.0     # Maximum 5-day gain % before flagging as chaser trap
 filter_bankruptcy_z: 1.0           # Altman Z-Score below this = bankruptcy risk
 
+# Alpaca feed for DAILY bars. `iex` is one venue — measured 2026-10-02 it carried
+# 3.0% of AAPL's daily volume, 4.7% of BLK's, 3.9% of BRK.B's — so every
+# absolute volume threshold here (filter_min_avg_volume, penny min_dollar_volume,
+# screener min_avg_volume) ran ~25-30x stricter in production than written, and
+# rejected BLK (~550K shares/day) as ILLIQUID at 28,514. `sip` is the
+# consolidated tape. The free plan serves SIP only for data at least 15 minutes
+# old ("subscription does not permit querying recent SIP data", HTTP 403), so
+# daily requests end sip_delay_min early — today's bar then runs to 16 minutes
+# ago, which no daily signal can tell apart. A 403 falls back to IEX for that
+# request and says so. Intraday bars and the live price stream stay on
+# ALPACA_DATA_FEED / movers.stream.feed (iex): real-time SIP needs a paid plan.
+# Env: ALPACA_DAILY_FEED, ALPACA_SIP_DELAY_MIN (0 on a real-time SIP plan).
+alpaca_data:
+  daily_feed: sip
+  sip_delay_min: 16
+
 # Where the UNKNOWN_MARKET_CAP disqualifier gets its number. It fails closed —
 # rightly — but on the Render paper trader it rejected EVERY candidate: with
 # Alpaca keys set, ticker info comes from Alpaca's asset record, which has no
