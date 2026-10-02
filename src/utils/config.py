@@ -120,6 +120,10 @@ SCAN_CANDIDATE_RANKING: str = (
 )
 if SCAN_CANDIDATE_RANKING not in ("rvol", "universe"):
     SCAN_CANDIDATE_RANKING = "rvol"
+# Each scan refetches the daily bars it reads instead of reusing the 24h cache
+# (see fetcher.require_daily_bars_fetched_since).
+SCAN_REFRESH_DAILY_BARS: bool = env_bool(
+    "SCAN_REFRESH_DAILY_BARS", bool(get("scan_refresh_daily_bars", True)))
 
 # Market-movers discovery (MOVERS universe / --mode movers).
 _MOVERS: dict = get("movers", {})
@@ -288,6 +292,16 @@ MOVERS_STREAM_STALE_SEC: float = env_float(
     "MOVERS_STREAM_STALE_SEC", _as_float(_MOVERS_STREAM.get("stale_sec", 10), 10.0))
 MOVERS_STREAM_MAX_SYMBOLS: int = env_int(
     "MOVERS_STREAM_MAX_SYMBOLS", _as_int(_MOVERS_STREAM.get("max_symbols", 30), 30))
+# Reconnect backoff after a refused or dropped connection: doubles from
+# `reconnect_backoff_sec` up to `reconnect_backoff_max_sec`. alpaca-py's own loop
+# retries instantly and never closes a refused socket, which OOM-killed the
+# dashboard twice on 2026-10-02 (see src/streaming/price_stream.py).
+MOVERS_STREAM_RECONNECT_BACKOFF_SEC: float = env_float(
+    "MOVERS_STREAM_RECONNECT_BACKOFF_SEC",
+    _as_float(_MOVERS_STREAM.get("reconnect_backoff_sec", 2), 2.0))
+MOVERS_STREAM_RECONNECT_BACKOFF_MAX_SEC: float = env_float(
+    "MOVERS_STREAM_RECONNECT_BACKOFF_MAX_SEC",
+    _as_float(_MOVERS_STREAM.get("reconnect_backoff_max_sec", 300), 300.0))
 
 # Run the always-on movers worker inside the web process (a daemon thread) so
 # the dashboard and worker share one filesystem and the Phase 7 worker strip +

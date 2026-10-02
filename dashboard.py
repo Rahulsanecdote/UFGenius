@@ -3884,7 +3884,17 @@ HTML = '''
       if (s.live) { badge.className = 'mw-badge mw-live'; badge.textContent = '● LIVE'; }
       else { badge.className = 'mw-badge mw-stale'; badge.textContent = 'STALE'; }
       const strm = $('mwStream');
-      if (s.streaming && s.streaming.live) {
+      if (s.streaming && s.streaming.live && s.streaming.connected === false && s.streaming.last_error) {
+        // The thread runs but Alpaca refused the login (e.g. another client
+        // holds the account's one data websocket) — not a live tape.
+        strm.hidden = false;
+        strm.textContent = `⚠ Stream refused: ${s.streaming.last_error}`;
+        const retry = s.streaming.retry_in_seconds;
+        strm.title = `Alpaca ${String(s.streaming.feed || '').toUpperCase()} websocket · `
+          + `${s.streaming.connect_failures || 0} failed attempt(s)`
+          + (retry === null || retry === undefined ? '' : ` · retry in ${Math.round(retry)}s`)
+          + ' · prices come from REST polling meanwhile';
+      } else if (s.streaming && s.streaming.live) {
         strm.hidden = false;
         strm.textContent = `⚡ Streaming (${s.streaming.priced_count || 0}/${s.streaming.subscribed_count || 0})`;
         strm.title = `Alpaca ${String(s.streaming.feed || '').toUpperCase()} websocket · ${s.streaming.tick_count || 0} ticks`;

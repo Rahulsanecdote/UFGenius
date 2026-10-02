@@ -139,6 +139,14 @@ class _MemCache(dict):
 
 
 @pytest.fixture(autouse=True)
+def _no_daily_freshness_floor(monkeypatch):
+    """run_daily_scan raises a process-wide floor on cached daily bars; reset it
+    per test so one test's scan cannot turn the next test's cache into misses."""
+    import src.data.fetcher as _fetcher
+    monkeypatch.setattr(_fetcher, "_daily_fetched_floor", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _offline_market_cap_fallbacks(request, monkeypatch):
     """Keep the market-cap fallback chain off the network and off data/.
 

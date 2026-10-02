@@ -226,6 +226,20 @@ pytest --cov=src       # coverage
   because the pre-filter's `RVOL >= 1.3` is computed on today's **partial**
   daily bar — measured 10:35 ET 2026-09-30: AAPL 0.38, MSFT 0.46, JPM 0.09,
   XOM 0.15, and 0 of 503 passed.
+- **Each scan reads daily bars fetched during that scan**
+  (`fetcher.require_daily_bars_fetched_since`, config `scan_refresh_daily_bars`,
+  default on). The daily cache lives 24h, so every scheduled scan after the
+  first of the day re-read the first fetch: on 2026-10-02 the paper trader's
+  16:30 ET scan made no data request and judged bars ending 13:44 ET, and a
+  Monday 06:00 fetch would have served Friday's close to every Monday scan.
+  `run_daily_scan` raises a process-wide floor to its own start before the
+  regime read; cached daily frames carry `attrs["fetched_at"]` and anything
+  older (or untagged) is refetched — ~16 multi-symbol Alpaca requests per S&P
+  scan. The floor is 0 until a scan runs, so backtests and dashboard reads keep
+  the 24h cache (a backtest re-reads per ticker for minutes; a blanket shorter
+  TTL would have refetched mid-run). Keyless setups pay a yfinance call per
+  ticker per scan and may want it off. `tests/conftest.py` resets the floor per
+  test.
 - **The paper trader's first scheduled scan traded nothing, for two reasons
   that would have made every scan trade nothing** (2026-10-01 21:00 ET; 90 of
   503 passed the pre-filter). Both are fixed:
@@ -769,6 +783,24 @@ pytest --cov=src       # coverage
   subscribed to its live watch set and the snapshot carries live prices + stream
   status. Advisory/telemetry only — no import of the executor/broker; the stream
   is a data source, never a gate.
+  **The reconnect loop is ours, not alpaca-py's** (`_guarded_stream_class()`,
+  config `movers.stream.reconnect_backoff_sec` / `_max_sec`, 2s → 300s). Alpaca's
+  free data plan allows one websocket per account and answers a second login
+  "connection limit exceeded"; alpaca-py 0.43.1 retries that instantly and never
+  closes the refused socket. On 2026-10-02 that OOM-killed the 512 MB dashboard
+  twice (15:19 and 16:15 UTC), each ~10 min into a refusal logged ~2×/s. Against
+  a local server that refuses the same way and holds the socket open, the stock
+  client reached 1.1 GB in 60 s (17,306 open sockets); the guarded one stays flat
+  through 2,288 refusals even when forced to retry every 10 ms. It also busy-waited
+  (`asyncio.sleep(0)`, 99% of a core) until the first subscription — every
+  dashboard spin-up. The override closes the socket on every failure, backs off,
+  sleeps while idle, gives up only on `insufficient subscription`, and reports
+  `connected`/`last_error`/`connect_failures` in `status()` (the worker strip
+  reads **⚠ Stream refused**). It reaches into alpaca-py privates;
+  `tests/test_price_stream_reconnect.py` pins them and runs the real client
+  against a local fake Alpaca, including a test that fails once upstream stops
+  leaking. Who held the other connection that day was not visible from Render —
+  only the dashboard streams in this deployment.
 - **Catalyst-triggered alerts** (`src/catalysts/catalyst_alerts.py`, config
   `movers.catalyst_alerts`, **default off**): the movers path is structurally
   late — a name only reaches it after moving enough to appear on a provider's

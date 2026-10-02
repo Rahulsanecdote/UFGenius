@@ -11,6 +11,14 @@ scan_universe: SP500  # SP500 | RUSSELL1000 | CUSTOM | MOVERS
 # Env SCAN_CANDIDATE_RANKING.
 scan_candidate_ranking: rvol
 
+# Each scan refetches the daily bars it reads. The daily cache lives 24h, so
+# without this every scheduled scan after the first of the day re-read the first
+# fetch (2026-10-02: the 16:30 ET scan judged bars ending 13:44 ET). With Alpaca
+# keys it costs ~16 multi-symbol requests per S&P scan. Without them every
+# ticker goes to yfinance, so a keyless setup running scheduled scans may want
+# it off. Env SCAN_REFRESH_DAILY_BARS.
+scan_refresh_daily_bars: true
+
 # Market-movers discovery (the MOVERS universe / `bot.py --mode movers`). Surfaces
 # the day's actual market-wide movers — top gainers, losers, most-actives (FMP) —
 # ranked with a long/short direction, for intraday trading. Needs FMP_KEY. The
@@ -227,6 +235,11 @@ movers:
     feed: iex                  # iex (free) | sip (paid)
     stale_sec: 10              # a tick older than this = quiet tape
     max_symbols: 30            # cap on concurrently-subscribed symbols
+    # A refused/dropped connection is retried after reconnect_backoff_sec,
+    # doubling to reconnect_backoff_max_sec. Alpaca's free data plan allows ONE
+    # websocket per account; a second client gets "connection limit exceeded".
+    reconnect_backoff_sec: 2
+    reconnect_backoff_max_sec: 300
 
 safety_rules:
   max_positions: 5
