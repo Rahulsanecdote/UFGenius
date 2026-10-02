@@ -1,10 +1,16 @@
-"""Fundamental data fetcher — yfinance .info primary, FMP fallback.
+"""Fundamental data fetcher — ticker info primary, then market-cap fallbacks.
 
-yfinance is the primary source, but its ``.info`` endpoint rate-limits hard;
-when it returns nothing (so ``market_cap`` is unknown and the disqualification
-filter would reject the ticker), fall back to Financial Modeling Prep — which
-the operator already supplies a key for — to fill the gaps. Mirrors the
-multi-provider fallback the price layer (``src/data/fetcher``) already has.
+Ticker info comes from ``src.data.fetcher.fetch_ticker_info`` (Alpaca first when
+its keys are set, yfinance otherwise). When it carries no ``market_cap`` — which
+with Alpaca keys is *always*, since Alpaca's asset record has no such field —
+the disqualification filter would reject the ticker as UNKNOWN_MARKET_CAP. So
+the market cap alone is resolved down a chain, cheapest first:
+
+    ticker info → last known value (disk) → FMP (keyed) → SEC shares × price
+    (keyless) → Finviz (opt-in)
+
+The source that answered is recorded as ``market_cap_source``. See
+``src/fundamental/market_cap.py`` for the measurement that made this necessary.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.data.fetcher import fetch_ticker_info
+from src.fundamental import market_cap
 from src.utils import config
 from src.utils.http import get_retry_session
 from src.utils.logger import get_logger
@@ -32,13 +39,11 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
     """
     info = info if info is not None else fetch_ticker_info(ticker)
     if not info:
-        # yfinance gave nothing (commonly a rate-limit). Try FMP outright rather
-        # than returning all-None, which would trip UNKNOWN_MARKET_CAP, then let
-        # Finviz fill anything FMP still left missing.
-        fmp = _fetch_fmp_fundamentals(ticker)
-        base = _empty_fundamentals()
-        if fmp:
-            base.update(fmp)
+        # Ticker info gave nothing (commonly a rate-limit). Resolve the market
+        # cap down the fallback chain rather than returning all-None, which would
+        # trip UNKNOWN_MARKET_CAP; Finviz then fills anything still missing.
+        base = _fill_market_cap(ticker, _empty_fundamentals())
+        if base.get("market_cap") is not None:
             base["ticker"] = ticker
         return _backfill_from_finviz(ticker, base)
 
@@ -114,16 +119,49 @@ def fetch_fundamentals(ticker: str, info: dict[str, Any] | None = None) -> dict:
         "revenue_prev":        None,
     }
 
-    # Source precedence: yfinance is authoritative; FMP fills what it omitted;
-    # Finviz fills last, being the scraped (most fragile) source. Each stage only
-    # ever writes keys that are still None.
-    if result.get("market_cap") is None:
-        fmp = _fetch_fmp_fundamentals(ticker)
-        for key, value in fmp.items():
-            if value is not None and result.get(key) is None:
-                result[key] = value
+    # Source precedence: ticker info is authoritative; the market-cap chain
+    # fills what it omitted; Finviz fills last, being the scraped (most fragile)
+    # source. Each stage only ever writes keys that are still None.
+    return _backfill_from_finviz(ticker, _fill_market_cap(ticker, result))
 
-    return _backfill_from_finviz(ticker, result)
+
+def _fill_market_cap(ticker: str, out: dict) -> dict:
+    """Resolve ``out["market_cap"]`` down the fallback chain; record the source.
+
+    A value the providers supply is remembered on disk, so a later scan can
+    still pass the size floor while every source is rate-limited. FMP is asked
+    only after the remembered value misses, which keeps its 250-call free tier
+    for tickers we have never seen. Never raises.
+    """
+    try:
+        if market_cap._valid(out.get("market_cap")) is not None:
+            out.setdefault("market_cap_source", "ticker_info")
+            market_cap.remember(ticker, out["market_cap"], out["market_cap_source"])
+            return out
+
+        known = market_cap.cached(ticker)
+        if known is not None:
+            out["market_cap"] = known.value
+            out["market_cap_source"] = f"last_known:{known.source}"
+            out["market_cap_age_hours"] = known.age_hours
+            return out
+
+        for key, value in _fetch_fmp_fundamentals(ticker).items():
+            if value is not None and out.get(key) is None:
+                out[key] = value
+        if out.get("market_cap") is not None:
+            out["market_cap_source"] = "fmp"
+            market_cap.remember(ticker, out["market_cap"], "fmp")
+            return out
+
+        estimate = market_cap.sec_market_cap(ticker, out.get("price"))
+        if estimate is not None:
+            out["market_cap"] = estimate
+            out["market_cap_source"] = "sec_shares_x_price"
+            market_cap.remember(ticker, estimate, "sec_shares_x_price")
+    except Exception as exc:  # a fallback must never take the fetch down
+        log.debug(f"{ticker}: market-cap fallback chain failed ({exc})")
+    return out
 
 
 def _backfill_from_finviz(ticker: str, out: dict) -> dict:

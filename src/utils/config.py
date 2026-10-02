@@ -112,6 +112,14 @@ ACCOUNT_SIZE: float = float(get("account_size", 10_000))
 RISK_PER_TRADE: float = float(get("risk_per_trade", 0.01))
 MAX_POSITION_PCT: float = float(get("max_position_pct", 0.10))
 SCAN_UNIVERSE: str = get("scan_universe", "SP500")
+# How pre-filter survivors are ordered before the scan's analysis cap: "rvol"
+# (strongest first) or "universe" (universe order — alphabetical for SP500).
+SCAN_CANDIDATE_RANKING: str = (
+    env("SCAN_CANDIDATE_RANKING", "").strip().lower()
+    or str(get("scan_candidate_ranking", "rvol")).strip().lower()
+)
+if SCAN_CANDIDATE_RANKING not in ("rvol", "universe"):
+    SCAN_CANDIDATE_RANKING = "rvol"
 
 # Market-movers discovery (MOVERS universe / --mode movers).
 _MOVERS: dict = get("movers", {})
@@ -740,6 +748,20 @@ def cache_eviction_target_ratio() -> float:
 CONSTITUENT_FETCH_USER_AGENT: str = (
     env("CONSTITUENT_FETCH_USER_AGENT", "").strip()
     or "UFGenius/1.0 (+https://github.com/Rahulsanecdote/UFGenius)"
+)
+
+# Market-cap resolution behind the providers (src/fundamental/market_cap.py):
+# a last-known value on disk, then keyless SEC EDGAR shares × price. See the
+# `market_cap:` block in config.yaml for why the providers alone are not enough.
+_MARKET_CAP: dict = get("market_cap", {}) or {}
+MARKET_CAP_CACHE_HOURS: float = env_float(
+    "MARKET_CAP_CACHE_HOURS", _as_float(_MARKET_CAP.get("cache_hours"), 72.0))
+SEC_MARKET_CAP_ENABLED: bool = env_bool(
+    "SEC_MARKET_CAP_FALLBACK", bool(_MARKET_CAP.get("sec_fallback", True)))
+SEC_USER_AGENT: str = (
+    env("SEC_USER_AGENT", "").strip()
+    or str(_MARKET_CAP.get("sec_user_agent") or "").strip()
+    or CONSTITUENT_FETCH_USER_AGENT
 )
 
 # Finviz provider (fundamentals snapshot + screener). Finviz publishes no free

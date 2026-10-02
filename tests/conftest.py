@@ -126,3 +126,32 @@ def _sandbox_alert_outcomes(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(cfg, "ALERT_OUTCOMES_ENABLED", False)
     monkeypatch.setattr(cfg, "ALERT_OUTCOMES_PATH", str(tmp_path / "alert_outcomes.json"))
+
+
+class _MemCache(dict):
+    """Just the cache surface src/fundamental/market_cap.py uses."""
+
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+    def set(self, key, value, ttl=None):
+        self[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _offline_market_cap_fallbacks(request, monkeypatch):
+    """Keep the market-cap fallback chain off the network and off data/.
+
+    ``market_cap.sec_fallback`` ships ON and needs no key, so the credential
+    blanking above cannot stop it: without this, any unit test that reaches
+    ``fetch_fundamentals`` with no market cap would query SEC EDGAR. And the
+    last-known-value cache lives in data/, where a live run leaves real values
+    that would silently answer a test's "unknown market cap" premise. Tests of
+    the chain itself re-enable SEC and patch the HTTP boundary.
+    """
+    if request.node.get_closest_marker("integration"):
+        return
+    import src.fundamental.market_cap as _mc
+    monkeypatch.setattr(cfg, "SEC_MARKET_CAP_ENABLED", False)
+    monkeypatch.setattr(_mc, "cache", _MemCache())
+    monkeypatch.setattr(_mc, "_retry_after", 0.0)
