@@ -15,7 +15,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.data.fetcher import fetch_ohlcv, fetch_ohlcv_batch
+from src.data.fetcher import fetch_ohlcv, fetch_ohlcv_batch, require_daily_bars_fetched_since
 from src.data.universe import get_universe
 from src.macro.regime import detect_market_regime
 from src.signals.generator import generate_signal
@@ -188,6 +188,10 @@ def run_daily_scan(
 
     scan_start = datetime.now()
     log.info(f"=== Daily Scan Started: {scan_start.strftime('%Y-%m-%d %H:%M')} ===")
+    if config.SCAN_REFRESH_DAILY_BARS:
+        # Read bars fetched during this scan, not whatever the cache kept from
+        # an earlier one. Before the regime check, which reads daily bars too.
+        require_daily_bars_fetched_since(scan_start.timestamp())
 
     # P2.3: if the scanner was dark longer than the configured ceiling, flag it
     # (opt-in alert) before running this scan and refreshing the timestamp.

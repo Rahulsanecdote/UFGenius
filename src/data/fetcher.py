@@ -227,10 +227,30 @@ def _note_sip_refused(response) -> None:
 _TRUSTED_DAILY_VOLUME = frozenset({"sip", "consolidated", "iex-fallback"})
 
 
+# Daily frames fetched before this instant are refetched rather than served from
+# cache. The daily cache lives 24h, so every scheduled scan after the first of
+# the day used to re-read that first fetch: on 2026-10-02 the paper trader's
+# 16:30 ET scan made no data request at all and judged bars ending 13:44 ET, and
+# a Monday 06:00 fetch would have served Friday's close to every Monday scan.
+# run_daily_scan raises the floor to its own start, so a scan reads bars fetched
+# during that scan. 0 = no floor: backtests and dashboard reads keep the cache.
+_daily_fetched_floor = 0.0
+
+
+def require_daily_bars_fetched_since(ts: float) -> None:
+    """Refuse cached daily frames fetched before ``ts`` (epoch). Only ever rises."""
+    global _daily_fetched_floor
+    _daily_fetched_floor = max(_daily_fetched_floor, float(ts))
+
+
 def _cached_frame_usable(frame, interval: str) -> bool:
-    if str(interval).lower() != "1d" or config.ALPACA_DAILY_FEED != "sip":
+    if str(interval).lower() != "1d":
         return True
     attrs = getattr(frame, "attrs", None) or {}
+    if _daily_fetched_floor and float(attrs.get("fetched_at") or 0.0) < _daily_fetched_floor:
+        return False
+    if config.ALPACA_DAILY_FEED != "sip":
+        return True
     return attrs.get("volume_feed") in _TRUSTED_DAILY_VOLUME
 
 
@@ -1195,6 +1215,7 @@ def fetch_ohlcv(
     cleaned, invalid_reason = _validate_ohlcv_frame(df)
     if not cleaned.empty:
         cleaned.attrs["volume_feed"] = volume_feed
+        cleaned.attrs["fetched_at"] = _time.time()
     if cleaned.empty:
         if invalid_reason == "EMPTY_PAYLOAD":
             log.warning(f"{symbol}: empty OHLCV response from providers")
@@ -1251,6 +1272,7 @@ def fetch_ohlcv_batch(
         if cleaned.empty:
             continue
         cleaned.attrs["volume_feed"] = df.attrs.get("volume_feed", "consolidated")
+        cleaned.attrs["fetched_at"] = _time.time()
         results[ticker] = cleaned
         if use_cache:
             cache.set(f"ohlcv:{ticker}:{period}:{interval}", cleaned, ttl=_ttl_for_interval(interval))

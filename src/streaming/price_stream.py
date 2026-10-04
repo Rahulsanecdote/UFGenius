@@ -24,6 +24,38 @@ alerts): default **off**, and if it is disabled, the credentials are missing,
 ``alpaca-py`` is absent, or the socket errors, ``start()`` returns ``False`` and
 the system keeps running on its REST polling exactly as before. Nothing here
 touches the money path — it is a data source, not a gate.
+
+The reconnect loop is ours, not alpaca-py's
+-------------------------------------------
+alpaca-py 0.43.1's ``DataStream._run_forever`` has two defects, and on
+2026-10-02 the first one OOM-killed the dashboard twice (512 MB, 15:19 and 16:15
+UTC):
+
+1. **A refused login is retried instantly, and the refused socket is never
+   closed.** Alpaca's free data plan allows one websocket per account; a second
+   client is answered "connection limit exceeded". ``_auth`` raises
+   ``ValueError``, the generic handler logs a traceback and loops with
+   ``asyncio.sleep(0)``, and ``_connect`` overwrites ``self._ws`` with a new
+   socket — the old one is never closed. Render logged that refusal about
+   twice a second for ten minutes before each kill. Against a local server
+   that refuses the same way and keeps the socket open, it reached 1.1 GB in
+   60 seconds (17,306 open sockets).
+2. **With nothing subscribed it busy-waits.** It polls for a first
+   subscription with ``asyncio.sleep(0)``, which on an otherwise empty event
+   loop is a spin: one full core, measured at 99%. The dashboard starts its
+   stream before the first discovery cycle, and on a 0.15-CPU instance that
+   thread competes with every request for the GIL.
+
+``_guarded_stream_class()`` subclasses ``StockDataStream`` and replaces that one
+method: it waits for a subscription with a real sleep, closes the socket on
+every failure, and backs off exponentially (``movers.stream.
+reconnect_backoff_sec`` doubling to ``reconnect_backoff_max_sec``). It keeps
+retrying, because the condition clears on its own — when the other client went
+away at 16:21 the loop stopped by itself. The state lands in ``status()``
+(``connected``, ``last_error``, ``connect_failures``) so the dashboard can say
+the stream is refused rather than show it as live. It reaches into alpaca-py's
+private members; ``tests/test_price_stream_reconnect.py`` pins the ones it uses,
+so an upgrade that renames them fails CI instead of the stream.
 """
 
 from __future__ import annotations
@@ -41,6 +73,112 @@ log = get_logger(__name__)
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+
+_IDLE_POLL_SEC = 0.5        # how often to look for a first subscription
+_PAUSE_STEP_SEC = 0.25      # backoff sleeps in steps so stop() is honoured promptly
+_CLOSE_TIMEOUT_SEC = 5.0    # bound on closing a socket the server won't close
+_GUARDED_CLS = None
+
+
+def _guarded_stream_class():
+    """``StockDataStream`` with a reconnect loop that cannot run away.
+
+    Built on first use because alpaca-py is an import only streaming needs.
+    See the module docstring for the two upstream defects this replaces.
+    """
+    global _GUARDED_CLS
+    if _GUARDED_CLS is not None:
+        return _GUARDED_CLS
+
+    import asyncio
+
+    from alpaca.data.live import StockDataStream
+
+    class GuardedStockDataStream(StockDataStream):
+        def __init__(self, *args, backoff_sec: float = 2.0, backoff_max_sec: float = 300.0,
+                     **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._backoff_sec = max(0.01, float(backoff_sec))
+            self._backoff_max_sec = max(self._backoff_sec, float(backoff_max_sec))
+            self._guard = {"connected": False, "failures": 0,
+                           "last_error": None, "retry_at": None}
+
+        @property
+        def guard_state(self) -> dict:
+            return dict(self._guard)
+
+        def _set_guard(self, **kw) -> None:
+            self._guard = {**self._guard, **kw}     # swap, never mutate in place
+
+        def _has_subscription(self) -> bool:
+            return any(v for k, v in self._handlers.items()
+                       if k not in ("cancelErrors", "corrections"))
+
+        async def _discard_socket(self) -> None:
+            ws, self._ws = self._ws, None
+            self._running = False
+            if ws is None:
+                return
+            try:
+                await asyncio.wait_for(ws.close(), _CLOSE_TIMEOUT_SEC)
+            except Exception:
+                try:
+                    ws.transport.abort()
+                except Exception:
+                    pass
+
+        async def _pause(self, seconds: float) -> None:
+            end = time.monotonic() + seconds
+            while self._should_run:
+                left = end - time.monotonic()
+                if left <= 0:
+                    return
+                await asyncio.sleep(min(_PAUSE_STEP_SEC, left))
+
+        async def _run_forever(self) -> None:
+            self._loop = asyncio.get_running_loop()
+            while not self._has_subscription():
+                if not self._stop_stream_queue.empty():
+                    self._stop_stream_queue.get(timeout=1)
+                    return
+                await asyncio.sleep(_IDLE_POLL_SEC)
+            self._should_run = True
+            self._running = False
+            failures = 0
+            while self._should_run:
+                try:
+                    if not self._running:
+                        await self._start_ws()
+                        await self._send_subscribe_msg()
+                        self._running = True
+                        if failures:
+                            log.info(f"price stream: connected after {failures} failed attempt(s)")
+                        failures = 0
+                        self._set_guard(connected=True, failures=0, last_error=None, retry_at=None)
+                    await self._consume()
+                except Exception as exc:
+                    await self._discard_socket()
+                    self._set_guard(connected=False)
+                    if not self._should_run:
+                        break
+                    reason = str(exc) or type(exc).__name__
+                    if "insufficient subscription" in reason:
+                        log.error(f"price stream: {reason} — feed not available on this plan; "
+                                  "streaming off, REST polling continues")
+                        self._set_guard(last_error=reason[:200], retry_at=None)
+                        return
+                    failures += 1
+                    delay = min(self._backoff_max_sec, self._backoff_sec * 2 ** min(failures - 1, 30))
+                    self._set_guard(failures=failures, last_error=reason[:200],
+                                    retry_at=time.time() + delay)
+                    log.warning(f"price stream: {reason} (attempt {failures}) — socket closed, "
+                                f"retrying in {delay:.3g}s")
+                    await self._pause(delay)
+            self._set_guard(connected=False, retry_at=None)
+
+    _GUARDED_CLS = GuardedStockDataStream
+    return _GUARDED_CLS
 
 
 class PriceStream:
@@ -238,8 +376,18 @@ class PriceStream:
             n_prices = len(self._prices)
             ticks = self._tick_count
             subscribed = sorted(self._subscribed)
+        # Connection state, when the client reports it (the guarded alpaca
+        # client does; injected fakes may not). "live" only says the thread
+        # runs — a refused login is live and not connected.
+        guard = getattr(self._client, "guard_state", None)
+        guard = guard if isinstance(guard, dict) else {}
+        retry_at = guard.get("retry_at")
         return {
             "live": bool(self._running),
+            "connected": guard.get("connected"),
+            "connect_failures": int(guard.get("failures") or 0),
+            "last_error": guard.get("last_error"),
+            "retry_in_seconds": round(max(0.0, retry_at - now), 1) if retry_at else None,
             "feed": self._feed,
             "subscribed": subscribed,
             "subscribed_count": len(subscribed),
@@ -271,7 +419,10 @@ class PriceStream:
             return self._client_factory(self._api_key, self._secret_key, self._feed)
         # Lazy import — alpaca-py is only needed when streaming is enabled.
         from alpaca.data.enums import DataFeed
-        from alpaca.data.live import StockDataStream
 
         feed = DataFeed.SIP if self._feed == "sip" else DataFeed.IEX
-        return StockDataStream(self._api_key, self._secret_key, feed=feed)
+        return _guarded_stream_class()(
+            self._api_key, self._secret_key, feed=feed,
+            backoff_sec=config.MOVERS_STREAM_RECONNECT_BACKOFF_SEC,
+            backoff_max_sec=config.MOVERS_STREAM_RECONNECT_BACKOFF_MAX_SEC,
+        )

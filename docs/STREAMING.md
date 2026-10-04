@@ -58,6 +58,33 @@ movers:
 Or via env: `MOVERS_STREAM_ENABLED=true`, `MOVERS_STREAM_FEED=iex`,
 `MOVERS_STREAM_STALE_SEC=10`, `MOVERS_STREAM_MAX_SYMBOLS=30`.
 
+## One connection per account, and what happens when it is taken
+
+Alpaca's free data plan allows **one** market-data websocket per account. A
+second client with the same keys — another service with the stream on, a local
+`--mode stream` or `--mode movers-worker` run, any other app — is answered
+`connection limit exceeded`, and keeps being answered that until the first one
+disconnects. So enable the stream on **one** process per account.
+
+The refusal used to be expensive. alpaca-py's own reconnect loop retries
+instantly and never closes the refused socket; on 2026-10-02 that OOM-killed the
+512 MB dashboard twice, ~10 minutes into each refusal. `PriceStream` now runs
+its own loop (`_guarded_stream_class()`): every failed socket is closed, retries
+back off from `reconnect_backoff_sec` (2s) doubling to
+`reconnect_backoff_max_sec` (300s), and the stream reconnects by itself once the
+other client lets go. While refused it reports `connected: false` with the
+reason, and the dashboard's worker strip shows **⚠ Stream refused: …** instead
+of ⚡ Streaming; prices keep coming from REST polling meanwhile. A feed the plan
+does not cover (`sip` on the free plan → `insufficient subscription`) stops the
+stream instead of retrying.
+
+```yaml
+movers:
+  stream:
+    reconnect_backoff_sec: 2        # env MOVERS_STREAM_RECONNECT_BACKOFF_SEC
+    reconnect_backoff_max_sec: 300  # env MOVERS_STREAM_RECONNECT_BACKOFF_MAX_SEC
+```
+
 ## Verifying
 
 ```bash
@@ -107,6 +134,9 @@ So: the in-process worker drives the **dashboard panel**; the Background Worker
 drives **always-on Telegram alerts**. Alerts fire exactly once because only the
 Background Worker has Telegram creds. Set `FMP_KEY`, `ALPACA_API_KEY/SECRET`
 (both services) and `TELEGRAM_BOT_TOKEN/CHAT_ID` (worker only) as Secrets.
+Only **one** of them can hold the live price tape on a free Alpaca data plan
+(see above): with both deployed on the same keys, turn `MOVERS_STREAM_ENABLED`
+off on one.
 
 If you only want the free web deploy, drop the Background Worker service — the
 in-process worker still populates the panel while the dashboard is awake.

@@ -62,10 +62,18 @@ services:
       #   this loop only runs while the dashboard is awake; upgrade the web plan
       #   to keep it continuous. This service deliberately has NO Telegram creds,
       #   so it never double-sends the alerts the worker service handles.
+      # Off since 2026-10-02 (operator decision): on the free plan the web
+      # instance sleeps, so the in-process worker ran ~51 of 390 market minutes
+      # and its alerts fired whenever the dashboard happened to wake, not when
+      # stocks moved. Run ufgenius-movers-worker instead if alerts are wanted.
       - key: RUN_WORKER_IN_PROCESS
-        value: "true"
+        value: "false"
+      # Alpaca's free data plan allows ONE market-data websocket per account. If
+      # the ufgenius-movers-worker below also runs on these keys, turn the
+      # stream off on one of them — the other is refused "connection limit
+      # exceeded" (it backs off and retries; see docs/STREAMING.md).
       - key: MOVERS_STREAM_ENABLED     # live Alpaca tape → dashboard live prices
-        value: "true"
+        value: "false"
       # Needs FMP_KEY (discovery) and ALPACA_API_KEY/SECRET (intraday + stream),
       # set as Secrets below. Without them the loop still runs but populates less.
       #
