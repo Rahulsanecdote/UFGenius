@@ -219,8 +219,10 @@ pytest --cov=src       # coverage
   properties of `_schedule_scan` to know before running it unattended: it
   **scans once immediately at startup** unless `SCHEDULE_RUN_ON_STARTUP=false`
   (config `schedule_run_on_startup`, default true) — off on the Render
-  **`ufgenius-paper-trader`** worker (`--mode live --execute`, `ALPACA_PAPER`
-  pinned `"true"`, `data/` on a persistent disk), since under autoDeploy every
+  paper-trader worker (the hand-made **`UFGenius`** service, `--mode live
+  --execute`, `ALPACA_PAPER=true`, `data/` on a persistent disk; its required
+  settings are listed at the end of `render.yaml`, which no longer defines it —
+  a Blueprint sync created a keyless duplicate from it on 2026-10-04), since under autoDeploy every
   merge restarts it and a startup scan would place orders at whatever time the
   deploy landed — and the 11:00/14:00 slots rarely pass anything,
   because the pre-filter's `RVOL >= 1.3` is computed on today's **partial**
