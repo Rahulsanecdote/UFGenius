@@ -17,10 +17,9 @@ services:
     # required manual deploys on the grounds that the service "fronts a
     # real-money trading bot" — deliberately, and the reason it is acceptable is
     # narrower than "we decided to": NO service here can place a REAL-MONEY
-    # order. This one runs `gunicorn wsgi:app` (dashboard + read-only API), the
-    # movers worker runs `--mode movers-worker` (discovery/alerting only), and
-    # the paper trader runs `--execute`, which refuses to start unless
-    # ALPACA_PAPER=true — pinned below as a value, not a dashboard secret. Real
+    # order. This one runs `gunicorn wsgi:app` (dashboard + read-only API). The
+    # paper trader, a hand-made service (see the end of this file), runs
+    # `--execute`, which refuses to start unless ALPACA_PAPER=true. Real
     # money needs `--live-execute` plus ALPACA_PAPER=false. A `--live-execute`
     # service must set `autoDeploy: false`: that is where L10 is back in force.
     #
@@ -50,8 +49,8 @@ services:
       #   Runs the discover → alert → monitor loop in a daemon thread inside
       #   THIS web process, so the worker and dashboard share one filesystem and
       #   the "Always-on worker" strip + live-streaming prices populate. (A
-      #   separate Background Worker below runs in its own container, whose state
-      #   file the web service can't see — that one is for 24/7 Telegram alerts.)
+      #   separate always-on movers worker would run in its own container, whose
+      #   state file the web service can't see.)
       #
       #   NOTE: --workers 1 is also required by the background scan-job registry
       #   (src/scanner/scan_jobs.py) — job state is per-process, so a poll must
@@ -60,18 +59,18 @@ services:
       #   NOTE: keep gunicorn at --workers 1 (above) so exactly one worker thread
       #   runs. On the FREE tier the web instance sleeps after ~15 min idle, so
       #   this loop only runs while the dashboard is awake; upgrade the web plan
-      #   to keep it continuous. This service deliberately has NO Telegram creds,
-      #   so it never double-sends the alerts the worker service handles.
+      #   to keep it continuous. Give Telegram creds to only one process running
+      #   the movers loop, or every alert is sent twice.
       # Off since 2026-10-02 (operator decision): on the free plan the web
       # instance sleeps, so the in-process worker ran ~51 of 390 market minutes
       # and its alerts fired whenever the dashboard happened to wake, not when
-      # stocks moved. Run ufgenius-movers-worker instead if alerts are wanted.
+      # stocks moved. Run a movers worker on an always-on box if alerts are wanted.
       - key: RUN_WORKER_IN_PROCESS
         value: "false"
       # Alpaca's free data plan allows ONE market-data websocket per account. If
-      # the ufgenius-movers-worker below also runs on these keys, turn the
-      # stream off on one of them — the other is refused "connection limit
-      # exceeded" (it backs off and retries; see docs/STREAMING.md).
+      # another process streams on these keys, only one may have this on — the
+      # other is refused "connection limit exceeded" (it backs off and retries;
+      # see docs/STREAMING.md).
       - key: MOVERS_STREAM_ENABLED     # live Alpaca tape → dashboard live prices
         value: "false"
       # Needs FMP_KEY (discovery) and ALPACA_API_KEY/SECRET (intraday + stream),
@@ -80,8 +79,8 @@ services:
       #   Catalyst alerts (CATALYST_ALERTS_ENABLED) can be switched on here, but
       #   read the consequence first: with no Telegram creds on this service,
       #   they fire and appear in the dashboard worker strip marked "(not
-      #   delivered)" — never on your phone. Put them on the worker service
-      #   below for delivery. The full key list is documented there.
+      #   delivered)" — never on your phone. Put them on whichever process has
+      #   the Telegram creds. Keys: CATALYST_ALERTS_* (src/utils/config.py).
 
       # ── Optional: set these in the Render dashboard (mark as Secret) ──────
       # Key names must match exactly what the code reads (src/utils/config.py).
@@ -131,164 +130,39 @@ services:
       # - key: EMAIL_TO
       #   sync: false
 
-  # ── Always-on movers worker (MOVERS Phase 5/8) ────────────────────────────
-  #   Runs `bot.py --mode movers-worker` continuously in its OWN container:
-  #   discover → alert → monitor → invalidate, with no browser. This is the 24/7
-  #   engine that watches the market for you and pushes Telegram alerts even when
-  #   the web service is asleep. It owns alerting (the web in-process worker has
-  #   no Telegram creds), so alerts fire exactly once.
+  # ── Not defined here: the paper trader and the movers worker ──────────────
+  #   This file used to also define `ufgenius-movers-worker` and
+  #   `ufgenius-paper-trader`. On 2026-10-04 a Blueprint sync created both from
+  #   it, with no API keys: the movers worker found 0 movers every cycle and the
+  #   paper trader scanned on rate-limited yfinance data and could not trade. A
+  #   keyed duplicate would have been worse — two `--execute` workers on one
+  #   Alpaca account place every entry twice. So both were removed, and
+  #   services that hold secrets are created by hand, once.
   #
-  #   Its shared-state file lives in THIS container's filesystem, which the web
-  #   service can't read — that is by design: the dashboard's worker strip is fed
-  #   by the in-process worker on the web service, this one is for alerts + true
-  #   always-on coverage.
+  #   Removing a service from this file does NOT delete it on Render (Blueprint
+  #   changes never delete resources): delete the two keyless services in the
+  #   dashboard after this change syncs. Deleting them before the sync gets them
+  #   recreated.
   #
-  #   IMPORTANT: Background Workers are a PAID Render feature (~$7/mo Starter).
-  #   Remove this service (or set it aside) if you only want the free web deploy;
-  #   the same command runs on any always-on box (`python bot.py --mode
-  #   movers-worker`).
+  #   PAPER TRADER — the Background Worker named "UFGenius", created by hand.
+  #   Required settings if it ever has to be recreated:
+  #     startCommand  python bot.py --mode live --execute
+  #     plan          Starter or larger. Not the free web tier: its position
+  #                   monitor protects filled entries, so it must never sleep.
+  #     disk          mounted at /opt/render/project/src/data. Not optional: it
+  #                   holds open positions' order ids, the trade ledgers and the
+  #                   circuit-breaker state.
+  #     env           ALPACA_PAPER=true (--execute refuses to start otherwise)
+  #                   SCHEDULE_RUN_ON_STARTUP=false (a redeploy must not scan
+  #                   off-schedule), PYTHON_VERSION=3.12.2,
+  #                   ALPACA_API_KEY / ALPACA_SECRET_KEY = the PAPER account's.
+  #   Run exactly one per Alpaca account.
   #
-  #   MINIMUM secrets to make this useful: ALPACA_API_KEY + ALPACA_SECRET_KEY
-  #   (discovery, intraday enrichment, stream, news wire) and TELEGRAM_BOT_TOKEN
-  #   + TELEGRAM_CHAT_ID (delivery). FMP_KEY is OPTIONAL — see the note on it
-  #   below.
-  - type: worker
-    name: ufgenius-movers-worker
-    env: python
-    plan: starter
-    region: oregon
-    buildCommand: pip install --upgrade pip && pip install -r requirements.lock
-    startCommand: python bot.py --mode movers-worker
-    # Auto-deploy on push — see the note on the web service above for why this
-    # reverses audit L10 and what it does not guarantee. Discovery and alerting
-    # only: this command cannot place an order.
-    autoDeploy: true
-    # Persist data/ across deploys and restarts. Without this the ALERT OUTCOME
-    # LEDGER (src/observability/alert_outcomes.py — default on) resets every
-    # time the service restarts, so the per-source hit rate never accumulates
-    # and "are these alerts any good" stays unanswerable. The market-data cache
-    # and metrics ledger live here too. ~$0.25/GB/mo; a disk pins the service to
-    # one instance and disables zero-downtime deploys, both fine for one worker.
-    disk:
-      name: ufgenius-worker-state
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.2"
-      - key: MOVERS_ALERTS_ENABLED                 # push new-setup alerts (Telegram)
-        value: "true"
-      - key: MOVERS_MONITOR_ENABLED                # invalidate setups that break down
-        value: "true"
-      - key: MOVERS_MONITOR_ALERT_ON_INVALIDATION  # ...and push a note when they do
-        value: "true"                              # (no-op unless the line above is set)
-      - key: MOVERS_STREAM_ENABLED                 # live Alpaca tape → faster reaction
-        value: "true"
-      # Discovery walks the movers.providers chain [alpaca, polygon, fmp]. With
-      # movers.provider_mode: merge (the default) it queries EVERY configured
-      # provider that serves a source and UNIONS the answers — it is no longer
-      # first-wins, where the leading provider's screener universe was the whole
-      # candidate pool and a name outside it was invisible with nothing recorded.
-      # Alpaca's screener covers gainers + losers; only most_actives is FMP-only
-      # (Polygon's snapshot has no most-actives endpoint). So Alpaca alone still
-      # gives you discovery, and an unconfigured provider is SKIPPED, never
-      # counted as a failure. Merge multiplies calls per source by the providers
-      # serving it, which is what movers.worker.rediscover_every_cycles: 8 pays
-      # for — it keeps FMP inside its 250/day free tier at the cost of up to
-      # ~8 minutes before a brand-new mover is first seen. A provider failing
-      # beside a working one is a PARTIAL outage: watch source_errors
-      # (/api/movers reads `degraded`), which first-wins used to hide.
-      - key: ALPACA_API_KEY            # required — discovery, intraday, stream, news
-        sync: false
-      - key: ALPACA_SECRET_KEY         # required
-        sync: false
-      - key: TELEGRAM_BOT_TOKEN        # required — alert delivery
-        sync: false
-      - key: TELEGRAM_CHAT_ID          # required — where alerts go (the CHAT's id,
-        sync: false                    # not the bot's; read chat.id from getUpdates)
-      # - key: FMP_KEY                 # OPTIONAL — adds the most_actives source only
-      #   sync: false                  # (a free FMP tier exhausts its daily quota fast)
-      # ── Catalyst-triggered alerts (opt-in, default OFF) ───────────────────
-      #   Fires on the NEWS WIRE rather than on price, so a catalyst is seen
-      #   at publication instead of after the move shows up on a gainers list.
-      #   Discovery/alerting only — it never sizes, gates, or places anything.
-      #   Belongs on THIS service, not the web one: it delivers via Telegram.
-      #   Needs ALPACA_API_KEY/SECRET (the batch news wire is Alpaca-only).
-      #
-      #   TURN IT OFF ON THE WEB SERVICE when you enable it here. The web service
-      #   has no Telegram creds, so every headline it classifies is spent on an
-      #   alert it can only render as "(not delivered)" in the worker strip.
-      - key: CATALYST_ALERTS_ENABLED       # master switch
-        value: "true"
-      - key: CATALYST_ALERTS_UNIVERSE      # watchlist | all (market-wide wire)
-        value: "all"                       # 'watchlist' needs CUSTOM_WATCHLIST set
-      # - key: CUSTOM_WATCHLIST              # e.g. "AAPL,NVDA,TSLA" — required for
-      #   sync: false                        # universe=watchlist, else nothing fires
-      # - key: CATALYST_ALERTS_TIERS         # strong | moderate | weak | dilution
-      #   value: "strong"                    # comma-separated; blank keeps the default
-      # - key: CATALYST_ALERTS_LOOKBACK_SEC  # how far back each poll looks
-      #   value: "300"
-      # - key: CATALYST_ALERTS_DEDUP_TTL_SEC # don't re-alert the same story
-      #   value: "3600"
-      # - key: CATALYST_ALERTS_MAX_PER_RUN   # spam guard per cycle
-      #   value: "5"
-      # - key: CATALYST_ALERTS_SUPPRESS_HALTED  # never alert a halted name
-      #   value: "true"
-
-  # ── Paper-trading executor ──────────────────────────────────────────────
-  #   Runs `bot.py --mode live --execute`: the six `schedule:` scans (New York
-  #   time) → RiskGuard → entry orders on the Alpaca PAPER account, plus the
-  #   position monitor, which places one OCO exit (take-profit + stop) per
-  #   tranche once an entry fills. This is what fills /api/paper-scorecard and
-  #   the P0.4 trade ledger, which the live-trading graduation gate reads.
-  #
-  #   It must be a Background Worker, not the free web service: the monitor
-  #   thread is what protects a filled entry, and a web instance that sleeps
-  #   after ~15 idle minutes would leave a fill unprotected until it woke.
-  #   PAID (~$7/mo Starter) + the disk below (~$0.25/GB/mo).
-  #
-  #   The disk is not optional. data/ holds the position tracker
-  #   (live_positions.json), the realized-P&L and per-trade ledgers, the
-  #   execution-quality ledger and the circuit-breaker state. Without it a
-  #   restart forgets every open position's order ids — the OCOs stay live at
-  #   the broker, but nothing books their exits.
-  #
-  #   Paper results inherit two production distortions, so read them as such:
-  #   volume thresholds run ~31x stricter than written because Alpaca serves
-  #   IEX volume (see CLAUDE.md), and a 500-ticker scan exceeds Alpaca's
-  #   200 requests/min, so part of each scan falls back to yfinance. The scans
-  #   share that limit with every other service using the same keys.
-  - type: worker
-    name: ufgenius-paper-trader
-    env: python
-    plan: starter
-    region: oregon
-    buildCommand: pip install --upgrade pip && pip install -r requirements.lock
-    startCommand: python bot.py --mode live --execute
-    # Paper-only, so autoDeploy is acceptable (see the note on the web service).
-    # Set "Auto-Deploy: After CI Checks Pass" in the dashboard as for the others.
-    autoDeploy: true
-    disk:
-      name: ufgenius-paper-trader-state
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.2"
-      - key: ALPACA_PAPER               # --execute refuses to start unless "true"
-        value: "true"
-      - key: SCHEDULE_RUN_ON_STARTUP    # a redeploy restarts the monitor; it must
-        value: "false"                  # not trigger an off-schedule scan
-      - key: ALPACA_API_KEY             # required — the PAPER account's keys
-        sync: false
-      - key: ALPACA_SECRET_KEY          # required
-        sync: false
-      # Optional: `--mode live` also sends each BUY/STRONG_BUY plan and a scan
-      # digest to Telegram when these are set (six digests a weekday).
-      # - key: TELEGRAM_BOT_TOKEN
-      #   sync: false
-      # - key: TELEGRAM_CHAT_ID
-      #   sync: false
+  #   MOVERS WORKER — not deployed. `python bot.py --mode movers-worker` on any
+  #   always-on box, with ALPACA_API_KEY/SECRET and TELEGRAM_BOT_TOKEN/CHAT_ID
+  #   (docs/STREAMING.md). Discovery and alerting only; it cannot place orders.
+  #   Alpaca's free data plan allows ONE market-data websocket per account, so
+  #   only one process may run with MOVERS_STREAM_ENABLED=true.
 
   # ── Optional: persistent disk for market-data cache (paid plans only) ───
   #   Without this, the data/ cache is wiped on every deploy/restart.

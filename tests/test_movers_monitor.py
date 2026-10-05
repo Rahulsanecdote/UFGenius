@@ -171,7 +171,7 @@ def test_disabled_monitor_still_refreshes_live_signals():
 
 
 def test_alert_on_invalidation_is_a_no_op_without_the_master_switch():
-    """Both must be on to push — render.yaml sets them as a pair for that reason."""
+    """Both must be on to push; set them as a pair."""
     monitor = mm.MoversMonitor()
     monitor.watch([_cand()])
     alert = MagicMock()

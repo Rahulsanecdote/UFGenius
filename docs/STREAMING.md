@@ -124,7 +124,8 @@ one writes is invisible to the other:
    this loop only runs while the dashboard is awake — upgrade the web plan for
    continuous coverage. Keep gunicorn at `--workers 1` so exactly one thread runs.
 
-2. **Separate Background Worker** (`ufgenius-movers-worker`, paid Starter) —
+2. **Separate Background Worker** (paid Starter; no longer defined in
+   `render.yaml` — create it by hand if you want it) —
    `python bot.py --mode movers-worker` in its own always-on container. This is
    the 24/7 engine that **owns Telegram alerting** (new setups + invalidations)
    even when the web service is asleep. Its state file isn't read by the web
