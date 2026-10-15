@@ -82,6 +82,14 @@ def build_reasons(c) -> list[str]:
             reasons.append(f"below VWAP ({c.vwap_pct:.1f}%)")
     if c.is_breakout and c.direction == "long":
         reasons.append("intraday breakout")
+    early = getattr(c, "early", None) or {}
+    if early.get("fire"):
+        bits = [f"vol accel {early.get('rvol_accel')}x"]
+        if early.get("pressing"):
+            bits.append("pressing " + "/".join(early["pressing"]))
+        if early.get("coiled"):
+            bits.append("coiled")
+        reasons.append("EARLY: " + ", ".join(bits))
     reasons.append(f"day move {c.change_pct:+.1f}%")
     if len(c.sources) > 1:
         reasons.append(f"in {len(c.sources)} mover lists ({', '.join(c.sources)})")
@@ -135,7 +143,11 @@ class MoversAlerter:
         # prints the score was computed from.
         if config.MOVERS_HALT_SUPPRESS_ALERTS and getattr(c, "is_halted", False):
             return "halted"
-        if c.score < float(config.MOVERS_ALERTS_MIN_SCORE):
+        # An early-momentum hit (src/scanner/early_movers.py) is judged by its
+        # own rule, not the magnitude-weighted score floor — that floor is what
+        # makes this path late. Every OTHER gate below still applies.
+        early_hit = bool((getattr(c, "early", None) or {}).get("fire"))
+        if not early_hit and c.score < float(config.MOVERS_ALERTS_MIN_SCORE):
             return "below_score"
         # Without enrichment the score is the discovery score, which is
         # magnitude alone (min(85, |change| * 2.5)) — "already moved a lot",

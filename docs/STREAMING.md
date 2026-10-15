@@ -150,3 +150,10 @@ in-process worker still populates the panel while the dashboard is awake.
   yet re-derive the quality score from the tape.
 - One stream lives in the **worker** process. The dashboard does not open its own
   stream (that would duplicate the feed and re-introduce async into the web app).
+
+## 1m bars for early alerts
+
+With `movers.early.enabled` and `movers.early.stream_bars`, `PriceStream.set_bar_symbols`
+subscribes 1m bars on the same websocket (one per account on the free plan), sharing
+`max_symbols` with trades and the guarded reconnect loop. Bars are queued and drained
+by the worker (`drain_bars`) into the early-alert buffer. See docs/EARLY_ALERTS.md.

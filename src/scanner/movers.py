@@ -94,6 +94,7 @@ class MoverCandidate:
     # reason, so an unassessable candidate is disclosed as the specific thing it
     # was missing rather than the generic "no intraday data".
     enrich_blocked: str = ""
+    early: dict | None = None  # early-momentum verdict (src/scanner/early_movers.py)
 
     # True when the feed's % change was extreme enough to check and the value
     # shown is our split-adjusted recomputation instead — whether that CORRECTED
@@ -497,6 +498,22 @@ def _last_bar_time(df) -> "datetime | None":
         return None
 
 
+def _early_verdict(c: "MoverCandidate", df, *, prepost: bool = False):
+    """Early-momentum verdict with premarket / prior-day highs where available."""
+    try:
+        from src.data.fetcher import fetch_intraday, fetch_ohlcv
+        from src.scanner.early_movers import evaluate_early, prior_day_levels, split_session
+        edf = df if config.EARLY_INTERVAL == config.MOVERS_ENRICH_INTERVAL else \
+            fetch_intraday(c.ticker, interval=config.EARLY_INTERVAL, prepost=True)
+        session, pm_high = split_session(edf)
+        _pc, prior_high = prior_day_levels(fetch_ohlcv(c.ticker, period="10d", interval="1d"))
+        return evaluate_early(session if session is not None and not session.empty else edf,
+                              c.change_pct, prior_high=prior_high, premarket_high=pm_high)
+    except Exception as exc:  # best-effort, like the rest of enrichment
+        log.debug(f"movers: early verdict for {c.ticker} failed ({type(exc).__name__})")
+        return None
+
+
 def _enrich_candidate(c: "MoverCandidate", *, prepost: bool = False) -> "MoverCandidate":
     """Attach live intraday signals and recompute the rank. No-op on any failure.
 
@@ -562,6 +579,8 @@ def _enrich_candidate(c: "MoverCandidate", *, prepost: bool = False) -> "MoverCa
             c.direction, c.change_pct, c.rel_volume or 0.0,
             c.momentum_pct or 0.0, c.vwap_pct, c.is_breakout,
         )
+        if config.EARLY_ALERTS_ENABLED and c.direction == "long":
+            c.early = _early_verdict(c, df, prepost=prepost)
     except Exception as exc:  # enrichment is best-effort — never break discovery
         log.debug(f"movers: intraday enrich for {c.ticker} failed ({type(exc).__name__})")
     return c
@@ -588,6 +607,8 @@ def fetch_market_movers(
     min_price = config.MOVERS_MIN_PRICE if min_price is None else min_price
     max_price = config.MOVERS_MAX_PRICE if max_price is None else max_price
     min_change = config.MOVERS_MIN_CHANGE_PCT if min_change_pct is None else min_change_pct
+    if min_change_pct is None and config.EARLY_ALERTS_ENABLED:
+        min_change = min(float(min_change), config.EARLY_MIN_CHANGE_PCT)
     limit = config.MOVERS_LIMIT if limit is None else limit
     include_short = config.MOVERS_INCLUDE_SHORT if include_short_setups is None else include_short_setups
     enrich = config.MOVERS_ENRICH_INTRADAY if enrich is None else enrich

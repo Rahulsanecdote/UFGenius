@@ -227,6 +227,38 @@ movers:
     # state_path: data/movers_worker.json   # default; shared across processes
     state_stale_sec: 180         # snapshot older than this → UI shows worker STALE
     state_max_recent: 20         # ring size for recent alerts / invalidations
+  # Early-momentum alerts (src/scanner/early_movers.py, docs/EARLY_ALERTS.md).
+  # The gainers-list path above is structurally late: a name must already be up
+  # min_change_pct, wait for the 8-cycle rediscovery, then score >= 70 on 5m
+  # bars that reward the size of the move. This path fires on 1m volume
+  # ACCELERATION while the name is pressing a level (session / opening-range /
+  # premarket / prior-day high) or coiled (precursor), and the move is still
+  # SMALL (<= max_change_pct). Early hits bypass alerts.min_score only; halt,
+  # freshness, dedup and alerts.enabled still apply. NOT prediction — most
+  # pressure fails. Default OFF (env: EARLY_ALERTS_ENABLED).
+  early:
+    enabled: false
+    # Fixed watchlist evaluated EVERY worker cycle, independent of the gainers
+    # lists and rediscovery. One batched multi-symbol bars request per ~100
+    # names per cycle (Alpaca free tier: 200 req/min). Env: EARLY_WATCHLIST
+    # (comma-separated), EARLY_WATCHLIST_FILE (one ticker per line, # comments).
+    watchlist: []
+    watchlist_file: ""
+    watchlist_max: 100        # hard cap on watchlist size (cost guard)
+    watchlist_every_cycles: 1 # REST watchlist scan cadence (cycles)
+    # With movers.stream.enabled, also subscribe 1m BARS (same single websocket)
+    # for watchlist + watched names and evaluate on each bar close. Shares
+    # stream.max_symbols. IEX bars only aggregate IEX prints (thin on small caps).
+    stream_bars: true
+    buffer_bars: 120          # rolling per-symbol 1m bar buffer
+    interval: "1m"
+    min_change_pct: 1.0       # discovery floor for the early path (vs movers.min_change_pct 3.0)
+    max_change_pct: 8.0       # cap: exclude already-extended names
+    accel_bars: 3             # recent window
+    base_bars: 20             # reference window
+    min_rvol_accel: 2.5       # recent vol / reference vol
+    press_pct: 0.5            # within this % of a level counts as pressing
+    opening_range_bars: 5
   # Phase 8 — real-time price streaming (Alpaca trade websocket). Opt-in; the
   # worker keeps its live watch set subscribed and reacts to price on push
   # instead of the next REST poll. Needs ALPACA_API_KEY/SECRET.
