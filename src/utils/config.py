@@ -1086,3 +1086,24 @@ PENNY_MAX_5DAY_GAIN_PCT: float = env_float(
 
 # Provider concurrency
 PROVIDER_CONCURRENCY_LIMIT: int = env_int("PROVIDER_CONCURRENCY_LIMIT", 10)
+
+
+# Early-momentum alerts (src/scanner/early_movers.py). Default OFF.
+_EARLY: dict = _MOVERS.get("early", {}) if isinstance(_MOVERS, dict) else {}
+EARLY_ALERTS_ENABLED: bool = env_bool("EARLY_ALERTS_ENABLED", bool(_EARLY.get("enabled", False)))
+EARLY_INTERVAL: str = env("EARLY_INTERVAL", str(_EARLY.get("interval", "1m")))
+EARLY_MIN_CHANGE_PCT: float = env_float("EARLY_MIN_CHANGE_PCT", _as_float(_EARLY.get("min_change_pct", 1.0), 1.0))
+EARLY_MAX_CHANGE_PCT: float = env_float("EARLY_MAX_CHANGE_PCT", _as_float(_EARLY.get("max_change_pct", 8.0), 8.0))
+EARLY_ACCEL_BARS: int = env_int("EARLY_ACCEL_BARS", _as_int(_EARLY.get("accel_bars", 3), 3))
+EARLY_BASE_BARS: int = env_int("EARLY_BASE_BARS", _as_int(_EARLY.get("base_bars", 20), 20))
+EARLY_MIN_RVOL_ACCEL: float = env_float("EARLY_MIN_RVOL_ACCEL", _as_float(_EARLY.get("min_rvol_accel", 2.5), 2.5))
+EARLY_PRESS_PCT: float = env_float("EARLY_PRESS_PCT", _as_float(_EARLY.get("press_pct", 0.5), 0.5))
+EARLY_WATCHLIST: list = [t.strip() for t in env("EARLY_WATCHLIST", "").split(",") if t.strip()] \
+    or list(_EARLY.get("watchlist", []) or [])
+EARLY_WATCHLIST_FILE: str = env("EARLY_WATCHLIST_FILE", str(_EARLY.get("watchlist_file", "") or ""))
+EARLY_WATCHLIST_MAX: int = env_int("EARLY_WATCHLIST_MAX", _as_int(_EARLY.get("watchlist_max", 100), 100))
+EARLY_WATCHLIST_EVERY_CYCLES: int = env_int(
+    "EARLY_WATCHLIST_EVERY_CYCLES", _as_int(_EARLY.get("watchlist_every_cycles", 1), 1))
+EARLY_STREAM_BARS: bool = env_bool("EARLY_STREAM_BARS", bool(_EARLY.get("stream_bars", True)))
+EARLY_BUFFER_BARS: int = env_int("EARLY_BUFFER_BARS", _as_int(_EARLY.get("buffer_bars", 120), 120))
+EARLY_OPENING_RANGE_BARS: int = env_int("EARLY_OPENING_RANGE_BARS", _as_int(_EARLY.get("opening_range_bars", 5), 5))

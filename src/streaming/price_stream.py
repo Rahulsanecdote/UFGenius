@@ -218,6 +218,12 @@ class PriceStream:
         self._running = False
         self._started_at: Optional[float] = None
         self._tick_count = 0
+        # 1m bar subscription (early alerts). Rides the SAME websocket — the free
+        # data plan allows one per account — so it shares max_symbols and the
+        # guarded reconnect loop. Bars are queued; the worker drains them.
+        self._bar_subscribed: set[str] = set()
+        self._bar_queue: list[dict] = []
+        self._bar_count = 0
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -312,6 +318,58 @@ class PriceStream:
                 for s in remove:
                     self._prices.pop(s, None)
 
+    def set_bar_symbols(self, symbols: list[str]) -> None:
+        """Re-subscribe 1m bars to exactly ``symbols`` (diff), capped together
+        with the trade subscription at ``max_symbols``."""
+        if not self._running or self._client is None:
+            return
+        cap = max(0, int(config.MOVERS_STREAM_MAX_SYMBOLS))
+        room = max(0, cap - len(self._subscribed)) if cap else None
+        want_all = self._normalize(symbols)
+        keep = [t for t in want_all if t in self._subscribed]   # already counted
+        extra = [t for t in want_all if t not in self._subscribed]
+        if room is not None:
+            extra = extra[:room]
+        want = set(keep) | set(extra)
+        add = want - self._bar_subscribed
+        remove = self._bar_subscribed - want
+        if add:
+            try:
+                self._client.subscribe_bars(self._on_bar, *sorted(add))
+                self._bar_subscribed |= add
+            except Exception as exc:
+                log.debug(f"price stream: bar subscribe {sorted(add)} failed ({type(exc).__name__})")
+        if remove:
+            try:
+                self._client.unsubscribe_bars(*sorted(remove))
+                self._bar_subscribed -= remove
+            except Exception as exc:
+                log.debug(f"price stream: bar unsubscribe failed ({type(exc).__name__})")
+
+    def drain_bars(self) -> list[dict]:
+        """Closed 1m bars received since the last call (oldest first)."""
+        with self._lock:
+            out, self._bar_queue = self._bar_queue, []
+        return out
+
+    async def _on_bar(self, data) -> None:
+        """Queue a closed bar. Non-blocking; never raises into the SDK."""
+        try:
+            sym = getattr(data, "symbol", None)
+            if sym is None:
+                return
+            rec = {"symbol": str(sym),
+                   "timestamp": getattr(data, "timestamp", None) or _utcnow_iso()}
+            for k in ("open", "high", "low", "close", "volume"):
+                rec[k] = float(getattr(data, k))
+            with self._lock:
+                self._bar_queue.append(rec)
+                if len(self._bar_queue) > 5000:      # worker stalled: keep newest
+                    self._bar_queue = self._bar_queue[-5000:]
+                self._bar_count += 1
+        except Exception:
+            pass
+
     # ── the async tick handler (the only coroutine in the codebase) ───────────
 
     async def _on_trade(self, data) -> None:
@@ -393,6 +451,8 @@ class PriceStream:
             "subscribed_count": len(subscribed),
             "priced_count": n_prices,
             "tick_count": ticks,
+            "bar_subscribed_count": len(self._bar_subscribed),
+            "bar_count": self._bar_count,
             "uptime_seconds": round(now - self._started_at, 1) if self._started_at else 0.0,
         }
 
