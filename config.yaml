@@ -190,6 +190,12 @@ movers:
     require_vwap_hold: true    # invalidate on losing VWAP (price on the wrong side)
     min_score: 50             # invalidate when the enriched quality score falls below this
     alert_on_invalidation: true  # send a Telegram note when a watched signal invalidates
+    # The watch set is cleared at the start of each trading day (ET) and capped
+    # here. Before that it only ever grew: with `enabled: false` nothing is ever
+    # invalidated, so every name the worker had watched since its last restart
+    # was re-enriched every cycle, and the always-on worker's memory climbed
+    # from ~180 MB to its 512 MB limit over a month (OOM-killed 2026-11-04).
+    max_watch: 100            # cap on watched names; invalidated ones are dropped first, then the oldest
   # Pre-market discovery source. During 04:00–09:30 ET the regular chain
   # answers about YESTERDAY's session — the staleness premarket_movers exists
   # for, and the one alerts.require_fresh_session now refuses — so the morning

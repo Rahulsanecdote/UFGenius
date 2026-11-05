@@ -13,7 +13,8 @@ only — it never sizes, gates, or places anything. Best-effort throughout.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src.scanner.movers import MoverCandidate, _enrich_candidate
 from src.utils import config
@@ -25,8 +26,18 @@ WATCHING = "watching"
 INVALIDATED = "invalidated"
 
 
+_EASTERN = ZoneInfo("America/New_York")
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _session_day(now: datetime) -> date:
+    """The ET calendar day ``now`` falls on (naive datetimes are taken as UTC)."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(_EASTERN).date()
 
 
 def check_invalidation(
@@ -82,21 +93,56 @@ class MoversMonitor:
     Reusable across cycles: state lives on the instance so a looped monitor keeps
     tracking the same names. ``evaluate`` re-enriches each still-watching
     candidate and transitions it to ``invalidated`` when a rule trips.
+
+    The watch set is bounded. It is cleared when the ET trading day changes (a
+    mover setup is an intraday idea; yesterday's names are not today's), and it
+    is capped at ``movers.monitor.max_watch`` entries, dropping invalidated
+    names first and then the oldest. Without this the always-on worker kept
+    every name it had ever watched since its last restart — with invalidation
+    off, all of them stayed "watching" and were re-enriched every cycle — and it
+    ran out of memory after a month (OOM-killed 2026-11-04).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_watch: int | None = None) -> None:
         self._watch: dict[tuple[str, str], WatchState] = {}
+        self._session: date | None = None
+        self._max_watch = int(max_watch if max_watch is not None
+                              else config.MOVERS_MONITOR_MAX_WATCH)
+
+    def _roll_session(self, now: datetime) -> None:
+        """Clear the watch set when the ET trading day changes."""
+        day = _session_day(now)
+        if self._session is not None and day != self._session and self._watch:
+            log.info(f"movers-monitor: new session {day} — cleared "
+                     f"{len(self._watch)} watched name(s) from {self._session}")
+            self._watch.clear()
+        self._session = day
+
+    def _enforce_cap(self) -> None:
+        """Trim the watch set to ``max_watch``: invalidated first, then oldest."""
+        cap = self._max_watch
+        if cap <= 0 or len(self._watch) <= cap:
+            return
+        excess = len(self._watch) - cap
+        for key in [k for k, s in self._watch.items() if s.status != WATCHING][:excess]:
+            del self._watch[key]
+        excess = len(self._watch) - cap
+        for key in list(self._watch)[:max(0, excess)]:   # dicts keep insertion order
+            del self._watch[key]
 
     # ── watch set management ──────────────────────────────────────────────────
 
-    def watch(self, candidates: list[MoverCandidate]) -> int:
+    def watch(self, candidates: list[MoverCandidate], *,
+              now: datetime | None = None) -> int:
         """Add candidates to the watch set (new ones only). Returns how many added."""
+        self._roll_session(now or _utcnow())
         added = 0
         for c in candidates:
             key = (c.ticker, c.direction)
             if key not in self._watch:
                 self._watch[key] = WatchState(candidate=c, entry_score=c.score)
                 added += 1
+        self._enforce_cap()
         return added
 
     def active(self) -> list[WatchState]:
@@ -131,6 +177,7 @@ class MoversMonitor:
         ``movers.monitor.alert_on_invalidation`` is on.
         """
         now = now or _utcnow()
+        self._roll_session(now)
         enrich = enrich or _enrich_candidate
         transitions: list[dict] = []
         halted = self._halted_symbols()

@@ -192,6 +192,10 @@ class MoversAlerter:
         if not config.MOVERS_ALERTS_ENABLED:
             return []
         now = now or _utcnow()
+        # Forget dedup entries past their TTL so the map stays bounded on an
+        # always-on worker (it was never pruned and only reset on restart).
+        cutoff = now.timestamp() - float(config.MOVERS_ALERTS_DEDUP_TTL_SEC)
+        self._recent = {k: t for k, t in self._recent.items() if t >= cutoff}
         fired: list[dict] = []
         suppressed: list[dict] = []
         min_score = float(config.MOVERS_ALERTS_MIN_SCORE)

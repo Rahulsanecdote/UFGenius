@@ -183,3 +183,56 @@ def test_alert_on_invalidation_is_a_no_op_without_the_master_switch():
                      MOVERS_MONITOR_ENABLED=False,
                      MOVERS_MONITOR_ALERT_ON_INVALIDATION=True)
     alert.assert_not_called()
+
+
+# ── Bounded watch set (OOM fix, 2026-11) ──────────────────────────────────────
+
+from datetime import datetime as _dt
+
+
+def test_watch_set_clears_when_the_et_trading_day_changes():
+    monitor = mm.MoversMonitor(max_watch=100)
+    # 2026-11-03 20:00 UTC = 15:00 ET (Tue); 2026-11-04 14:00 UTC = 09:00 ET (Wed).
+    monitor.watch([_cand(), _cand(ticker="AMD")], now=_dt(2026, 11, 3, 20, 0))
+    assert len(monitor.active()) == 2
+    added = monitor.watch([_cand(ticker="TSLA")], now=_dt(2026, 11, 4, 14, 0))
+    assert added == 1
+    assert [s.candidate.ticker for s in monitor.active()] == ["TSLA"]
+
+
+def test_watch_set_survives_utc_midnight_within_the_same_et_day():
+    monitor = mm.MoversMonitor(max_watch=100)
+    # 23:00 UTC and 01:00 UTC next day are both 2026-11-03 in ET (EST, UTC-5).
+    monitor.watch([_cand()], now=_dt(2026, 11, 3, 23, 0))
+    monitor.watch([_cand(ticker="AMD")], now=_dt(2026, 11, 4, 1, 0))
+    assert len(monitor.active()) == 2
+
+
+def test_evaluate_also_rolls_the_session():
+    monitor = mm.MoversMonitor(max_watch=100)
+    monitor.watch([_cand()], now=_dt(2026, 11, 3, 20, 0))
+    seen = []
+    _with_thresholds(lambda: monitor.evaluate(now=_dt(2026, 11, 4, 14, 0),
+                                              enrich=lambda c: seen.append(c.ticker)))
+    assert seen == [] and monitor.active() == []
+
+
+def test_watch_set_is_capped_dropping_invalidated_then_oldest():
+    monitor = mm.MoversMonitor(max_watch=3)
+    now = _dt(2026, 11, 4, 15, 0)
+    monitor.watch([_cand(ticker="A"), _cand(ticker="B"), _cand(ticker="C")], now=now)
+    monitor._watch[("B", "long")].status = mm.INVALIDATED
+    monitor.watch([_cand(ticker="D")], now=now)            # over cap → B goes first
+    assert sorted(k[0] for k in monitor._watch) == ["A", "C", "D"]
+    monitor.watch([_cand(ticker="E")], now=now)            # then the oldest (A)
+    assert sorted(k[0] for k in monitor._watch) == ["C", "D", "E"]
+
+
+def test_invalidated_name_is_not_rewatched_the_same_day():
+    # Keeping invalidated entries until the day rolls preserves the old
+    # behaviour: a setup that broke down is not re-added on the next discovery.
+    monitor = mm.MoversMonitor(max_watch=100)
+    now = _dt(2026, 11, 4, 15, 0)
+    monitor.watch([_cand()], now=now)
+    monitor._watch[("NBIS", "long")].status = mm.INVALIDATED
+    assert monitor.watch([_cand()], now=now) == 0
