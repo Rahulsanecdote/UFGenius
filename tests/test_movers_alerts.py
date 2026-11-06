@@ -346,3 +346,22 @@ class TestRequireFreshSession:
             for p in ctx:
                 p.stop()
         assert len(fired) == 1
+
+
+def test_dedup_map_is_pruned_after_ttl():
+    # The dedup map used to grow for the life of the process; entries past the
+    # TTL are now forgotten on the next run (and the name may alert again).
+    ps = _alerts_on(MOVERS_ALERTS_DEDUP_TTL_SEC=1800.0)
+    for p in ps:
+        p.start()
+    try:
+        alerter = ma.MoversAlerter()
+        t0 = datetime(2026, 1, 2, 15, 0, 0)
+        t1 = datetime(2026, 1, 2, 16, 0, 0)   # one hour later, past the 30-min TTL
+        assert len(alerter.process([_cand(bars_as_of=t0)], now=t0, send=False)) == 1
+        assert ("NBIS", "long") in alerter._recent
+        alerter.process([_cand(ticker="AMD", bars_as_of=t1)], now=t1, send=False)
+        assert all(k[0] != "NBIS" for k in alerter._recent)
+    finally:
+        for p in ps:
+            p.stop()

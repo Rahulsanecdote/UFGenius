@@ -250,6 +250,9 @@ MOVERS_MONITOR_MIN_SCORE: float = _as_float(_MOVERS_MONITOR.get("min_score", 50)
 MOVERS_MONITOR_ALERT_ON_INVALIDATION: bool = env_bool(
     "MOVERS_MONITOR_ALERT_ON_INVALIDATION",
     bool(_MOVERS_MONITOR.get("alert_on_invalidation", True)))
+# Upper bound on the monitor's watch set. The set is also cleared at the start of
+# each trading day (ET), so this only bites on a day with unusually many movers.
+MOVERS_MONITOR_MAX_WATCH: int = _as_int(_MOVERS_MONITOR.get("max_watch", 100), 100)
 # Pre-market discovery: use the live extended-hours tape during 04:00-09:30 ET
 # instead of the regular chain, which before 09:30 describes yesterday.
 _MOVERS_PREMARKET_DISCOVERY: dict = (
