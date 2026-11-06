@@ -78,6 +78,8 @@ def run_worker(
     state: MoversWorkerState | None = None,
     stream=_USE_DEFAULT,
     outcome_ledger=_USE_DEFAULT,
+    early_scanner=_USE_DEFAULT,
+    bar_buffer=None,
 ) -> dict:
     """Run the continuous discover → alert → monitor loop.
 
@@ -109,6 +111,14 @@ def run_worker(
             outcome_ledger = default_ledger()
         else:
             outcome_ledger = None
+    if early_scanner is _USE_DEFAULT:
+        early_scanner = None
+        if config.EARLY_ALERTS_ENABLED:
+            from src.scanner.early_movers import WatchlistScanner
+            early_scanner = WatchlistScanner()
+    if early_scanner is not None and bar_buffer is None:
+        from src.scanner.early_movers import BarBuffer
+        bar_buffer = BarBuffer()
     if stream is _USE_DEFAULT:
         stream = PriceStream() if config.MOVERS_STREAM_ENABLED else None
     # Try to open the stream up front; on any failure fall back to REST polling.
@@ -121,7 +131,18 @@ def run_worker(
     min_score = float(config.MOVERS_ALERTS_MIN_SCORE)
 
     stats = {"cycles": 0, "discoveries": 0, "alerts": 0, "invalidations": 0,
-             "catalyst_alerts": 0}
+             "catalyst_alerts": 0, "early_alerts": 0}
+    early_every = max(1, int(config.EARLY_WATCHLIST_EVERY_CYCLES))
+
+    def _early_fire(cands: list) -> None:
+        if not cands:
+            return
+        fired_early = alerter.process(cands, send=True)
+        stats["early_alerts"] += len(fired_early)
+        stats["alerts"] += len(fired_early)
+        state.record_alerts(fired_early)
+        if outcome_ledger is not None:
+            outcome_ledger.record(fired_early, source="early")
     cycle = 0
     last_movers: list | None = None
     try:
@@ -168,9 +189,30 @@ def run_worker(
                     transitions = monitor.evaluate(alert=send)
                     stats["invalidations"] += len(transitions)
                     state.record_invalidations(transitions)
+                    # Early path: fixed watchlist every `early_every` cycles,
+                    # independent of the gainers lists and rediscovery.
+                    if early_scanner is not None and (cycle - 1) % early_every == 0:
+                        hits, sessions = early_scanner.scan()
+                        if bar_buffer is not None:
+                            for sym, df in sessions.items():
+                                bar_buffer.seed(sym, df)
+                        _early_fire(hits)
                     # Keep the stream subscribed to exactly the live watch set.
                     if stream is not None:
                         stream.set_symbols([s.candidate.ticker for s in monitor.active()])
+                        if (early_scanner is not None and config.EARLY_STREAM_BARS
+                                and hasattr(stream, "set_bar_symbols")):
+                            bar_syms = list(early_scanner.symbols) + [
+                                s.candidate.ticker for s in monitor.active()]
+                            stream.set_bar_symbols(bar_syms)
+                            watched_ctx = {
+                                s.candidate.ticker: {"prior_close": s.candidate.price
+                                                     / (1 + s.candidate.change_pct / 100.0)}
+                                for s in monitor.active() if s.candidate.change_pct > -100}
+
+                            def _ctx(sym):
+                                return early_scanner.context(sym) or watched_ctx.get(sym, {})
+                            _early_fire(bar_buffer.on_bars(stream.drain_bars(), _ctx))
                 else:
                     log.debug(f"worker cycle {cycle}: outside scan window — idle")
                 # Outcome resolution runs even outside the scan window: alerts
